@@ -41,8 +41,18 @@ else
 fi
 
 # ---------------------------------------------------------
-# 3. Full-load parallel execution
+# 3. Detect available GPUs
 # ---------------------------------------------------------
-echo "🚀 Running list: $TARGET_LIST | Slots: 2x A100"
-cat "$TARGET_LIST" | parallel -j 2 --ungroup --progress --joblog parallel_status.log \
+NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+if [ "$NUM_GPUS" -eq 0 ]; then
+    echo "❌ No GPUs detected by nvidia-smi"
+    exit 1
+fi
+echo "🔍 Detected $NUM_GPUS GPU(s)"
+
+# ---------------------------------------------------------
+# 4. Full-load parallel execution
+# ---------------------------------------------------------
+echo "🚀 Running list: $TARGET_LIST | Slots: ${NUM_GPUS}x GPU"
+cat "$TARGET_LIST" | parallel -j "$NUM_GPUS" --ungroup --progress --joblog parallel_status.log \
     "CUDA_VISIBLE_DEVICES=\$(({%}-1)) python process_droid_stage1.py --ep_list '{}'"
