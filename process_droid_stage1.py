@@ -407,7 +407,7 @@ def _write_mp4(path, frames, fps=10.0):
   writer.release()
 
 
-def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droid_stage1"):
+def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droid/stage1"):
   """Export all videos, depth maps, calibration, and robot kinematics to disk.
 
   Episode directory layout:
