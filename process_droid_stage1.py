@@ -408,26 +408,50 @@ def _write_mp4(path, frames, fps=10.0):
 
 
 def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droid_stereo_depth"):
-  """Export all videos, depth maps, and full calibration data to disk.
+  """Export all videos, depth maps, calibration, and robot kinematics to disk.
 
-  Per camera directory layout:
-    video_left.mp4          - Rectified left eye
-    video_right.mp4         - Rectified right eye
-    video_left_raw.mp4      - Unrectified (distorted) left eye
-    video_right_raw.mp4     - Unrectified (distorted) right eye
-    raw_depth.npz           - uint16 depth in millimeters (all frames)
-    calibration.npz         - Full intrinsics: calibrated & raw K + distortion
+  Episode directory layout:
+    robot.npz                         - Robot kinematics & metadata
+    <cam_serial>/
+      video_left.mp4                  - Rectified left eye
+      video_right.mp4                 - Rectified right eye
+      video_left_raw.mp4              - Unrectified (distorted) left eye
+      video_right_raw.mp4             - Unrectified (distorted) right eye
+      raw_depth.npz                   - uint16 depth in millimeters
+      calibration.npz                 - Full intrinsics: calibrated & raw K + distortion
   """
   ep_str = scene_constants["meta"]["episode_id"]
   out_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_str)))
   os.makedirs(out_dir, exist_ok=True)
 
   print(f"  💾 Exporting multi-view data to {out_dir}...")
+
+  # --- Robot kinematics (episode-level) ---
+  robot = scene_constants["robot"]
+  if robot:
+    robot_save = {}
+    if "joint_positions" in robot:
+      robot_save["joint_positions"] = robot["joint_positions"].astype(np.float32)
+    if "gripper_positions" in robot:
+      robot_save["gripper_positions"] = robot["gripper_positions"].astype(np.float32)
+    if "T_ee_base_all" in robot:
+      robot_save["T_ee_base_all"] = robot["T_ee_base_all"].astype(np.float32)
+    if "T_cam_ee_init" in robot:
+      robot_save["T_cam_ee_init"] = robot["T_cam_ee_init"].astype(np.float32)
+    # Include metadata
+    meta = scene_constants["meta"]
+    if meta.get("valid_indices") is not None:
+      robot_save["valid_indices"] = meta["valid_indices"]
+    if meta.get("wrist_serial") is not None:
+      robot_save["wrist_serial"] = np.array(meta["wrist_serial"])
+    np.savez_compressed(os.path.join(out_dir, "robot.npz"), **robot_save)
+
+  # --- Per-camera data ---
   for cam_id, data in scene_constants["camera"].items():
     cam_dir = os.path.join(out_dir, str(cam_id))
     os.makedirs(cam_dir, exist_ok=True)
 
-    # --- Videos: save all 4 streams (rectified + raw, left + right) ---
+    # Videos: save all 4 streams (rectified + raw, left + right)
     video_keys = {
         "video_rgb": "video_left.mp4",
         "video_right": "video_right.mp4",
@@ -438,7 +462,7 @@ def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droi
       if key in data and len(data[key]) > 0:
         _write_mp4(os.path.join(cam_dir, filename), data[key])
 
-    # --- Depth: uint16 in millimeters ---
+    # Depth: uint16 in millimeters
     if "raw_depth" in data:
       depth_uint16 = (data["raw_depth"] * 1000).astype(np.uint16)
       np.savez_compressed(
@@ -446,7 +470,7 @@ def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droi
           depth=depth_uint16,
       )
 
-    # --- Full calibration: all K matrices + distortion + baseline ---
+    # Full calibration: all K matrices + distortion + baseline
     if "zed_calibration" in data:
       calib = data["zed_calibration"]
       np.savez(
