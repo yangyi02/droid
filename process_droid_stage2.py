@@ -247,15 +247,24 @@ class PyBulletRenderer_Robotiq:
     p.connect(p.DIRECT)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
-    if importlib.util.find_spec("eglRendererPlugin"):
-      print("  🔍 Found eglRendererPlugin, attempting to load...")
-      plugin_id = p.loadPlugin(
-          importlib.util.find_spec("eglRendererPlugin").origin,
-          "_eglRendererPlugin",
-      )
-      print(f"  🔌 PyBullet loadPlugin returned ID: {plugin_id} (Negative means failure)")
+    plugin_id = -1
+    try:
+      if importlib.util.find_spec("eglRendererPlugin"):
+        print("  🔍 Found eglRendererPlugin via spec, attempting to load...")
+        plugin_id = p.loadPlugin(
+            importlib.util.find_spec("eglRendererPlugin").origin,
+            "_eglRendererPlugin",
+        )
+      else:
+        print("  � eglRendererPlugin not found via spec, trying direct load...")
+        plugin_id = p.loadPlugin("eglRendererPlugin")
+    except Exception as e:
+      print(f"  ⚠️ EGL plugin check/load raised exception: {e}")
+
+    if plugin_id >= 0:
+      print(f"  🔌 PyBullet EGL plugin loaded successfully! (ID: {plugin_id})")
     else:
-      print("  ⚠️ WARNING: eglRendererPlugin not found! Falling back to slow TinyRenderer.")
+      print("  ⚠️ WARNING: Failed to load eglRendererPlugin! Falling back to slow TinyRenderer.")
 
     # Body: vanilla Panda arm (hide hand/finger)
     self.robot_id = p.loadURDF("franka_panda/panda.urdf", useFixedBase=True)
