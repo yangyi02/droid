@@ -570,9 +570,10 @@ def run_stage2_robot_alignment(scene_constants, pb_renderer, device,
   Tries both VGGT and dataset-init extrinsics (if available), optimizes each
   independently, and selects the result with the lowest robot alignment loss.
   """
-  OUTER_LOOPS = 5
+  OUTER_LOOPS = 10
   INNER_LOOPS = 100
   MAX_ROBOT_PTS = 2000
+  MAX_ALIGN_FRAMES = 100
 
   print("\n🦾 Stage 2a: External camera-robot arm alignment (dual-base competition)...")
 
@@ -597,7 +598,15 @@ def run_stage2_robot_alignment(scene_constants, pb_renderer, device,
         T_cur_np = (T_init_t @ make_delta_T(d_ext, device)).cpu().numpy()
 
       cache_X, cache_obs = [], []
-      for t in range(n_frames):
+
+      # 🌟 核心：每轮 outer_loop 都随机大洗牌，选取不重复的随机帧
+      if n_frames > MAX_ALIGN_FRAMES:
+        sampled_indices = np.random.choice(n_frames, MAX_ALIGN_FRAMES, replace=False)
+      else:
+        sampled_indices = np.arange(n_frames)
+
+      # 🌟 遍历随机出来的帧（排个序能让读取略微连续一些）
+      for t in sorted(sampled_indices):
         pb_renderer.update_robot_pose(scene_constants["robot"]["joint_positions"][t])
         d_obs = scene_constants["camera"][cam_id]["raw_depth"][t].astype(np.float32)
         r_pts_t = get_foreground_robot_points(T_cur_np, K_np, d_obs, pb_renderer, MAX_ROBOT_PTS, device)
@@ -729,9 +738,10 @@ def compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K, batch_obs):
 
 def run_stage2_wrist_alignment(scene_constants, init_scene_state, pb_renderer, device):
   """Stage 2b: Optimize wrist camera hand-eye calibration via gripper body alignment."""
-  OUTER_LOOPS = 5
+  OUTER_LOOPS = 10
   INNER_LOOPS = 100
   MAX_ROBOT_PTS = 2000
+  MAX_ALIGN_FRAMES = 100
 
   print("\n🦾 Stage 2b: Wrist camera-gripper body alignment...")
 
@@ -756,7 +766,13 @@ def run_stage2_wrist_alignment(scene_constants, init_scene_state, pb_renderer, d
 
     cache_P_ee, cache_obs = [], []
 
-    for t in range(n_frames):
+    # 🌟 核心：每轮 outer_loop 都随机选取不重复的随机帧
+    if n_frames > MAX_ALIGN_FRAMES:
+      sampled_indices = np.random.choice(n_frames, MAX_ALIGN_FRAMES, replace=False)
+    else:
+      sampled_indices = np.arange(n_frames)
+
+    for t in sorted(sampled_indices):
       pb_renderer.update_robot_pose(
           scene_constants["robot"]["joint_positions"][t],
           gripper_state=scene_constants["robot"]["gripper_positions"][t],
