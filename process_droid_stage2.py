@@ -570,7 +570,7 @@ def run_stage2_robot_alignment(scene_constants, pb_renderer, device,
   Tries both VGGT and dataset-init extrinsics (if available), optimizes each
   independently, and selects the result with the lowest robot alignment loss.
   """
-  OUTER_LOOPS = 10
+  OUTER_LOOPS = 5
   INNER_LOOPS = 100
   MAX_ROBOT_PTS = 2000
   MAX_ALIGN_FRAMES = 100
@@ -738,7 +738,7 @@ def compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K, batch_obs):
 
 def run_stage2_wrist_alignment(scene_constants, init_scene_state, pb_renderer, device):
   """Stage 2b: Optimize wrist camera hand-eye calibration via gripper body alignment."""
-  OUTER_LOOPS = 10
+  OUTER_LOOPS = 5
   INNER_LOOPS = 100
   MAX_ROBOT_PTS = 2000
   MAX_ALIGN_FRAMES = 100
