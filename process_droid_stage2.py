@@ -53,11 +53,8 @@ def init_stage2_models():
   if not torch.cuda.is_available():
     print("⚠️ WARNING: PyTorch cannot find a valid CUDA device.")
 
-  # Inject third-party repo paths
-  vendor_dir = os.path.join(
-      os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-      "third_party",
-  )
+  # Inject third-party repo paths (droid/third_party/ lives next to this script)
+  vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party")
   for pkg in ["vggt"]:
     path = os.path.join(vendor_dir, pkg)
     if path not in sys.path:
@@ -235,11 +232,11 @@ def make_delta_T(delta, device):
 class PyBulletRenderer_Robotiq:
   """Dual-body physics renderer: vanilla Panda arm + Robotiq gripper ghost."""
 
-  # Workspace root = parent directory of this script (e.g. droid_workspace/)
+  # PointWorld lives in droid/third_party/PointWorld/ (next to this script)
   _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-  _WORKSPACE_DIR = os.path.dirname(_SCRIPT_DIR)
   _DEFAULT_GHOST_URDF = os.path.join(
-      _WORKSPACE_DIR, "PointWorld/assets/franka_description/franka_panda_robotiq_2f85_og.urdf"
+      _SCRIPT_DIR, "third_party", "PointWorld", "assets", "franka_description",
+      "franka_panda_robotiq_2f85_og.urdf",
   )
 
   def __init__(self, ghost_urdf=None):

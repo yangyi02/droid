@@ -42,7 +42,7 @@ def init_all_models():
     print("⚠️ WARNING: PyTorch cannot find a valid CUDA device. Please ensure your CUDA_VISIBLE_DEVICES index is correct (e.g. 0 or 1) and NVIDIA drivers are running.")
 
   # Inject third-party repo paths just-in-time
-  vendor_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "third_party")
+  vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party")
   for pkg in ["s2m2/src", "vggt", "co-tracker"]:
     path = os.path.join(vendor_dir, pkg)
     if path not in sys.path:
