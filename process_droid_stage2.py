@@ -235,7 +235,16 @@ def make_delta_T(delta, device):
 class PyBulletRenderer_Robotiq:
   """Dual-body physics renderer: vanilla Panda arm + Robotiq gripper ghost."""
 
-  def __init__(self, ghost_urdf="PointWorld/assets/franka_description/franka_panda_robotiq_2f85_og.urdf"):
+  # Workspace root = parent directory of this script (e.g. droid_workspace/)
+  _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+  _WORKSPACE_DIR = os.path.dirname(_SCRIPT_DIR)
+  _DEFAULT_GHOST_URDF = os.path.join(
+      _WORKSPACE_DIR, "PointWorld/assets/franka_description/franka_panda_robotiq_2f85_og.urdf"
+  )
+
+  def __init__(self, ghost_urdf=None):
+    if ghost_urdf is None:
+      ghost_urdf = self._DEFAULT_GHOST_URDF
     if p.isConnected():
       p.disconnect()
     p.connect(p.DIRECT)
