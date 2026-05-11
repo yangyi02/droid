@@ -81,7 +81,8 @@ droid/
 │   ├── co-tracker/            # Dense point tracking
 │   │   └── weights/           # Downloaded by setup.sh
 │   ├── PointWorld/            # Franka + Robotiq URDF assets (branch: data)
-│   └── sam_weights/           # SAM ViT-H weights (downloaded by setup.sh)
+│   ├── sam_weights/           # SAM ViT-H weights (downloaded by setup.sh)
+│   └── ZED_SDK_Linux_Ubuntu22.run  # ZED SDK offline installer (manual)
 ├── process_droid_stage1.py    # Stage 1: depth extraction pipeline
 ├── process_droid_stage2.py    # Stage 2: extrinsics calibration pipeline
 ├── run_parallel.sh            # Multi-GPU parallel runner
@@ -91,6 +92,23 @@ droid/
 ```
 
 ## Dependencies
+
+### ZED SDK (required for Stage 1 SVO decoding)
+
+The ZED SDK installer is stored in `third_party/` for offline use. Install it once on the target machine:
+
+```bash
+chmod +x third_party/ZED_SDK_Linux_Ubuntu22.run
+./third_party/ZED_SDK_Linux_Ubuntu22.run silent runtime_only skip_tools
+
+# Install pyzed Python binding
+find /usr/local/zed/ -name "pyzed*.whl" -exec pip install {} \;
+```
+
+> The installer can also be downloaded fresh from Stereolabs:
+> ```
+> wget https://download.stereolabs.com/zedsdk/5.2/cu12/ubuntu22 -O ZED_SDK_Linux_Ubuntu22.run
+> ```
 
 ### Python Packages
 ```bash
