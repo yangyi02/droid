@@ -248,10 +248,14 @@ class PyBulletRenderer_Robotiq:
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
     if importlib.util.find_spec("eglRendererPlugin"):
-      p.loadPlugin(
+      print("  🔍 Found eglRendererPlugin, attempting to load...")
+      plugin_id = p.loadPlugin(
           importlib.util.find_spec("eglRendererPlugin").origin,
           "_eglRendererPlugin",
       )
+      print(f"  🔌 PyBullet loadPlugin returned ID: {plugin_id} (Negative means failure)")
+    else:
+      print("  ⚠️ WARNING: eglRendererPlugin not found! Falling back to slow TinyRenderer.")
 
     # Body: vanilla Panda arm (hide hand/finger)
     self.robot_id = p.loadURDF("franka_panda/panda.urdf", useFixedBase=True)
@@ -426,6 +430,7 @@ def init_camera_states(scene_constants, extrinsics_db):
       ext_vec = ext_data.get("extrinsics", ext_data) if isinstance(ext_data, dict) else ext_data
       base_ext = make_4x4(ext_vec)
       cam_trajectory = np.tile(base_ext, (n_frames, 1, 1))
+      print(f"    ✅ Loaded pre-calibrated extrinsics for camera [{cam_id}] from metadata.")
     else:
       print(f"    ⚠️ No pre-calibrated extrinsics for external camera [{cam_id}], setting to None.")
       base_ext = None
@@ -556,7 +561,7 @@ def run_stage2_robot_alignment(scene_constants, pb_renderer, device,
   Tries both VGGT and dataset-init extrinsics (if available), optimizes each
   independently, and selects the result with the lowest robot alignment loss.
   """
-  OUTER_LOOPS = 10
+  OUTER_LOOPS = 5
   INNER_LOOPS = 100
   MAX_ROBOT_PTS = 2000
 
@@ -715,7 +720,7 @@ def compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K, batch_obs):
 
 def run_stage2_wrist_alignment(scene_constants, init_scene_state, pb_renderer, device):
   """Stage 2b: Optimize wrist camera hand-eye calibration via gripper body alignment."""
-  OUTER_LOOPS = 10
+  OUTER_LOOPS = 5
   INNER_LOOPS = 100
   MAX_ROBOT_PTS = 2000
 
