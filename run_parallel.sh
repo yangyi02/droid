@@ -1,20 +1,20 @@
 #!/bin/bash
 # Multi-GPU parallel runner for DROID processing pipeline
 # Usage:
-#   bash run_parallel.sh                              # Stage 1, all episodes
-#   bash run_parallel.sh --stage 2                    # Stage 2, all episodes
+#   bash run_parallel.sh                              # Compute depth, all episodes
+#   bash run_parallel.sh --mode extrinsics            # Compute extrinsics, all episodes
 #   bash run_parallel.sh --limit 32                   # Limit to 32 episodes
 
 # ---------------------------------------------------------
 # 1. Parse arguments
 # ---------------------------------------------------------
-STAGE="1"
+MODE="depth"
 LIMIT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --stage|-s)
-            STAGE="$2"
+        --mode|-m)
+            MODE="$2"
             shift 2
             ;;
         --limit|-l)
@@ -28,15 +28,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$STAGE" != "1" && "$STAGE" != "2" ]]; then
-    echo "❌ Invalid stage: $STAGE (must be 1 or 2)"
+if [[ "$MODE" != "depth" && "$MODE" != "extrinsics" ]]; then
+    echo "❌ Invalid mode: $MODE (must be 'depth' or 'extrinsics')"
     exit 1
 fi
 
-echo "🎯 Pipeline Stage: $STAGE"
+# ---------------------------------------------------------
+# 2. Select script based on mode
+# ---------------------------------------------------------
+if [[ "$MODE" == "depth" ]]; then
+    SCRIPT="compute_depth.py"
+    OP_NAME="compute_depth"
+else
+    SCRIPT="compute_extrinsics.py"
+    OP_NAME="compute_extrinsics"
+fi
+
+echo "🎯 Running: $SCRIPT ($OP_NAME)"
 
 # ---------------------------------------------------------
-# 2. Detect available GPUs
+# 3. Detect available GPUs
 # ---------------------------------------------------------
 NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
 if [ "$NUM_GPUS" -eq 0 ]; then
@@ -46,18 +57,9 @@ fi
 echo "🔍 Detected $NUM_GPUS GPU(s)"
 
 # ---------------------------------------------------------
-# 3. Select script based on stage
-# ---------------------------------------------------------
-if [[ "$STAGE" == "1" ]]; then
-    SCRIPT="compute_depth.py"
-else
-    SCRIPT="compute_extrinsics.py"
-fi
-
-# ---------------------------------------------------------
 # 4. Full-load parallel execution
 # ---------------------------------------------------------
-LOGFILE="parallel_stage${STAGE}_status.log"
+LOGFILE="parallel_${OP_NAME}_status.log"
 EXTRA_ARGS=""
 if [ -n "$LIMIT" ]; then
     EXTRA_ARGS="--limit $LIMIT"

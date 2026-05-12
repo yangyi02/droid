@@ -46,7 +46,7 @@ def get_accelerator(force_egl=True):
 # ---------------------------------------------------------------------------
 # 1. Model Loading (VGGT only for Stage 2)
 # ---------------------------------------------------------------------------
-def init_stage2_models():
+def init_calibration_models():
   """Load VGGT model for camera extrinsics estimation."""
   device = get_accelerator()
   print(f"🚀 Launching VGGT model onto {device} | CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}")
@@ -100,7 +100,7 @@ def load_metadata():
   return serials_db, extrinsics_db
 
 
-def load_stage1_data(episode_id, stage1_root="~/droid_data/output/mv-tap/droid/stage1"):
+def load_depth_data(episode_id, depth_root="~/droid_data/output/mv-tap/droid/depth"):
   """Reconstruct scene_constants from Stage 1 disk outputs.
 
   Reads:
@@ -114,12 +114,12 @@ def load_stage1_data(episode_id, stage1_root="~/droid_data/output/mv-tap/droid/s
     scene_constants dict matching the Stage 1 in-memory format.
   """
   ep_dir = os.path.abspath(
-      os.path.expanduser(os.path.join(stage1_root, episode_id))
+      os.path.expanduser(os.path.join(depth_root, episode_id))
   )
   if not os.path.isdir(ep_dir):
-    raise FileNotFoundError(f"Stage 1 output not found: {ep_dir}")
+    raise FileNotFoundError(f"Depth output not found: {ep_dir}")
 
-  print(f"  📂 Loading Stage 1 data from {ep_dir}...")
+  print(f"  📂 Loading depth data from {ep_dir}...")
 
   # --- Robot kinematics ---
   robot_data = np.load(os.path.join(ep_dir, "robot.npz"), allow_pickle=True)
@@ -563,7 +563,7 @@ def compute_robot_loss_batched(batch_X, T_opt, K, batch_obs):
   return torch.nan_to_num(diff.mean(), nan=0.0)
 
 
-def run_stage2_robot_alignment(scene_constants, pb_renderer, device,
+def run_robot_alignment(scene_constants, pb_renderer, device,
                                init_scene_state=None, vggt_scene_state=None):
   """Stage 2a: Dual-base competition alignment for external cameras.
 
@@ -736,7 +736,7 @@ def compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K, batch_obs):
   return torch.nan_to_num(diff.mean(), nan=0.0)
 
 
-def run_stage2_wrist_alignment(scene_constants, init_scene_state, pb_renderer, device):
+def run_wrist_alignment(scene_constants, init_scene_state, pb_renderer, device):
   """Stage 2b: Optimize wrist camera hand-eye calibration via gripper body alignment."""
   OUTER_LOOPS = 5
   INNER_LOOPS = 100
@@ -1024,19 +1024,19 @@ def _run_joint_alignment(scene_constants, prev_scene_state, pb_renderer, device,
   return ultimate_scene_state
 
 
-def run_stage3_joint_alignment(scene_constants, stage2_scene_state, pb_renderer, device):
-  """Stage 3: Joint optimization with lr=0.001 and robot_weight=1.0."""
+def run_coarse_joint_alignment(scene_constants, base_scene_state, pb_renderer, device):
+  """Joint optimization with lr=0.001 and robot_weight=1.0."""
   return _run_joint_alignment(
-      scene_constants, stage2_scene_state, pb_renderer, device,
-      lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
+      scene_constants, base_scene_state, pb_renderer, device,
+      lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Coarse",
   )
 
 
-def run_stage4_joint_alignment(scene_constants, stage3_scene_state, pb_renderer, device):
-  """Stage 4: Fine-tuning with lr=0.0001 and robot_weight=0.1."""
+def run_fine_joint_alignment(scene_constants, coarse_scene_state, pb_renderer, device):
+  """Fine-tuning with lr=0.0001 and robot_weight=0.1."""
   return _run_joint_alignment(
-      scene_constants, stage3_scene_state, pb_renderer, device,
-      lr=0.0001, n_steps=500, robot_weight=0.1, stage_name="Stage 4",
+      scene_constants, coarse_scene_state, pb_renderer, device,
+      lr=0.0001, n_steps=500, robot_weight=0.1, stage_name="Fine",
   )
 
 
@@ -1044,7 +1044,7 @@ def run_stage4_joint_alignment(scene_constants, stage3_scene_state, pb_renderer,
 # 11. Export
 # ---------------------------------------------------------------------------
 def export_extrinsics(scene_constants, scene_state,
-                      export_root="~/droid_data/output/mv-tap/droid/stage2"):
+                      export_root="~/droid_data/output/mv-tap/droid/extrinsics"):
   """Save calibrated extrinsics for all cameras.
 
   Output layout:
@@ -1077,33 +1077,27 @@ if __name__ == "__main__":
   parser.add_argument("--rank", type=int, default=0, help="Rank of the process")
   parser.add_argument("--world_size", type=int, default=1, help="Total number of processes")
   parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
-  parser.add_argument("--ep_list", type=str, help="Comma-separated list of episode IDs")
-  parser.add_argument("--stage1_root", type=str, default="~/droid_data/output/mv-tap/droid/stage1",
-                       help="Root directory of Stage 1 outputs")
+  parser.add_argument("--depth_root", type=str, default="~/droid_data/output/mv-tap/droid/depth",
+                       help="Root directory of depth outputs")
   args = parser.parse_args()
 
   print("🚀 DROID Stage 2: Camera Extrinsics Calibration Pipeline")
   device = get_accelerator()
-  vggt_model, load_fn, pose_fn = init_stage2_models()
+  vggt_model, load_fn, pose_fn = init_calibration_models()
   serials_db, extrinsics_db = load_metadata()
-
-  # Discover available episodes from stage1 output
-  stage1_abs = os.path.abspath(os.path.expanduser(args.stage1_root))
-  if args.ep_list:
-    target_eps = [ep.strip() for ep in args.ep_list.split(",") if ep.strip()]
-    print(f"📋 Selected via --ep_list: {target_eps}")
-  else:
-    available_eps = sorted([
-        d for d in os.listdir(stage1_abs)
-        if os.path.isdir(os.path.join(stage1_abs, d))
-    ])
-    import random
-    random.seed(42)
-    random.shuffle(available_eps)
-    if args.limit > 0:
-      available_eps = available_eps[:args.limit]
-    target_eps = available_eps[args.rank::args.world_size]
-    print(f"📋 Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
+  # Discover available episodes from depth output
+  depth_abs = os.path.abspath(os.path.expanduser(args.depth_root))
+  available_eps = sorted([
+      d for d in os.listdir(depth_abs)
+      if os.path.isdir(os.path.join(depth_abs, d))
+  ])
+  import random
+  random.seed(42)
+  random.shuffle(available_eps)
+  if args.limit > 0:
+    available_eps = available_eps[:args.limit]
+  target_eps = available_eps[args.rank::args.world_size]
+  print(f"📋 Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
 
   succeeded_eps = []
 
@@ -1112,7 +1106,7 @@ if __name__ == "__main__":
 
     try:
       # Load Stage 1 outputs
-      scene_constants = load_stage1_data(ep_id, args.stage1_root)
+      scene_constants = load_depth_data(ep_id, args.depth_root)
 
       # Stage 0: Initialize from dataset extrinsics (if available)
       init_scene_state = init_camera_states(scene_constants, extrinsics_db)
@@ -1128,26 +1122,26 @@ if __name__ == "__main__":
           scene_constants, vggt_model, load_fn, pose_fn, device,
       )
 
-      # Stage 2a: External camera-robot alignment (dual-base competition)
+      # External camera-robot alignment (dual-base competition)
       pb_renderer = PyBulletRenderer_Robotiq()
-      robot_aligned_state = run_stage2_robot_alignment(
+      robot_aligned_state = run_robot_alignment(
           scene_constants, pb_renderer, device,
           init_scene_state=init_scene_state if all_extrinsics_exist else None,
           vggt_scene_state=vggt_scene_state,
       )
 
-      # Stage 2b: Wrist camera-gripper alignment
-      wrist_aligned_state = run_stage2_wrist_alignment(
+      # Wrist camera-gripper alignment
+      wrist_aligned_state = run_wrist_alignment(
           scene_constants, robot_aligned_state, pb_renderer, device,
       )
 
-      # Stage 3: Joint optimization (coarse)
-      joint_state = run_stage3_joint_alignment(
+      # Joint optimization (coarse)
+      joint_state = run_coarse_joint_alignment(
           scene_constants, wrist_aligned_state, pb_renderer, device,
       )
 
-      # Stage 4: Fine-tuning (refined)
-      final_state = run_stage4_joint_alignment(
+      # Fine-tuning (refined)
+      final_state = run_fine_joint_alignment(
           scene_constants, joint_state, pb_renderer, device,
       )
 
@@ -1163,13 +1157,13 @@ if __name__ == "__main__":
       continue
 
   # Multi-process safe append
-  stage2_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes_stage2.txt")
+  extrinsics_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes_extrinsics.txt")
   if succeeded_eps:
     batch = "".join(ep_id + "\n" for ep_id in succeeded_eps)
-    with open(stage2_path, "a") as f:
+    with open(extrinsics_path, "a") as f:
       fcntl.flock(f, fcntl.LOCK_EX)
       f.write(batch)
       fcntl.flock(f, fcntl.LOCK_UN)
-    print(f"\n📝 Appended {len(succeeded_eps)} episodes to {stage2_path}")
+    print(f"\n📝 Appended {len(succeeded_eps)} episodes to {extrinsics_path}")
 
   print(f"\n🎉 Stage 2 complete! {len(succeeded_eps)}/{len(target_eps)} episodes succeeded.")

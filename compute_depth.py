@@ -576,7 +576,7 @@ def _write_mp4(path, frames, fps=10.0):
   writer.release()
 
 
-def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droid/stage1"):
+def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droid/depth"):
   """Export all videos, depth maps, calibration, and robot kinematics to disk.
 
   Episode directory layout:
@@ -693,7 +693,6 @@ if __name__ == "__main__":
   parser.add_argument("--rank", type=int, default=0, help="Rank of the process")
   parser.add_argument("--world_size", type=int, default=1, help="Total number of processes")
   parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
-  parser.add_argument("--ep_list", type=str, help="Optional comma-separated list of specific episode IDs")
   args = parser.parse_args()
 
   print("Environment setup verified. Initializing flexible multi-GPU extractor...")
@@ -701,17 +700,13 @@ if __name__ == "__main__":
   s2m2_model, cotracker_model, vggt_model, sam_predictor = init_all_models()
   serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids = load_metadata()
 
-  if args.ep_list:
-    target_eps = [ep.strip() for ep in args.ep_list.split(",") if ep.strip()]
-    print(f"📋 Selected via --ep_list targeting: {target_eps}")
-  else:
-    import random
-    random.seed(42)
-    random.shuffle(valid_ids)
-    if args.limit > 0:
-      valid_ids = valid_ids[:args.limit]
-    target_eps = valid_ids[args.rank::args.world_size]
-    print(f"📋 Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
+  import random
+  random.seed(42)
+  random.shuffle(valid_ids)
+  if args.limit > 0:
+    valid_ids = valid_ids[:args.limit]
+  target_eps = valid_ids[args.rank::args.world_size]
+  print(f"📋 Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
 
   succeeded_eps = []
 
@@ -756,14 +751,14 @@ if __name__ == "__main__":
       print(f"  ❌ Episode {ep_id} failed: {e}")
       continue
 
-  # Append successfully processed episodes to episodes_stage1.txt (multi-process safe)
-  stage1_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes_stage1.txt")
+  # Append successfully processed episodes to episodes_depth.txt (multi-process safe)
+  depth_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes_depth.txt")
   if succeeded_eps:
     batch = "".join(ep_id + "\n" for ep_id in succeeded_eps)
-    with open(stage1_path, "a") as f:
+    with open(depth_path, "a") as f:
       fcntl.flock(f, fcntl.LOCK_EX)
       f.write(batch)
       fcntl.flock(f, fcntl.LOCK_UN)
-    print(f"\n📝 Appended {len(succeeded_eps)} episodes to {stage1_path}")
+    print(f"\n📝 Appended {len(succeeded_eps)} episodes to {depth_path}")
 
   print(f"\n🎉 Pipeline complete! {len(succeeded_eps)}/{len(target_eps)} episodes succeeded.")
