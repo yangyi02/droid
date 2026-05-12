@@ -692,6 +692,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="DROID Flexible Pipeline Extractor")
   parser.add_argument("--rank", type=int, default=0, help="Rank of the process")
   parser.add_argument("--world_size", type=int, default=1, help="Total number of processes")
+  parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
   parser.add_argument("--ep_list", type=str, help="Optional comma-separated list of specific episode IDs")
   args = parser.parse_args()
 
@@ -707,6 +708,8 @@ if __name__ == "__main__":
     import random
     random.seed(42)
     random.shuffle(valid_ids)
+    if args.limit > 0:
+      valid_ids = valid_ids[:args.limit]
     target_eps = valid_ids[args.rank::args.world_size]
     print(f"📋 Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
 

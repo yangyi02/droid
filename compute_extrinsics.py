@@ -1076,6 +1076,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="DROID Stage 2: Camera Extrinsics Calibration")
   parser.add_argument("--rank", type=int, default=0, help="Rank of the process")
   parser.add_argument("--world_size", type=int, default=1, help="Total number of processes")
+  parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
   parser.add_argument("--ep_list", type=str, help="Comma-separated list of episode IDs")
   parser.add_argument("--stage1_root", type=str, default="~/droid_data/output/mv-tap/droid/stage1",
                        help="Root directory of Stage 1 outputs")
@@ -1099,6 +1100,8 @@ if __name__ == "__main__":
     import random
     random.seed(42)
     random.shuffle(available_eps)
+    if args.limit > 0:
+      available_eps = available_eps[:args.limit]
     target_eps = available_eps[args.rank::args.world_size]
     print(f"📋 Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
 
