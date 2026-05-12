@@ -14,15 +14,43 @@ cd droid
 # 2. Install dependencies and download model weights
 bash setup.sh
 
-# 3. Run Stage 1 (stereo depth + gripper depth refinement)
+# 3. Mount GCS input/output buckets
+bash mount_gcs.sh
+
+# 4. Compute depth (stereo depth + gripper depth refinement)
 bash run_parallel.sh
 
-# 4. Run Stage 2 (camera extrinsics calibration)
-bash run_parallel.sh --stage 2
+# 5. Compute extrinsics (camera extrinsics calibration)
+bash run_parallel.sh --mode extrinsics
 ```
 
 > If you already cloned **without** `--recurse-submodules`, run `bash setup.sh` anyway —
 > it will call `git submodule update --init --recursive` automatically.
+
+## Data Setup
+
+The pipeline reads raw DROID data from a GCS bucket and writes outputs to another.
+Use `mount_gcs.sh` to mount both buckets via [gcsfuse](https://cloud.google.com/storage/docs/gcsfuse-cli):
+
+```bash
+bash mount_gcs.sh
+```
+
+This creates two FUSE mounts:
+
+| Mount | GCS Bucket / Prefix | Local Path |
+|-------|---------------------|------------|
+| Input (DROID raw) | `gs://gresearch/robotics/droid_raw` | `~/droid_data/input/robotics/droid_raw` |
+| Output (depth & extrinsics) | `gs://dm-tapnet/mv-tap` | `~/droid_data/output/mv-tap` |
+
+The script automatically unmounts stale FUSE mounts before re-mounting, so it is
+safe to run repeatedly.
+
+> To manually unmount:
+> ```bash
+> fusermount -u ~/droid_data/input/robotics/droid_raw
+> fusermount -u ~/droid_data/output/mv-tap
+> ```
 
 ## Pipeline Overview
 
@@ -86,6 +114,7 @@ droid/
 ├── process_droid_stage1.py    # Stage 1: depth extraction pipeline
 ├── process_droid_stage2.py    # Stage 2: extrinsics calibration pipeline
 ├── run_parallel.sh            # Multi-GPU parallel runner
+├── mount_gcs.sh               # GCS bucket mount helper (input & output)
 ├── setup.sh                   # One-shot dependency setup
 ├── pipeline.ipynb             # Reference notebook
 └── .gitmodules                # Submodule declarations
@@ -137,18 +166,23 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 ## Running Options
 
 ```bash
-# Stage 1: all episodes (auto-discovers from metadata)
+# Compute depth for all episodes (default mode)
 bash run_parallel.sh
 
-# Stage 1: custom episode list
-bash run_parallel.sh --file my_episodes.txt
+# Compute depth, limited to 32 episodes
+bash run_parallel.sh --limit 32
 
-# Stage 2: process episodes completed by stage 1
-bash run_parallel.sh --stage 2
+# Compute extrinsics for all episodes
+bash run_parallel.sh --mode extrinsics
 
-# Stage 2: custom episode list
-bash run_parallel.sh --stage 2 --file episodes_stage1.txt
+# Compute extrinsics, limited to 32 episodes
+bash run_parallel.sh --mode extrinsics --limit 32
 ```
+
+| Flag | Short | Values | Default | Description |
+|------|-------|--------|---------|-------------|
+| `--mode` | `-m` | `depth`, `extrinsics` | `depth` | Which pipeline stage to run |
+| `--limit` | `-l` | integer | all | Max number of episodes to process |
 
 Parallel jobs are automatically scaled to the number of available GPUs detected by `nvidia-smi`.
 Each GPU gets one job at a time: `CUDA_VISIBLE_DEVICES=<gpu_id>`.
