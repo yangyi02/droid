@@ -88,6 +88,6 @@ fi
 # 5. Full-load parallel execution
 # ---------------------------------------------------------
 LOGFILE="parallel_stage${STAGE}_status.log"
-echo "🚀 Running $SCRIPT | List: $TARGET_LIST | Slots: ${NUM_GPUS}x GPU"
-cat "$TARGET_LIST" | parallel -j "$NUM_GPUS" --ungroup --progress --joblog "$LOGFILE" \
-    "CUDA_VISIBLE_DEVICES=\$(({%}-1)) python $SCRIPT --ep_list '{}'"
+echo "🚀 Running $SCRIPT | Slots: ${NUM_GPUS}x GPU (PointWorld Static Sharding Mode)"
+seq 0 $((NUM_GPUS-1)) | parallel -j "$NUM_GPUS" --ungroup --progress --joblog "$LOGFILE" \
+    "CUDA_VISIBLE_DEVICES={} python $SCRIPT --rank {} --world_size $NUM_GPUS"

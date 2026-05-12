@@ -690,8 +690,8 @@ def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droi
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="DROID Flexible Pipeline Extractor")
-  parser.add_argument("--start", type=int, default=0, help="Start index in the valid episodes list")
-  parser.add_argument("--count", type=int, default=2, help="Number of sequential episodes to process")
+  parser.add_argument("--rank", type=int, default=0, help="Rank of the process")
+  parser.add_argument("--world_size", type=int, default=1, help="Total number of processes")
   parser.add_argument("--ep_list", type=str, help="Optional comma-separated list of specific episode IDs")
   args = parser.parse_args()
 
@@ -704,8 +704,11 @@ if __name__ == "__main__":
     target_eps = [ep.strip() for ep in args.ep_list.split(",") if ep.strip()]
     print(f"📋 Selected via --ep_list targeting: {target_eps}")
   else:
-    target_eps = valid_ids[args.start : args.start + args.count]
-    print(f"📋 Selected via index range [{args.start}:{args.start + args.count}] targeting: {target_eps}")
+    import random
+    random.seed(42)
+    random.shuffle(valid_ids)
+    target_eps = valid_ids[args.rank::args.world_size]
+    print(f"📋 Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
 
   succeeded_eps = []
 
