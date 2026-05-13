@@ -9,17 +9,16 @@ import fcntl
 import glob
 import json
 import os
+import random
 import sys
 import warnings
 
 import cv2
 import h5py
 import numpy as np
-import pybullet as p
 import pyzed.sl as sl
 from scipy.spatial.transform import Rotation as R
 import torch
-import torch.nn.functional as F
 from tqdm import tqdm
 
 # ---------------------------------------------------------------------------
@@ -43,16 +42,14 @@ def init_all_models():
 
   # Inject third-party repo paths just-in-time
   vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party")
-  for pkg in ["s2m2/src", "vggt", "co-tracker"]:
+  for pkg in ["s2m2/src"]:
     path = os.path.join(vendor_dir, pkg)
     if path not in sys.path:
       sys.path.append(path)
 
-  # Lazy importing
-  from cotracker.predictor import CoTrackerPredictor
-  from s2m2.core.utils.model_utils import load_model
+  # Lazy importing — these modules live under third_party/ paths added above
+  from s2m2.core.utils.model_utils import load_model, run_stereo_matching
   from segment_anything import sam_model_registry, SamPredictor
-  from vggt.models.vggt import VGGT
 
   s2m2_model = torch.compile(
       load_model(
@@ -63,18 +60,12 @@ def init_all_models():
           device,
       ).eval()
   )
-  cotracker_model = CoTrackerPredictor(
-      checkpoint=os.path.join(
-          vendor_dir, "co-tracker/weights/cotracker3_offline.pth"
-      )
-  ).to(device)
-  vggt_model = VGGT.from_pretrained("facebook/VGGT-1B").to(device).eval()
   sam = sam_model_registry["vit_h"](
       checkpoint=os.path.join(vendor_dir, "sam_weights/sam_vit_h_4b8939.pth")
   ).to(device)
 
-  print("  ✅ All foundation models securely loaded.")
-  return s2m2_model, cotracker_model, vggt_model, SamPredictor(sam)
+  print("  ✅ All foundation models loaded.")
+  return s2m2_model, SamPredictor(sam), run_stereo_matching
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +107,8 @@ def load_metadata():
 # ---------------------------------------------------------------------------
 # 3. SVO Decoding & Kinematics Extraction
 # ---------------------------------------------------------------------------
-def download_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
-  """Download episode data and initialize hierarchical scene_constants."""
+def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
+  """Build the hierarchical scene_constants dict for one episode."""
   relative_path = id_to_path[episode_id]
   episode_path = os.path.join(root_path, relative_path)
 
@@ -352,13 +343,12 @@ def decode_disparity_np(disp, fx, baseline):
 
 
 @torch.inference_mode()
-def get_s2m2_disparity(model, img_left, img_right, device, conf_thresh=0.95):
+def get_s2m2_disparity(model, img_left, img_right, device, run_fn, conf_thresh=0.95):
   """Pure disparity extractor: inference only, no premature depth conversion."""
-  from s2m2.core.utils.model_utils import run_stereo_matching
   left_torch = torch.from_numpy(img_left).permute(2, 0, 1).unsqueeze(0).to(device)
   right_torch = torch.from_numpy(img_right).permute(2, 0, 1).unsqueeze(0).to(device)
 
-  pred_disp, _, pred_conf, _, _ = run_stereo_matching(
+  pred_disp, _, pred_conf, _, _ = run_fn(
       model, left_torch, right_torch, device, N_repeat=3
   )
 
@@ -372,17 +362,16 @@ def get_s2m2_disparity(model, img_left, img_right, device, conf_thresh=0.95):
   return disp
 
 
-def compute_stereo_depth(scene_constants, model, device):
+def compute_stereo_depth(scene_constants, model, device, run_fn):
   """Run S2M2 stereo inference and convert raw disparity to metric depth."""
   print("  🧠 Running S2M2 stereo depth inference...")
-  for cam_id in scene_constants["camera"]:
-    cam_data = scene_constants["camera"][cam_id]
-    left_seq, right_seq = cam_data["video_rgb"], cam_data["video_right"]
+  for cam_id, cam_data in scene_constants["camera"].items():
     if "video_rgb" not in cam_data or "video_right" not in cam_data:
       continue
+    left_seq, right_seq = cam_data["video_rgb"], cam_data["video_right"]
 
     disp_frames = [
-        get_s2m2_disparity(model, left_img, right_img, device)
+        get_s2m2_disparity(model, left_img, right_img, device, run_fn)
         for left_img, right_img in tqdm(
             zip(left_seq, right_seq),
             total=len(left_seq),
@@ -693,14 +682,15 @@ if __name__ == "__main__":
   parser.add_argument("--rank", type=int, default=0, help="Rank of the process")
   parser.add_argument("--world_size", type=int, default=1, help="Total number of processes")
   parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
+  parser.add_argument("--max_frames", type=int, default=250, help="Skip episodes with more than this many frames (default: 250, -1 to disable)")
+  parser.add_argument("--min_frames", type=int, default=48, help="Skip episodes with fewer than this many frames (default: 48, -1 to disable)")
   args = parser.parse_args()
 
   print("Environment setup verified. Initializing flexible multi-GPU extractor...")
   device = get_accelerator()
-  s2m2_model, cotracker_model, vggt_model, sam_predictor = init_all_models()
+  s2m2_model, sam_predictor, run_stereo_matching = init_all_models()
   serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids = load_metadata()
 
-  import random
   random.seed(42)
   random.shuffle(valid_ids)
   if args.limit > 0:
@@ -717,7 +707,7 @@ if __name__ == "__main__":
       continue
 
     try:
-      scene_constants = download_episode(
+      scene_constants = init_episode(
           ep_id,
           os.path.expanduser("~/droid_data/input/robotics/droid_raw/1.0.1"),
           id_to_path,
@@ -728,9 +718,21 @@ if __name__ == "__main__":
       if not any("video_rgb" in data for data in scene_constants["camera"].values()):
         print(f"  ⚠️ No valid video streams extracted for [{ep_id}]. Skipping processing.")
         continue
+
+      # --- Frame count gate (early exit before expensive stages) ---
+      first_cam = next(iter(scene_constants["camera"].values()))
+      n_frames = len(first_cam["video_rgb"])
+      if args.max_frames > 0 and n_frames > args.max_frames:
+        print(f"  ⏭️ Skipping episode {ep_id}: {n_frames} frames exceeds --max_frames={args.max_frames}")
+        continue
+      if args.min_frames > 0 and n_frames < args.min_frames:
+        print(f"  ⏭️ Skipping episode {ep_id}: {n_frames} frames below --min_frames={args.min_frames}")
+        continue
+
       scene_constants = parse_robot_kinematics(scene_constants)
       scene_constants = align_temporal_streams(scene_constants)
-      scene_constants = compute_stereo_depth(scene_constants, s2m2_model, device)
+
+      scene_constants = compute_stereo_depth(scene_constants, s2m2_model, device, run_stereo_matching)
 
       # --- Gripper depth refinement (wrist camera only) ---
       # Save original raw depth before injection
