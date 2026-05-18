@@ -153,8 +153,8 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
 
 
 def extract_svo_video(scene_constants):
-  """Decode SVO video, extract full stereo calibration and both rectified/unrectified frames."""
-  print("  🎥 Decoding SVO video streams and physical calibration data...")
+  """Decode SVO video, extract full stereo calibration, both rectified/unrectified frames, and timestamps."""
+  print("  🎥 Fast-decoding SVO video streams and physical calibration data (including timestamps)...")
   episode_path = scene_constants["meta"]["episode_path"]
 
   for cam in scene_constants["camera"]:
@@ -206,22 +206,27 @@ def extract_svo_video(scene_constants):
     # Frame extraction loop (left/right + raw)
     # ==========================================
     all_left, all_right, all_left_raw, all_right_raw = [], [], [], []
+    all_timestamps = []  # 🌟 New: list for storing per-frame timestamps
     left_mat, right_mat = sl.Mat(), sl.Mat()
     left_raw_mat, right_raw_mat = sl.Mat(), sl.Mat()
 
     for _ in tqdm(range(zed.get_svo_number_of_frames()), desc=f"Decoding {cam}"):
-      zed.grab()
-      # 1. Extract rectified stereo frames
-      zed.retrieve_image(left_mat, sl.VIEW.LEFT)
-      zed.retrieve_image(right_mat, sl.VIEW.RIGHT)
-      # 2. Extract raw unrectified stereo frames
-      zed.retrieve_image(left_raw_mat, sl.VIEW.LEFT_UNRECTIFIED)
-      zed.retrieve_image(right_raw_mat, sl.VIEW.RIGHT_UNRECTIFIED)
+      if zed.grab() == sl.ERROR_CODE.SUCCESS:
+        # 🌟 New: capture hardware exposure timestamp for the current frame (ms)
+        timestamp_ms = zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_milliseconds()
+        all_timestamps.append(timestamp_ms)
 
-      all_left.append(cv2.cvtColor(left_mat.get_data(), cv2.COLOR_BGRA2RGB))
-      all_right.append(cv2.cvtColor(right_mat.get_data(), cv2.COLOR_BGRA2RGB))
-      all_left_raw.append(cv2.cvtColor(left_raw_mat.get_data(), cv2.COLOR_BGRA2RGB))
-      all_right_raw.append(cv2.cvtColor(right_raw_mat.get_data(), cv2.COLOR_BGRA2RGB))
+        # 1. Extract rectified stereo frames
+        zed.retrieve_image(left_mat, sl.VIEW.LEFT)
+        zed.retrieve_image(right_mat, sl.VIEW.RIGHT)
+        # 2. Extract raw unrectified stereo frames
+        zed.retrieve_image(left_raw_mat, sl.VIEW.LEFT_UNRECTIFIED)
+        zed.retrieve_image(right_raw_mat, sl.VIEW.RIGHT_UNRECTIFIED)
+
+        all_left.append(cv2.cvtColor(left_mat.get_data(), cv2.COLOR_BGRA2RGB))
+        all_right.append(cv2.cvtColor(right_mat.get_data(), cv2.COLOR_BGRA2RGB))
+        all_left_raw.append(cv2.cvtColor(left_raw_mat.get_data(), cv2.COLOR_BGRA2RGB))
+        all_right_raw.append(cv2.cvtColor(right_raw_mat.get_data(), cv2.COLOR_BGRA2RGB))
 
     zed.close()
 
@@ -242,6 +247,7 @@ def extract_svo_video(scene_constants):
         "video_right": np.stack(all_right),
         "video_raw_rgb": np.stack(all_left_raw),
         "video_raw_right": np.stack(all_right_raw),
+        "timestamps": np.array(all_timestamps),  # 🌟 New: timestamp array packed into scene dict
     })
 
   return scene_constants
@@ -256,20 +262,19 @@ def make_4x4(vec_6d):
 
 
 def parse_robot_kinematics(scene_constants):
-  """Load H5 and JSON to extract robot kinematics and hand-eye matrices."""
-  print("  🦾 Parsing robot H5 kinematics and hand-eye matrices...")
+  """Load H5 and JSON to extract robot kinematics, hand-eye matrices, and timestamps."""
+  print("  🦾 Parsing robot H5 kinematics and dynamic hand-eye matrices...")
   ep_path = scene_constants["meta"]["episode_path"]
 
-  h5_files = glob.glob(f"{ep_path}/trajectory.h5")
-  json_files = glob.glob(f"{ep_path}/metadata_*.json")
-  if not h5_files or not json_files:
-    return scene_constants
-
-  with h5py.File(h5_files[0], "r") as f, open(json_files[0]) as jf:
-    # Extract full arrays from H5 using [:]
+  with h5py.File(f"{ep_path}/trajectory.h5", "r") as f:
     ee_poses = f["observation/robot_state/cartesian_position"][:]
     joint_poses = f["observation/robot_state/joint_positions"][:]
     gripper_poses = f["observation/robot_state/gripper_position"][:]
+
+    # New: extract robot state timestamps from H5
+    timestamps = f["observation/timestamp/robot_state/read_start"][:]
+
+  with open(glob.glob(f"{ep_path}/metadata_*.json")[0]) as jf:
     wrist_ext = json.load(jf)["wrist_cam_extrinsics"]
     wrist_ext = wrist_ext.get("extrinsics", wrist_ext) if isinstance(wrist_ext, dict) else wrist_ext
 
@@ -287,6 +292,7 @@ def parse_robot_kinematics(scene_constants):
       "gripper_positions": gripper_poses,
       "T_cam_ee_init": np.linalg.inv(make_4x4(ee_poses[0])) @ make_4x4(wrist_ext),
       "T_ee_base_all": T_ee_all,
+      "timestamps": timestamps,  # New: robot state timestamps
   }
   return scene_constants
 
@@ -294,8 +300,6 @@ def parse_robot_kinematics(scene_constants):
 def align_temporal_streams(scene_constants):
   """Truncate all temporal streams to the shortest length for global alignment."""
   print("  ⏱️ Running global temporal alignment check...")
-  if "T_ee_base_all" not in scene_constants["robot"]:
-    return scene_constants
 
   # 1. Collect lengths of all temporal streams
   lengths = [
@@ -318,14 +322,16 @@ def align_temporal_streams(scene_constants):
   print(f"    ⚠️ Temporal mismatch detected (max {max_frames}, min {min_frames})!")
   print(f"    ✂️ Truncating all streams to {min_frames} frames...")
 
-  # 3. Truncate all dimensions to min_frames
-  scene_constants["robot"]["joint_positions"] = scene_constants["robot"]["joint_positions"][:min_frames]
-  scene_constants["robot"]["gripper_positions"] = scene_constants["robot"]["gripper_positions"][:min_frames]
-  scene_constants["robot"]["T_ee_base_all"] = scene_constants["robot"]["T_ee_base_all"][:min_frames]
+  # 3. Truncate all dimensions to min_frames (dynamic traversal)
+  for key in ["joint_positions", "gripper_positions", "T_ee_base_all", "timestamps"]:
+    if key in scene_constants["robot"]:
+      scene_constants["robot"][key] = scene_constants["robot"][key][:min_frames]
 
   for cam_id, cam_data in scene_constants["camera"].items():
-    cam_data["video_rgb"] = cam_data["video_rgb"][:min_frames]
-    cam_data["video_right"] = cam_data["video_right"][:min_frames]
+    for key, value in cam_data.items():
+      # Truncate any array/list whose length matches the max frame count
+      if isinstance(value, (list, np.ndarray)) and len(value) == max_frames:
+        cam_data[key] = value[:min_frames]
 
   print("    ✅ Global alignment complete. All dimensions are now consistent.")
   return scene_constants
@@ -342,18 +348,27 @@ def decode_disparity_np(disp, fx, baseline):
   return z
 
 
-@torch.inference_mode()
-def get_s2m2_disparity(model, img_left, img_right, device, run_fn, conf_thresh=0.95):
-  """Pure disparity extractor: inference only, no premature depth conversion."""
-  left_torch = torch.from_numpy(img_left).permute(2, 0, 1).unsqueeze(0).to(device)
-  right_torch = torch.from_numpy(img_right).permute(2, 0, 1).unsqueeze(0).to(device)
 
-  pred_disp, _, pred_conf, _, _ = run_fn(
-      model, left_torch, right_torch, device, N_repeat=3
+@torch.inference_mode()
+def get_s2m2_disparity_batched(left_img_batch, right_img_batch, device, conf_thresh=0.95):
+  """Batched disparity extractor.
+
+  Args:
+    left_img_batch / right_img_batch: List[np.ndarray] or np.ndarray of shape [B, H, W, 3].
+  Returns:
+    Disparity array of shape [B, H, W].
+  """
+  # Stack into batch and convert: [B, H, W, 3] -> [B, 3, H, W]
+  left_torch = torch.from_numpy(np.stack(left_img_batch)).permute(0, 3, 1, 2).float().to(device)
+  right_torch = torch.from_numpy(np.stack(right_img_batch)).permute(0, 3, 1, 2).float().to(device)
+
+  pred_disp, _, pred_conf, _, _ = run_stereo_matching(
+      s2m2_model, left_torch, right_torch, device, N_repeat=3
   )
 
-  disp = pred_disp.cpu().numpy().squeeze()
-  conf = pred_conf.cpu().numpy().squeeze()
+  # Remove channel dim, keep [B, H, W]
+  disp = pred_disp.cpu().numpy().squeeze(1)
+  conf = pred_conf.cpu().numpy().squeeze(1)
 
   # Mask out low-confidence disparity pixels
   valid_mask = (disp > 0) & (conf >= conf_thresh)
@@ -362,23 +377,27 @@ def get_s2m2_disparity(model, img_left, img_right, device, run_fn, conf_thresh=0
   return disp
 
 
-def compute_stereo_depth(scene_constants, model, device, run_fn):
-  """Run S2M2 stereo inference and convert raw disparity to metric depth."""
-  print("  🧠 Running S2M2 stereo depth inference...")
-  for cam_id, cam_data in scene_constants["camera"].items():
-    if "video_rgb" not in cam_data or "video_right" not in cam_data:
-      continue
-    left_seq, right_seq = cam_data["video_rgb"], cam_data["video_right"]
+def compute_stereo_depth_batched(scene_constants, device, batch_size=8):
+  """Batched S2M2 stereo depth inference."""
+  print(f"  🧠 Running S2M2 stereo depth inference (Batch Size: {batch_size})...")
 
-    disp_frames = [
-        get_s2m2_disparity(model, left_img, right_img, device, run_fn)
-        for left_img, right_img in tqdm(
-            zip(left_seq, right_seq),
-            total=len(left_seq),
-            desc=f"Depth [{cam_id}]",
-        )
-    ]
-    raw_disp = np.stack(disp_frames)
+  for cam_id in scene_constants["camera"]:
+    cam_data = scene_constants["camera"][cam_id]
+    left_seq = cam_data["video_rgb"]
+    right_seq = cam_data["video_right"]
+
+    raw_disp_list = []
+    n_frames = len(left_seq)
+
+    for i in tqdm(range(0, n_frames, batch_size), desc=f"Depth [{cam_id}]"):
+      left_batch = left_seq[i:i + batch_size]
+      right_batch = right_seq[i:i + batch_size]
+
+      disp_batch = get_s2m2_disparity_batched(left_batch, right_batch, device)
+      raw_disp_list.append(disp_batch)
+
+    # Concatenate all batches back into a temporal tensor
+    raw_disp = np.concatenate(raw_disp_list, axis=0)
 
     fx = cam_data["K_mat"][0, 0]
     baseline = cam_data["baseline"]
@@ -684,6 +703,7 @@ if __name__ == "__main__":
   parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
   parser.add_argument("--max_frames", type=int, default=250, help="Skip episodes with more than this many frames (default: 250, -1 to disable)")
   parser.add_argument("--min_frames", type=int, default=48, help="Skip episodes with fewer than this many frames (default: 48, -1 to disable)")
+  parser.add_argument("--batch_size", type=int, default=16, help="Batch size for S2M2 stereo depth inference (default: 16)")
   args = parser.parse_args()
 
   print("Environment setup verified. Initializing flexible multi-GPU extractor...")
@@ -732,7 +752,7 @@ if __name__ == "__main__":
       scene_constants = parse_robot_kinematics(scene_constants)
       scene_constants = align_temporal_streams(scene_constants)
 
-      scene_constants = compute_stereo_depth(scene_constants, s2m2_model, device, run_stereo_matching)
+      scene_constants = compute_stereo_depth_batched(scene_constants, device, batch_size=args.batch_size)
 
       # --- Gripper depth refinement (wrist camera only) ---
       # Save original raw depth before injection
