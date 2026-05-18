@@ -152,7 +152,7 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
   }
 
 
-def extract_svo_video(scene_constants):
+def extract_svo_video(scene_constants, max_frames=250):
   """Decode SVO video, extract full stereo calibration, both rectified/unrectified frames, and timestamps."""
   print("  🎥 Fast-decoding SVO video streams and physical calibration data (including timestamps)...")
   episode_path = scene_constants["meta"]["episode_path"]
@@ -166,6 +166,13 @@ def extract_svo_video(scene_constants):
     init_params.set_from_svo_file(svo_files[0])
     init_params.svo_real_time_mode = False
     zed.open(init_params)
+
+    # Early exit: skip episodes with too many frames before decoding anything
+    n_svo_frames = zed.get_svo_number_of_frames()
+    if max_frames > 0 and n_svo_frames > max_frames:
+      print(f"  ⏭️ Skipping SVO [{cam}]: {n_svo_frames} frames exceeds --max_frames={max_frames}.")
+      zed.close()
+      continue
 
     # Extract ZED native calibration data
     cam_info = zed.get_camera_information()
@@ -730,7 +737,7 @@ if __name__ == "__main__":
           serials_db,
           keep_ranges,
       )
-      scene_constants = extract_svo_video(scene_constants)
+      scene_constants = extract_svo_video(scene_constants, max_frames=args.max_frames)
       if not any("video_rgb" in data for data in scene_constants["camera"].values()):
         print(f"  ⚠️ No valid video streams extracted for [{ep_id}]. Skipping processing.")
         continue
