@@ -349,61 +349,57 @@ def decode_disparity_np(disp, fx, baseline):
 
 
 
-@torch.inference_mode()
-def get_s2m2_disparity_batched(left_img_batch, right_img_batch, device, conf_thresh=0.95):
-  """Batched disparity extractor.
-
-  Args:
-    left_img_batch / right_img_batch: List[np.ndarray] or np.ndarray of shape [B, H, W, 3].
-  Returns:
-    Disparity array of shape [B, H, W].
-  """
-  # Stack into batch and convert: [B, H, W, 3] -> [B, 3, H, W]
-  left_torch = torch.from_numpy(np.stack(left_img_batch)).permute(0, 3, 1, 2).float().to(device)
-  right_torch = torch.from_numpy(np.stack(right_img_batch)).permute(0, 3, 1, 2).float().to(device)
-
-  pred_disp, _, pred_conf, _, _ = run_stereo_matching(
-      s2m2_model, left_torch, right_torch, device, N_repeat=3
-  )
-
-  # Remove channel dim, keep [B, H, W]
-  disp = pred_disp.cpu().numpy().squeeze(1)
-  conf = pred_conf.cpu().numpy().squeeze(1)
-
-  # Mask out low-confidence disparity pixels
-  valid_mask = (disp > 0) & (conf >= conf_thresh)
-  disp[~valid_mask] = 0.0
-
-  return disp
-
-
-def compute_stereo_depth_batched(scene_constants, device, batch_size=8):
-  """Batched S2M2 stereo depth inference."""
-  print(f"  🧠 Running S2M2 stereo depth inference (Batch Size: {batch_size})...")
+def compute_stereo_depth(scene_constants, device):
+  """S2M2 stereo depth inference over the full video pool."""
+  print("  🧠 Running S2M2 stereo depth inference (frame-by-frame)...")
 
   for cam_id in scene_constants["camera"]:
     cam_data = scene_constants["camera"][cam_id]
-    left_seq = cam_data["video_rgb"]
-    right_seq = cam_data["video_right"]
+    left_seq, right_seq = cam_data["video_rgb"], cam_data["video_right"]
 
-    raw_disp_list = []
-    n_frames = len(left_seq)
-
-    for i in tqdm(range(0, n_frames, batch_size), desc=f"Depth [{cam_id}]"):
-      left_batch = left_seq[i:i + batch_size]
-      right_batch = right_seq[i:i + batch_size]
-
-      disp_batch = get_s2m2_disparity_batched(left_batch, right_batch, device)
-      raw_disp_list.append(disp_batch)
-
-    # Concatenate all batches back into a temporal tensor
-    raw_disp = np.concatenate(raw_disp_list, axis=0)
+    disp_frames = [
+        get_s2m2_disparity(left_img, right_img, device=device)
+        for left_img, right_img in tqdm(
+            zip(left_seq, right_seq), total=len(left_seq), desc=f"Depth [{cam_id}]"
+        )
+    ]
+    raw_disp = np.stack(disp_frames)
 
     fx = cam_data["K_mat"][0, 0]
     baseline = cam_data["baseline"]
     cam_data["raw_depth"] = decode_disparity_np(raw_disp, fx, baseline)
 
   return scene_constants
+
+
+@torch.inference_mode()
+def get_s2m2_disparity(img_left, img_right, device, conf_thresh=0.95):
+  """Single-frame disparity extractor (FP32).
+
+  Args:
+    img_left: np.ndarray of shape [H, W, 3] (uint8).
+    img_right: np.ndarray of shape [H, W, 3] (uint8).
+    device: torch.device to run inference on.
+    conf_thresh: Confidence threshold; pixels below are zeroed out.
+  Returns:
+    Disparity array of shape [H, W] (float32).
+  """
+  # [H, W, 3] -> [1, 3, H, W] on GPU
+  left_torch = torch.from_numpy(img_left).permute(2, 0, 1).unsqueeze(0).to(device)
+  right_torch = torch.from_numpy(img_right).permute(2, 0, 1).unsqueeze(0).to(device)
+
+  pred_disp, _, pred_conf, _, _ = run_stereo_matching(
+      s2m2_model, left_torch, right_torch, device, N_repeat=3
+  )
+
+  disp = pred_disp.cpu().numpy().squeeze()
+  conf = pred_conf.cpu().numpy().squeeze()
+
+  # Mask out low-confidence disparity pixels
+  valid_mask = (disp > 0) & (conf >= conf_thresh)
+  disp[~valid_mask] = 0.0
+
+  return disp
 
 
 # ---------------------------------------------------------------------------
@@ -703,7 +699,7 @@ if __name__ == "__main__":
   parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
   parser.add_argument("--max_frames", type=int, default=250, help="Skip episodes with more than this many frames (default: 250, -1 to disable)")
   parser.add_argument("--min_frames", type=int, default=48, help="Skip episodes with fewer than this many frames (default: 48, -1 to disable)")
-  parser.add_argument("--batch_size", type=int, default=16, help="Batch size for S2M2 stereo depth inference (default: 16)")
+
   args = parser.parse_args()
 
   print("Environment setup verified. Initializing flexible multi-GPU extractor...")
@@ -752,7 +748,7 @@ if __name__ == "__main__":
       scene_constants = parse_robot_kinematics(scene_constants)
       scene_constants = align_temporal_streams(scene_constants)
 
-      scene_constants = compute_stereo_depth_batched(scene_constants, device, batch_size=args.batch_size)
+      scene_constants = compute_stereo_depth(scene_constants, device)
 
       # --- Gripper depth refinement (wrist camera only) ---
       # Save original raw depth before injection
