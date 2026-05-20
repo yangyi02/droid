@@ -152,7 +152,7 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
   }
 
 
-def extract_svo_video(scene_constants, max_frames=250):
+def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
   """Decode SVO video, extract full stereo calibration, both rectified/unrectified frames, and timestamps."""
   print("  🎥 Fast-decoding SVO video streams and physical calibration data (including timestamps)...")
   episode_path = scene_constants["meta"]["episode_path"]
@@ -167,10 +167,14 @@ def extract_svo_video(scene_constants, max_frames=250):
     init_params.svo_real_time_mode = False
     zed.open(init_params)
 
-    # Early exit: skip episodes with too many frames before decoding anything
-    n_svo_frames = zed.get_svo_number_of_frames()
+    # --- Frame count gate (early exit before expensive decoding) ---
+    n_svo_frames = zed.get_svo_number_of_frames() - 2
     if max_frames > 0 and n_svo_frames > max_frames:
       print(f"  ⏭️ Skipping SVO [{cam}]: {n_svo_frames} frames exceeds --max_frames={max_frames}.")
+      zed.close()
+      continue
+    if min_frames > 0 and n_svo_frames < min_frames:
+      print(f"  ⏭️ Skipping SVO [{cam}]: {n_svo_frames} frames below --min_frames={min_frames}.")
       zed.close()
       continue
 
@@ -737,19 +741,9 @@ if __name__ == "__main__":
           serials_db,
           keep_ranges,
       )
-      scene_constants = extract_svo_video(scene_constants, max_frames=args.max_frames)
+      scene_constants = extract_svo_video(scene_constants, min_frames=args.min_frames, max_frames=args.max_frames)
       if not any("video_rgb" in data for data in scene_constants["camera"].values()):
         print(f"  ⚠️ No valid video streams extracted for [{ep_id}]. Skipping processing.")
-        continue
-
-      # --- Frame count gate (early exit before expensive stages) ---
-      first_cam = next(iter(scene_constants["camera"].values()))
-      n_frames = len(first_cam["video_rgb"])
-      if args.max_frames > 0 and n_frames > args.max_frames:
-        print(f"  ⏭️ Skipping episode {ep_id}: {n_frames} frames exceeds --max_frames={args.max_frames}")
-        continue
-      if args.min_frames > 0 and n_frames < args.min_frames:
-        print(f"  ⏭️ Skipping episode {ep_id}: {n_frames} frames below --min_frames={args.min_frames}")
         continue
 
       scene_constants = parse_robot_kinematics(scene_constants)
