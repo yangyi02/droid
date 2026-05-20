@@ -359,7 +359,6 @@ def decode_disparity_np(disp, fx, baseline):
   return z
 
 
-
 def compute_stereo_depth(scene_constants, device):
   """S2M2 stereo depth inference over the full video pool."""
   print("  🧠 Running S2M2 stereo depth inference (frame-by-frame)...")
@@ -708,8 +707,8 @@ if __name__ == "__main__":
   parser.add_argument("--rank", type=int, default=0, help="Rank of the process")
   parser.add_argument("--world_size", type=int, default=1, help="Total number of processes")
   parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
-  parser.add_argument("--max_frames", type=int, default=250, help="Skip episodes with more than this many frames (default: 250, -1 to disable)")
   parser.add_argument("--min_frames", type=int, default=48, help="Skip episodes with fewer than this many frames (default: 48, -1 to disable)")
+  parser.add_argument("--max_frames", type=int, default=250, help="Skip episodes with more than this many frames (default: 250, -1 to disable)")
 
   args = parser.parse_args()
 
@@ -748,7 +747,6 @@ if __name__ == "__main__":
 
       scene_constants = parse_robot_kinematics(scene_constants)
       scene_constants = align_temporal_streams(scene_constants)
-
       scene_constants = compute_stereo_depth(scene_constants, device)
 
       # --- Gripper depth refinement (wrist camera only) ---
