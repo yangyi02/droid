@@ -8,29 +8,26 @@ extrinsic matrices for all cameras.
 Pipeline:
   Stage 0: Read dataset extrinsics (if available in metadata)
   Stage 1: VGGT visual-physical chain anchoring (first frame only)
-  Stage 2a: External camera-robot arm rigid alignment
-  Stage 2b: Wrist camera-gripper body alignment
-  Stage 3: Global joint optimization (Chamfer + Robot + Wrist, lr=0.001)
-  Stage 4: Fine-tuning refinement (lr=0.0001, lower robot weight)
+  Stage 2: Unified camera-robot alignment (external + wrist in one loop)
+  Stage 3: Global joint optimization (Chamfer + Robot + Wrist)
 """
 
 import argparse
 import copy
 import fcntl
-import importlib.util
 import json
 import os
 import sys
 
 import cv2
 import numpy as np
-import pybullet as p
-import pybullet_data
 from scipy.spatial.transform import Rotation as R
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+import trimesh
 from tqdm import tqdm
+import yourdfpy
 
 
 # ---------------------------------------------------------------------------
@@ -203,180 +200,127 @@ def axis_angle_to_matrix(rot_vec):
   k = rot_vec / theta
 
   K = torch.zeros((3, 3), device=rot_vec.device)
-  K[0, 1], K[0, 2] = -k[2], k[1]
-  K[1, 0], K[1, 2] = k[2], -k[0]
-  K[2, 0], K[2, 1] = -k[1], k[0]
+  K[0, 1], K[0, 2], K[1, 0], K[1, 2], K[2, 0], K[2, 1] = -k[2], k[1], k[2], -k[0], -k[1], k[0]
 
   R_exact = torch.eye(3, device=rot_vec.device) + torch.sin(theta) * K + (1 - torch.cos(theta)) * torch.mm(K, K)
 
   K_approx = torch.zeros_like(K)
-  K_approx[0, 1], K_approx[0, 2] = -rot_vec[2], rot_vec[1]
-  K_approx[1, 0], K_approx[1, 2] = rot_vec[2], -rot_vec[0]
-  K_approx[2, 0], K_approx[2, 1] = -rot_vec[1], rot_vec[0]
-  R_approx = torch.eye(3, device=rot_vec.device) + K_approx
+  K_approx[0, 1], K_approx[0, 2], K_approx[1, 0], K_approx[1, 2], K_approx[2, 0], K_approx[2, 1] = -rot_vec[2], rot_vec[1], rot_vec[2], -rot_vec[0], -rot_vec[1], rot_vec[0]
 
-  return torch.where(theta2 < 1e-8, R_approx, R_exact)
+  return torch.where(theta2 < 1e-8, torch.eye(3, device=rot_vec.device) + K_approx, R_exact)
 
 
-def make_delta_T(delta, device):
+def make_T(delta, device):
   """Build incremental 4x4 from a 6D parameter vector."""
-  T = torch.eye(4, device=device)
-  T[:3, :3] = axis_angle_to_matrix(delta[:3])
-  T[:3, 3] = delta[3:]
-  return T
+  rot = axis_angle_to_matrix(delta[:3])
+  t = delta[3:].unsqueeze(1)
+  T_top = torch.cat([rot, t], dim=1)
+  T_bottom = torch.tensor([[0., 0., 0., 1.]], device=device, dtype=torch.float32)
+  return torch.cat([T_top, T_bottom], dim=0)
 
 
 # ---------------------------------------------------------------------------
-# 4. PyBullet Digital Twin Renderer
+# 4. yourdfpy-based Tensor Robot Renderer
 # ---------------------------------------------------------------------------
-class PyBulletRenderer_Robotiq:
-  """Dual-body physics renderer: vanilla Panda arm + Robotiq gripper ghost."""
+class TensorRobotRenderer:
+  """High-speed robot point cloud renderer using yourdfpy forward kinematics."""
 
-  # PointWorld lives in droid/third_party/PointWorld/ (next to this script)
   _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-  _DEFAULT_GHOST_URDF = os.path.join(
+  _DEFAULT_URDF = os.path.join(
       _SCRIPT_DIR, "third_party", "PointWorld", "assets", "franka_description",
       "franka_panda_robotiq_2f85_og.urdf",
   )
 
-  def __init__(self, ghost_urdf=None):
-    if ghost_urdf is None:
-      ghost_urdf = self._DEFAULT_GHOST_URDF
-    if p.isConnected():
-      p.disconnect()
-    p.connect(p.DIRECT)
-    p.setAdditionalSearchPath(pybullet_data.getDataPath())
+  def __init__(self, urdf_path=None, device="cuda", total_samples=100000):
+    if urdf_path is None:
+      urdf_path = self._DEFAULT_URDF
+    self.device = device
+    self.dtype = torch.float32
+    self.total_samples = total_samples
+    print(f"⚡ [TensorRobotRenderer] Loading yourdfpy model from {urdf_path}...")
+    self.robot = yourdfpy.URDF.load(urdf_path)
 
-    plugin_id = -1
-    try:
-      if importlib.util.find_spec("eglRendererPlugin"):
-        print("  🔍 Found eglRendererPlugin via spec, attempting to load...")
-        plugin_id = p.loadPlugin(
-            importlib.util.find_spec("eglRendererPlugin").origin,
-            "_eglRendererPlugin",
-        )
-      else:
-        print("  � eglRendererPlugin not found via spec, trying direct load...")
-        plugin_id = p.loadPlugin("eglRendererPlugin")
-    except Exception as e:
-      print(f"  ⚠️ EGL plugin check/load raised exception: {e}")
+    self.mesh_points = {}
+    self.world_points_cache = {}
 
-    if plugin_id >= 0:
-      print(f"  🔌 PyBullet EGL plugin loaded successfully! (ID: {plugin_id})")
-    else:
-      print("  ⚠️ WARNING: Failed to load eglRendererPlugin! Falling back to slow TinyRenderer.")
-
-    # Body: vanilla Panda arm (hide hand/finger)
-    self.robot_id = p.loadURDF("franka_panda/panda.urdf", useFixedBase=True)
-    self.arm_joints = [
-        i for i in range(p.getNumJoints(self.robot_id))
-        if "panda_joint" in p.getJointInfo(self.robot_id, i)[1].decode("utf-8")
-        and p.getJointInfo(self.robot_id, i)[2] != p.JOINT_FIXED
-    ]
-
-    self.hidden_robot_links = []
-    for i in range(-1, p.getNumJoints(self.robot_id)):
-      name = (
-          p.getBodyInfo(self.robot_id)[0].decode("utf-8")
-          if i == -1
-          else p.getJointInfo(self.robot_id, i)[12].decode("utf-8")
-      )
-      if "hand" in name or "finger" in name:
-        p.changeVisualShape(self.robot_id, i, rgbaColor=[0, 0, 0, 0])
-        self.hidden_robot_links.append(i)
-
-    # Ghost: PointWorld arm with Robotiq gripper
-    self.ghost_id = p.loadURDF(ghost_urdf, useFixedBase=True)
-    self.ghost_arm_joints = [
-        i for i in range(p.getNumJoints(self.ghost_id))
-        if "panda_joint" in p.getJointInfo(self.ghost_id, i)[1].decode("utf-8")
-        and p.getJointInfo(self.ghost_id, i)[2] != p.JOINT_FIXED
-    ]
-
-    self.gripper_joints = []
+    # Parse gripper joint names and kinematic mirror signs
+    self.gripper_joint_names = []
     self.gripper_signs = []
+    for joint_name, joint in self.robot.joint_map.items():
+      if joint.type != 'fixed' and 'panda_joint' not in joint_name:
+        self.gripper_joint_names.append(joint_name)
+        base_sign = -1 if 'right' in joint_name else 1
+        self.gripper_signs.append(
+            base_sign * (-1 if any(k in joint_name for k in ['inner_finger', 'follower', 'finger_tip']) else 1)
+        )
 
-    for i in range(p.getNumJoints(self.ghost_id)):
-      info = p.getJointInfo(self.ghost_id, i)
-      joint_name = info[1].decode("utf-8")
-      joint_type = info[2]
+  def _sample_mesh(self):
+    """Pre-sample mesh surface points and face normals."""
+    node_names, mesh_objs, mesh_areas = [], [], []
+    for node_name in self.robot.scene.graph.nodes_geometry:
+      _, geom_name = self.robot.scene.graph[node_name]
+      mesh = self.robot.scene.geometry.get(geom_name)
+      if mesh is None or mesh.area <= 0:
+        continue
+      area = mesh.area * (0.0001 if any(k in geom_name.lower() for k in ['hand_camera', 'camera']) else 1.0)
+      node_names.append(node_name)
+      mesh_objs.append(mesh)
+      mesh_areas.append(area)
 
-      if joint_type != p.JOINT_FIXED and "panda_joint" not in joint_name:
-        self.gripper_joints.append(i)
-        base_sign = -1 if "right" in joint_name else 1
-        if "inner_finger" in joint_name or "follower" in joint_name or "finger_tip" in joint_name:
-          self.gripper_signs.append(base_sign * -1)
-        else:
-          self.gripper_signs.append(base_sign)
-
-    self.hidden_ghost_links = []
-    for i in range(-1, p.getNumJoints(self.ghost_id)):
-      name = (
-          p.getBodyInfo(self.ghost_id)[0].decode("utf-8")
-          if i == -1
-          else p.getJointInfo(self.ghost_id, i)[12].decode("utf-8")
+    total_area = sum(mesh_areas)
+    for name, mesh, area in zip(node_names, mesh_objs, mesh_areas):
+      count = max(100, int(self.total_samples * area / total_area))
+      pts, face_idx = trimesh.sample.sample_surface(mesh, count)
+      self.mesh_points[name] = torch.tensor(
+          np.hstack([pts, mesh.face_normals[face_idx]]),
+          dtype=self.dtype, device=self.device,
       )
-      if "panda_link" in name:
-        p.changeVisualShape(self.ghost_id, i, rgbaColor=[0, 0, 0, 0])
-        self.hidden_ghost_links.append(i)
 
-  def _get_projection_matrix(self, intrinsics, width, height):
-    fx, fy = intrinsics[0, 0], intrinsics[1, 1]
-    cx, cy = intrinsics[0, 2], intrinsics[1, 2]
-    near, far = 0.01, 10.0
-    return [
-        2.0 * fx / width, 0.0, 0.0, 0.0,
-        0.0, 2.0 * fy / height, 0.0, 0.0,
-        1.0 - 2.0 * cx / width, 2.0 * cy / height - 1.0,
-        (far + near) / (near - far), -1.0,
-        0.0, 0.0, 2.0 * far * near / (near - far), 0.0,
-    ]
-
-  def update_robot_pose(self, joint_angles, gripper_state=None, gripper_width_offset=0.08):
-    for i, angle in zip(self.arm_joints, joint_angles):
-      p.resetJointState(self.robot_id, i, angle)
-    for i, angle in zip(self.ghost_arm_joints, joint_angles):
-      p.resetJointState(self.ghost_id, i, angle)
-
-    if gripper_state is not None and len(self.gripper_joints) > 0:
-      raw_val = gripper_state[0] if isinstance(gripper_state, (list, np.ndarray)) else gripper_state
-      raw_val = np.clip(raw_val, 0.0, 1.0)
-      max_urdf_radian = 0.8028
-      angle = (raw_val * max_urdf_radian) - gripper_width_offset
-
-      for i, sign in zip(self.gripper_joints, self.gripper_signs):
-        p.resetJointState(self.ghost_id, i, angle * sign)
-
-    p.performCollisionDetection()
-
-  def render_depth(self, extrinsics, intrinsics, width, height):
-    cam_pos = extrinsics[:3, 3]
-    target_pos = extrinsics[:3, 3] + extrinsics[:3, 2]
-    view_matrix = p.computeViewMatrix(cam_pos, target_pos, -extrinsics[:3, 1])
-    proj_matrix = self._get_projection_matrix(intrinsics, width, height)
-    _, _, _, depth_buffer, _ = p.getCameraImage(
-        width, height, viewMatrix=view_matrix, projectionMatrix=proj_matrix,
-        renderer=p.ER_BULLET_HARDWARE_OPENGL,
+  def get_world_points(self, joint_positions, gripper_state, only_gripper=False, num_points=None):
+    """Return world-frame 3D points with normals as (N, 6) tensor."""
+    cache_key = tuple(
+        np.round(joint_positions, 4).tolist()
+        + [round(float(gripper_state), 4), int(only_gripper), num_points]
     )
-    metric_depth = 0.1 / (10.0 - 9.99 * np.reshape(depth_buffer, (height, width)))
-    return np.where(metric_depth < 9.9, metric_depth, 0.0)
+    if cache_key in self.world_points_cache:
+      return self.world_points_cache[cache_key]
 
-  def render_mask(self, extrinsics, intrinsics, width, height):
-    cam_pos = extrinsics[:3, 3]
-    target_pos = extrinsics[:3, 3] + extrinsics[:3, 2]
-    view_matrix = p.computeViewMatrix(cam_pos, target_pos, -extrinsics[:3, 1])
-    proj_matrix = self._get_projection_matrix(intrinsics, width, height)
-    _, _, _, _, seg_buffer = p.getCameraImage(
-        width, height, viewMatrix=view_matrix, projectionMatrix=proj_matrix,
-        renderer=p.ER_BULLET_HARDWARE_OPENGL,
-        flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
-    )
-    seg_array = np.reshape(seg_buffer, (height, width)).astype(np.int32)
-    obj_ids = seg_array & 0xFFFFFF
-    link_ids = (seg_array >> 24) - 1
-    valid_robot = (obj_ids == self.robot_id) & ~np.isin(link_ids, self.hidden_robot_links)
-    valid_ghost = (obj_ids == self.ghost_id) & ~np.isin(link_ids, self.hidden_ghost_links)
-    return valid_robot | valid_ghost
+    # Assemble joint configuration
+    cfg = {f'panda_joint{i+1}': float(joint_positions[i]) for i in range(7)}
+    angle = (np.clip(float(gripper_state), 0.0, 1.0) * 0.8028) - 0.08
+    for j_name, sign in zip(self.gripper_joint_names, self.gripper_signs):
+      cfg[j_name] = angle * sign
+
+    self.robot.update_cfg(cfg)
+    if not self.mesh_points:
+      self._sample_mesh()
+
+    all_pts = []
+    gripper_keywords = ['hand', 'link8', 'robotiq', 'finger', 'knuckle', 'follower', 'pad', 'inner', 'outer']
+
+    for node_name, local_data in self.mesh_points.items():
+      if only_gripper and not any(k in node_name.lower() for k in gripper_keywords):
+        continue
+
+      local_pts, local_normals = local_data[:, :3], local_data[:, 3:]
+      pose = torch.tensor(self.robot.scene.graph[node_name][0], dtype=self.dtype, device=self.device)
+
+      pts_h = torch.cat([local_pts, torch.ones((local_pts.shape[0], 1), device=self.device, dtype=self.dtype)], dim=1)
+      world_pts = torch.mm(pts_h, pose.T)[:, :3]
+      world_normals = torch.mm(local_normals, pose[:3, :3].T)
+
+      all_pts.append(torch.cat([world_pts, world_normals], dim=1))
+
+    if not all_pts:
+      return None
+    out_pts = torch.cat(all_pts, dim=0)
+
+    # Random subsample if requested
+    if num_points is not None and out_pts.shape[0] > num_points:
+      out_pts = out_pts[torch.randperm(out_pts.shape[0], device=self.device)[:num_points]]
+
+    self.world_points_cache[cache_key] = out_pts
+    return out_pts
 
 
 # ---------------------------------------------------------------------------
@@ -511,314 +455,136 @@ def vggt_warmup_extrinsics(scene_constants, vggt_model, load_fn, pose_fn, device
 
 
 # ---------------------------------------------------------------------------
-# 8. Stage 2a: External Camera – Robot Arm Alignment
+# 8. Shared Loss & Data Factory
 # ---------------------------------------------------------------------------
-def get_foreground_robot_points(T_init, K, obs_depth, pb_renderer, max_pts, device):
-  """Extract robot foreground point cloud from rendered depth."""
-  h_img, w_img = obs_depth.shape
-  render_d = pb_renderer.render_depth(T_init, K, w_img, h_img)
-
-  v_r, u_r = np.where(render_d > 0)
-  z_r = render_d[v_r, u_r]
-
-  if len(z_r) < max_pts:
-    return None
-
-  P_cam_r = np.stack([
-      (u_r - K[0, 2]) * z_r / K[0, 0],
-      (v_r - K[1, 2]) * z_r / K[1, 1],
-      z_r,
-      np.ones_like(z_r),
-  ])
-  pts_robot_world = (T_init @ P_cam_r)[:3, :].T
-
-  idx = np.random.choice(len(pts_robot_world), max_pts, replace=(len(pts_robot_world) < max_pts))
-  return torch.tensor(pts_robot_world[idx], dtype=torch.float32, device=device)
-
-
-def compute_robot_loss_batched(batch_X, T_opt, K, batch_obs):
-  """Batched depth re-projection loss for robot body points."""
+def compute_robot_loss(batch_X_base, T_cam_to_base, K, batch_obs, depth_tolerance):
+  """Unified depth re-projection loss with normals, front-face culling, and tolerance."""
   B, _, h_img, w_img = batch_obs.shape
 
-  P_c = (batch_X - T_opt[:3, 3]) @ T_opt[:3, :3]
-  Z_pred = P_c[..., 2]
+  T_base_to_cam = torch.linalg.inv(T_cam_to_base)
+  rot, t = T_base_to_cam[:3, :3], T_base_to_cam[:3, 3]
+
+  pts_base, normals_base = batch_X_base[..., :3], batch_X_base[..., 3:]
+
+  P_c = pts_base @ rot.T + t
+  Z_pred = P_c[..., 2].clamp(min=1e-4)
+
+  # Front-face culling via normal dot product
+  normals_c = normals_base @ rot.T
+  front_facing = (normals_c * P_c).sum(dim=-1) < 0
 
   u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
   v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
 
-  grid = torch.stack([
-      (u / (w_img - 1)) * 2 - 1,
-      (v / (h_img - 1)) * 2 - 1,
-  ], dim=-1).unsqueeze(1)
-  Z_obs_raw = F.grid_sample(
-      batch_obs, grid, mode="bilinear", padding_mode="border", align_corners=True,
-  ).squeeze(1).squeeze(1)
+  grid = torch.stack([(u / (w_img - 1)) * 2 - 1, (v / (h_img - 1)) * 2 - 1], dim=-1).unsqueeze(1)
+  Z_obs = F.grid_sample(batch_obs, grid, mode="bilinear", padding_mode="border", align_corners=True).squeeze(1).squeeze(1)
 
-  valid_mask = (
-      (Z_pred > 0.) & (Z_pred < 1.5) & (Z_obs_raw > 0.) & (Z_obs_raw < 1.5) &
-      (u >= 0) & (u < w_img - 1) & (v >= 0) & (v < h_img - 1)
-  )
+  diff = torch.abs(Z_obs - Z_pred)
+  valid = (Z_pred > 0.) & (Z_obs > 0.) & \
+          (u >= 0) & (u < w_img - 1) & (v >= 0) & (v < h_img - 1) & \
+          front_facing & (diff < depth_tolerance)
 
-  diff = torch.abs(Z_obs_raw[valid_mask] - Z_pred[valid_mask])
-  return torch.nan_to_num(diff.mean(), nan=0.0)
+  return torch.nan_to_num(diff[valid].mean(), nan=0.0)
 
 
-def run_robot_alignment(scene_constants, pb_renderer, device,
-                               init_scene_state=None, vggt_scene_state=None):
-  """Stage 2a: Dual-base competition alignment for external cameras.
+def extract_robot_physical_tensors(cam_id, scene_constants, tensor_renderer):
+  """One-shot physical tensor extraction factory for any camera.
 
-  Tries both VGGT and dataset-init extrinsics (if available), optimizes each
-  independently, and selects the result with the lowest robot alignment loss.
+  For external cameras: returns CAD points in world frame with normals.
+  For wrist camera: transforms CAD gripper points into EE frame.
   """
-  OUTER_LOOPS = 5
-  INNER_LOOPS = 100
-  MAX_ROBOT_PTS = 2000
-  MAX_ALIGN_FRAMES = 100
+  device = tensor_renderer.device
+  is_wrist = (cam_id == scene_constants['meta']['wrist_serial'])
+  n_frames = len(scene_constants['camera'][cam_id]['raw_depth'])
+  T_ee_base_all = scene_constants['robot']['T_ee_base_all']
 
-  print("\n🦾 Stage 2a: External camera-robot arm alignment (dual-base competition)...")
+  cache_X, cache_obs = [], []
+  for t in range(n_frames):
+    joints = scene_constants['robot']['joint_positions'][t]
+    gripper = scene_constants['robot']['gripper_positions'][t]
+    d_obs = scene_constants['camera'][cam_id]['raw_depth'][t].astype(np.float32)
 
-  ext_cams = [c for c in scene_constants["camera"].keys() if c != scene_constants["meta"]["wrist_serial"]]
-  n_frames = len(scene_constants["robot"]["joint_positions"])
+    cad_pts_world = tensor_renderer.get_world_points(joints, gripper, only_gripper=is_wrist)
+    if cad_pts_world is None:
+      continue
 
-  has_init = init_scene_state is not None
-  pybullet_scene_state = copy.deepcopy(init_scene_state if has_init else vggt_scene_state)
+    if is_wrist:
+      # Transform world points into EE frame for hand-eye optimization
+      T_world_to_ee = torch.linalg.inv(torch.tensor(T_ee_base_all[t], dtype=torch.float32, device=device))
+      pts_w_h = torch.cat([cad_pts_world[:, :3], torch.ones((cad_pts_world.shape[0], 1), device=device)], dim=1)
+      pts_base = (T_world_to_ee @ pts_w_h.T).T[:, :3]
+      normals_base = (T_world_to_ee[:3, :3] @ cad_pts_world[:, 3:].T).T
+      cache_X.append(torch.cat([pts_base, normals_base], dim=-1))
+    else:
+      cache_X.append(cad_pts_world)
 
-  def optimize_camera_with_base(cam_id, base_extrinsic):
-    """Optimize a single camera from a given base extrinsic. Returns (T_final, loss, shift_mm)."""
-    T_init_t = torch.tensor(base_extrinsic, dtype=torch.float32, device=device)
-    K_t = torch.tensor(scene_constants["camera"][cam_id]["K_mat"], dtype=torch.float32, device=device)
-    K_np = scene_constants["camera"][cam_id]["K_mat"]
+    cache_obs.append(torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
+
+  if not cache_X:
+    return None, None
+  return torch.stack(cache_X), torch.stack(cache_obs)
+
+
+# ---------------------------------------------------------------------------
+# 9. Stage 2: Unified Camera-Robot Alignment (external + wrist)
+# ---------------------------------------------------------------------------
+def run_stage2_alignment(scene_constants, tensor_renderer, stage1_scene_state):
+  """Unified Stage 2: optimize all cameras against robot body/gripper depth."""
+  print("\n🦾 Stage 2: Unified camera-robot alignment (external + wrist)...")
+  device = tensor_renderer.device
+  wrist_cam = scene_constants['meta']['wrist_serial']
+  stage2_scene_state = copy.deepcopy(stage1_scene_state)
+  T_ee_base_all = scene_constants['robot']['T_ee_base_all']
+
+  for cam in scene_constants['camera'].keys():
+    is_wrist = (cam == wrist_cam)
+    mode = "wrist (gripper-only)" if is_wrist else "external (full body)"
+    print(f"\n  📷 Optimizing [{mode}] camera: [{cam}] ...")
+
+    # Extract physical tensors from shared factory
+    batch_X_base, batch_obs = extract_robot_physical_tensors(cam, scene_constants, tensor_renderer)
+    if batch_X_base is None:
+      print(f"    ⚠️ No valid physical point cloud extracted! Skipping.")
+      continue
+
+    n_frames_total = len(batch_X_base)
+    K_t = torch.tensor(scene_constants['camera'][cam]['K_mat'], dtype=torch.float32, device=device)
+    T_init_t = torch.tensor(stage1_scene_state[cam]['base_extrinsic'], dtype=torch.float32, device=device)
 
     d_ext = torch.zeros(6, requires_grad=True, device=device)
+    total_steps = 500
     optimizer = optim.Adam([d_ext], lr=0.001)
-    final_loss = float("inf")
 
-    for outer_step in range(OUTER_LOOPS):
-      with torch.no_grad():
-        T_cur_np = (T_init_t @ make_delta_T(d_ext, device)).cpu().numpy()
-
-      cache_X, cache_obs = [], []
-
-      # 🌟 核心：每轮 outer_loop 都随机大洗牌，选取不重复的随机帧
-      if n_frames > MAX_ALIGN_FRAMES:
-        sampled_indices = np.random.choice(n_frames, MAX_ALIGN_FRAMES, replace=False)
-      else:
-        sampled_indices = np.arange(n_frames)
-
-      # 🌟 遍历随机出来的帧（排个序能让读取略微连续一些）
-      for t in sorted(sampled_indices):
-        pb_renderer.update_robot_pose(scene_constants["robot"]["joint_positions"][t])
-        d_obs = scene_constants["camera"][cam_id]["raw_depth"][t].astype(np.float32)
-        r_pts_t = get_foreground_robot_points(T_cur_np, K_np, d_obs, pb_renderer, MAX_ROBOT_PTS, device)
-
-        if r_pts_t is not None:
-          cache_X.append(r_pts_t)
-          cache_obs.append(torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
-
-      if not cache_X:
-        continue
-
-      batch_X = torch.stack(cache_X)
-      batch_obs = torch.stack(cache_obs)
-
-      for inner_step in range(INNER_LOOPS):
-        optimizer.zero_grad()
-        loss_rob = compute_robot_loss_batched(batch_X, T_init_t @ make_delta_T(d_ext, device), K_t, batch_obs)
-        loss_rob.backward()
-        optimizer.step()
-        final_loss = loss_rob.item()
-
-        if inner_step % 50 == 0 or inner_step == INNER_LOOPS - 1:
-          print(f"      Outer {outer_step+1}/{OUTER_LOOPS} | Inner {inner_step:03d} | Robot Loss: {final_loss:.4f}")
-
-    with torch.no_grad():
-      T_final_np = (T_init_t @ make_delta_T(d_ext, device)).cpu().numpy()
-      shift_mm = np.linalg.norm(d_ext[3:].detach().cpu().numpy()) * 1000
-
-    return T_final_np, final_loss, shift_mm
-
-  for cam in ext_cams:
-    print(f"\n  📷 Optimizing external camera: [{cam}] ...")
-
-    # Build candidate pool
-    base_candidates = [("VGGT", vggt_scene_state[cam]["base_extrinsic"])]
-    if has_init and init_scene_state[cam]["base_extrinsic"] is not None:
-      base_candidates.append(("Dataset Init", init_scene_state[cam]["base_extrinsic"]))
-
-    best_loss = float("inf")
-    best_T = None
-    best_source_name = None
-    best_shift = 0.0
-
-    for source_name, base_ext in base_candidates:
-      print(f"    → 🔄 Trying [{source_name}] base:")
-      T_res, loss_res, shift_res = optimize_camera_with_base(cam, base_ext)
-
-      if loss_res < best_loss:
-        best_loss = loss_res
-        best_T = T_res
-        best_source_name = source_name
-        best_shift = shift_res
-
-    print(f"  ✅ [{cam}] Alignment done! Best base: {best_source_name}, Loss: {best_loss:.4f} (shift: {best_shift:.2f}mm)")
-
-    pybullet_scene_state[cam]["base_extrinsic"] = best_T
-    pybullet_scene_state[cam]["extrinsics"] = np.tile(best_T, (n_frames, 1, 1))
-
-  return pybullet_scene_state
-
-
-# ---------------------------------------------------------------------------
-# 9. Stage 2b: Wrist Camera – Gripper Body Alignment
-# ---------------------------------------------------------------------------
-def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer, max_pts):
-  """Extract gripper-only point cloud via PyBullet segmentation mask."""
-  h_img, w_img = obs_depth.shape
-  cam_pos = T_cam_world[:3, 3]
-  target_pos = T_cam_world[:3, 3] + T_cam_world[:3, 2]
-
-  view_matrix = p.computeViewMatrix(cam_pos, target_pos, -T_cam_world[:3, 1])
-  proj_matrix = pb_renderer._get_projection_matrix(K, w_img, h_img)
-
-  _, _, _, depth_buffer, seg_buffer = p.getCameraImage(
-      w_img, h_img, viewMatrix=view_matrix, projectionMatrix=proj_matrix,
-      renderer=p.ER_BULLET_HARDWARE_OPENGL,
-      flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
-  )
-
-  metric_depth = 0.1 / (10.0 - 9.99 * np.reshape(depth_buffer, (h_img, w_img)))
-  seg_array = np.reshape(seg_buffer, (h_img, w_img)).astype(np.int32)
-  obj_ids = seg_array & 0xFFFFFF
-
-  valid_ghost = obj_ids == pb_renderer.ghost_id
-  v_r, u_r = np.where((metric_depth < 9.9) & valid_ghost)
-  z_r = metric_depth[v_r, u_r]
-
-  if len(z_r) < 100:
-    return None
-
-  P_cam_r = np.stack([
-      (u_r - K[0, 2]) * z_r / K[0, 0],
-      (v_r - K[1, 2]) * z_r / K[1, 1],
-      z_r,
-      np.ones_like(z_r),
-  ])
-
-  idx = np.random.choice(len(z_r), max_pts, replace=(len(z_r) < max_pts))
-  return P_cam_r[:, idx]
-
-
-def compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K, batch_obs):
-  """Batched depth re-projection loss for wrist gripper points anchored in EE frame."""
-  B, _, h_img, w_img = batch_obs.shape
-
-  T_ee_cam = torch.linalg.inv(T_cam_ee_opt)
-  P_c = batch_P_ee @ T_ee_cam[:3, :3].T + T_ee_cam[:3, 3]
-  Z_pred = P_c[..., 2]
-
-  u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
-  v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
-
-  grid = torch.stack([
-      (u / (w_img - 1)) * 2 - 1,
-      (v / (h_img - 1)) * 2 - 1,
-  ], dim=-1).unsqueeze(1)
-  Z_obs_raw = F.grid_sample(
-      batch_obs, grid, mode="bilinear", padding_mode="border", align_corners=True,
-  ).squeeze(1).squeeze(1)
-
-  valid_mask = (
-      (Z_pred > 0.) & (Z_pred < 1.5) & (Z_obs_raw > 0.) & (Z_obs_raw < 1.5) &
-      (u >= 0) & (u < w_img - 1) & (v >= 0) & (v < h_img - 1)
-  )
-
-  diff = torch.abs(Z_obs_raw[valid_mask] - Z_pred[valid_mask])
-  return torch.nan_to_num(diff.mean(), nan=0.0)
-
-
-def run_wrist_alignment(scene_constants, init_scene_state, pb_renderer, device):
-  """Stage 2b: Optimize wrist camera hand-eye calibration via gripper body alignment."""
-  OUTER_LOOPS = 5
-  INNER_LOOPS = 100
-  MAX_ROBOT_PTS = 2000
-  MAX_ALIGN_FRAMES = 100
-
-  print("\n🦾 Stage 2b: Wrist camera-gripper body alignment...")
-
-  wrist_cam = scene_constants["meta"]["wrist_serial"]
-  n_frames = len(scene_constants["robot"]["joint_positions"])
-
-  pybullet_scene_state = copy.deepcopy(init_scene_state)
-
-  T_cam_ee_init_np = init_scene_state[wrist_cam]["base_extrinsic"]
-  T_cam_ee_init_t = torch.tensor(T_cam_ee_init_np, dtype=torch.float32, device=device)
-
-  K_np = scene_constants["camera"][wrist_cam]["K_mat"]
-  K_t = torch.tensor(K_np, dtype=torch.float32, device=device)
-  T_ee_base_all = scene_constants["robot"]["T_ee_base_all"]
-
-  d_ext = torch.zeros(6, requires_grad=True, device=device)
-  optimizer = optim.Adam([d_ext], lr=0.001)
-
-  for outer_step in range(OUTER_LOOPS):
-    with torch.no_grad():
-      T_cam_ee_np = (T_cam_ee_init_t @ make_delta_T(d_ext, device)).cpu().numpy()
-
-    cache_P_ee, cache_obs = [], []
-
-    # 🌟 核心：每轮 outer_loop 都随机选取不重复的随机帧
-    if n_frames > MAX_ALIGN_FRAMES:
-      sampled_indices = np.random.choice(n_frames, MAX_ALIGN_FRAMES, replace=False)
-    else:
-      sampled_indices = np.arange(n_frames)
-
-    for t in sorted(sampled_indices):
-      pb_renderer.update_robot_pose(
-          scene_constants["robot"]["joint_positions"][t],
-          gripper_state=scene_constants["robot"]["gripper_positions"][t],
-      )
-
-      T_cam_world_np = T_ee_base_all[t] @ T_cam_ee_np
-      d_obs = scene_constants["camera"][wrist_cam]["raw_depth"][t].astype(np.float32)
-
-      P_cam_r = get_foreground_gripper_points(T_cam_world_np, K_np, d_obs, pb_renderer, MAX_ROBOT_PTS)
-
-      if P_cam_r is not None:
-        P_ee_r = (T_cam_ee_np @ P_cam_r)[:3, :].T
-        cache_P_ee.append(torch.tensor(P_ee_r, dtype=torch.float32, device=device))
-        cache_obs.append(torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
-
-    if not cache_P_ee:
-      print(f"    ⚠️ No valid gripper points found!")
-      break
-
-    batch_P_ee = torch.stack(cache_P_ee)
-    batch_obs = torch.stack(cache_obs)
-
-    for inner_step in range(INNER_LOOPS):
+    print(f"      Launching GPU tensor gradient descent ({total_steps} steps)...")
+    for step in range(total_steps):
       optimizer.zero_grad()
-
-      T_cam_ee_opt = T_cam_ee_init_t @ make_delta_T(d_ext, device)
-      loss_rob = compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K_t, batch_obs)
+      T_cam_to_base = T_init_t @ make_T(d_ext, device)
+      loss_rob = compute_robot_loss(
+          batch_X_base, T_cam_to_base, K_t, batch_obs,
+          depth_tolerance=float('inf') if is_wrist else 0.15,
+      )
       loss_rob.backward()
       optimizer.step()
 
-      if inner_step % 50 == 0 or inner_step == INNER_LOOPS - 1:
+      if step % 50 == 0 or step == total_steps - 1:
         with torch.no_grad():
           rot_deg = torch.norm(d_ext[:3]).item() * (180.0 / np.pi)
           shift_mm = torch.norm(d_ext[3:]).item() * 1000.0
-        print(f"    Outer {outer_step+1}/{OUTER_LOOPS} | Inner {inner_step:03d} | Wrist Loss: {loss_rob.item():.4f} | Shift: {shift_mm:.2f}mm | Rot: {rot_deg:.2f}°")
+        print(f"        Step {step:03d} | Loss: {loss_rob.item():.4f} | Shift: {shift_mm:.2f}mm | Rot: {rot_deg:.2f}°")
 
-  with torch.no_grad():
-    T_cam_ee_final = (T_cam_ee_init_t @ make_delta_T(d_ext, device)).cpu().numpy()
-    shift_mm = torch.norm(d_ext[3:]).item() * 1000.0
-    rot_deg = torch.norm(d_ext[:3]).item() * (180.0 / np.pi)
-    print(f"  ✅ [Wrist: {wrist_cam}] Hand-eye calibration converged! Shift: {shift_mm:.2f}mm, Rot: {rot_deg:.2f}°")
+    with torch.no_grad():
+      T_final_np = (T_init_t @ make_T(d_ext, device)).cpu().numpy()
+      shift_mm = torch.norm(d_ext[3:]).item() * 1000.0
+      rot_deg = torch.norm(d_ext[:3]).item() * (180.0 / np.pi)
+      print(f"  ✅ [{cam}] Alignment done! Loss: {loss_rob.item():.4f} (shift: {shift_mm:.2f}mm, rot: {rot_deg:.2f}°)")
 
-    pybullet_scene_state[wrist_cam]["base_extrinsic"] = T_cam_ee_final
-    pybullet_scene_state[wrist_cam]["extrinsics"] = T_ee_base_all @ T_cam_ee_final
+      stage2_scene_state[cam]['base_extrinsic'] = T_final_np
+      stage2_scene_state[cam]['extrinsics'] = (
+          T_ee_base_all @ T_final_np if is_wrist
+          else np.tile(T_final_np, (n_frames_total, 1, 1))
+      )
 
-  return pybullet_scene_state
+  return stage2_scene_state
 
 
 # ---------------------------------------------------------------------------
@@ -843,8 +609,8 @@ def batched_chamfer_distance(p1, p2, device):
   return loss, overlap_ratio.item()
 
 
-def get_cam_points_t(t, cam_data, device):
-  """Extract full-scene point cloud from a single depth frame."""
+def get_cam_points_local_t(t, cam_data, device):
+  """Extract downsampled scene point cloud from a single depth frame."""
   depth = cam_data["raw_depth"][t].astype(np.float32)
   K_mat_np = cam_data["K_mat"]
 
@@ -858,129 +624,84 @@ def get_cam_points_t(t, cam_data, device):
   y_c = (vs - K_mat_np[1, 2]) * zs_obs / K_mat_np[1, 1]
 
   P_cam = np.stack([x_c, y_c, zs_obs, np.ones_like(zs_obs)], axis=0)
-
   if P_cam.shape[1] < 100:
     return None
-  if P_cam.shape[1] > 2000:
-    idx = np.random.choice(P_cam.shape[1], 2000, replace=False)
-  else:
-    idx = np.random.choice(P_cam.shape[1], 2000, replace=True)
 
+  idx = np.random.choice(P_cam.shape[1], 2000, replace=(P_cam.shape[1] <= 2000))
   return torch.tensor(P_cam[:, idx], dtype=torch.float32, device=device)
 
 
-def _run_joint_alignment(scene_constants, prev_scene_state, pb_renderer, device,
-                         lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3"):
-  """Shared joint optimization engine for Stage 3 and Stage 4."""
+def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_renderer,
+                                lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3"):
+  """Global joint optimization: Chamfer environment stitching + Robot depth + Wrist depth."""
   print(f"\n🌍 {stage_name}: Global joint optimization (Chamfer + Robot + Wrist, lr={lr})...")
-
-  camera_ids = list(scene_constants["camera"].keys())
-  wrist_cam = scene_constants["meta"]["wrist_serial"]
-  ext_cams = [c for c in camera_ids if c != wrist_cam]
+  device = tensor_renderer.device
+  wrist_cam = scene_constants['meta']['wrist_serial']
+  ext_cams = [c for c in scene_constants['camera'].keys() if c != wrist_cam]
   cam1, cam2 = ext_cams[0], ext_cams[1]
+  n_frames = len(scene_constants['robot']['joint_positions'])
+  T_ee_all = scene_constants['robot']['T_ee_base_all']
 
-  n_frames = len(scene_constants["robot"]["joint_positions"])
-  robot_joints_seq = scene_constants["robot"]["joint_positions"]
-  gripper_states_seq = scene_constants["robot"]["gripper_positions"]
+  # Extract robot physical tensors from shared factory
+  print(f"  🔍 Extracting robot physical tensor caches...")
+  batch_X1, batch_obs1 = extract_robot_physical_tensors(cam1, scene_constants, tensor_renderer)
+  batch_X2, batch_obs2 = extract_robot_physical_tensors(cam2, scene_constants, tensor_renderer)
+  batch_P_ee, batch_obs_w = extract_robot_physical_tensors(wrist_cam, scene_constants, tensor_renderer)
 
-  def to_t(arr):
-    return torch.tensor(arr, dtype=torch.float32, device=device)
+  # Extract Chamfer environment point clouds
+  print(f"  🔍 Extracting Chamfer environment point clouds...")
+  cache_Pc1, cache_Pc2, cache_Pcw, cache_Tee = [], [], [], []
 
-  T_ee_all = scene_constants["robot"]["T_ee_base_all"]
+  for t in range(n_frames):
+    pc1 = get_cam_points_local_t(t, scene_constants['camera'][cam1], device)
+    pc2 = get_cam_points_local_t(t, scene_constants['camera'][cam2], device)
+    pcw = get_cam_points_local_t(t, scene_constants['camera'][wrist_cam], device)
 
-  T_cam_ee_init = prev_scene_state[wrist_cam]["base_extrinsic"]
-  init_p1 = prev_scene_state[cam1]["base_extrinsic"]
-  init_p2 = prev_scene_state[cam2]["base_extrinsic"]
+    if pc1 is not None and pc2 is not None and pcw is not None:
+      cache_Pc1.append(pc1)
+      cache_Pc2.append(pc2)
+      cache_Pcw.append(pcw)
+      cache_Tee.append(torch.tensor(T_ee_all[t], dtype=torch.float32, device=device))
 
-  K_np1 = scene_constants["camera"][cam1]["K_mat"]
-  K_np2 = scene_constants["camera"][cam2]["K_mat"]
-  K_np_w = scene_constants["camera"][wrist_cam]["K_mat"]
-  K_t1, K_t2, K_t_w = to_t(K_np1), to_t(K_np2), to_t(K_np_w)
-
-  # Pre-compute caches
-  cache_P1, cache_P2, cache_Pw, cache_Tee = [], [], [], []
-  cache_X1, cache_obs1, cache_X2, cache_obs2 = [], [], [], []
-  cache_P_ee, cache_obs_w = [], []
-
-  print(f"  🔍 Pre-computing point clouds for {n_frames} frames...")
-  for t in tqdm(range(n_frames), desc="Caching"):
-    # Chamfer environment points
-    p1 = get_cam_points_t(t, scene_constants["camera"][cam1], device)
-    p2 = get_cam_points_t(t, scene_constants["camera"][cam2], device)
-    pw = get_cam_points_t(t, scene_constants["camera"][wrist_cam], device)
-    if p1 is not None and p2 is not None and pw is not None:
-      cache_P1.append(p1)
-      cache_P2.append(p2)
-      cache_Pw.append(pw)
-      cache_Tee.append(to_t(T_ee_all[t]))
-
-    pb_renderer.update_robot_pose(robot_joints_seq[t], gripper_state=gripper_states_seq[t])
-
-    # External camera robot points
-    d_obs1 = scene_constants["camera"][cam1]["raw_depth"][t].astype(np.float32)
-    r_pts1 = get_foreground_robot_points(init_p1, K_np1, d_obs1, pb_renderer, max_pts=2000, device=device)
-    if r_pts1 is not None:
-      cache_X1.append(r_pts1)
-      cache_obs1.append(torch.tensor(d_obs1, dtype=torch.float32, device=device)[None, ...])
-
-    d_obs2 = scene_constants["camera"][cam2]["raw_depth"][t].astype(np.float32)
-    r_pts2 = get_foreground_robot_points(init_p2, K_np2, d_obs2, pb_renderer, max_pts=2000, device=device)
-    if r_pts2 is not None:
-      cache_X2.append(r_pts2)
-      cache_obs2.append(torch.tensor(d_obs2, dtype=torch.float32, device=device)[None, ...])
-
-    # Wrist gripper points (anchored to EE frame)
-    T_cam_world_np = T_ee_all[t] @ T_cam_ee_init
-    d_obs_w = scene_constants["camera"][wrist_cam]["raw_depth"][t].astype(np.float32)
-    P_cam_r = get_foreground_gripper_points(T_cam_world_np, K_np_w, d_obs_w, pb_renderer, max_pts=2000)
-
-    if P_cam_r is not None:
-      P_ee_r = (T_cam_ee_init @ P_cam_r)[:3, :].T
-      cache_P_ee.append(torch.tensor(P_ee_r, dtype=torch.float32, device=device))
-      cache_obs_w.append(torch.tensor(d_obs_w, dtype=torch.float32, device=device)[None, ...])
-
-  # Stack batches
-  batch_P1 = torch.stack(cache_P1)
-  batch_P2 = torch.stack(cache_P2)
-  batch_Pw = torch.stack(cache_Pw)
+  batch_Pc1, batch_Pc2, batch_Pcw = torch.stack(cache_Pc1), torch.stack(cache_Pc2), torch.stack(cache_Pcw)
   batch_Tee = torch.stack(cache_Tee)
-  batch_X1, batch_obs1 = torch.stack(cache_X1), torch.stack(cache_obs1)
-  batch_X2, batch_obs2 = torch.stack(cache_X2), torch.stack(cache_obs2)
-  batch_P_ee = torch.stack(cache_P_ee) if cache_P_ee else None
-  batch_obs_w = torch.stack(cache_obs_w) if cache_obs_w else None
 
-  print(f"  ✅ Data ready! Launching GPU joint optimization engine...")
+  K_t1 = torch.tensor(scene_constants['camera'][cam1]['K_mat'], dtype=torch.float32, device=device)
+  K_t2 = torch.tensor(scene_constants['camera'][cam2]['K_mat'], dtype=torch.float32, device=device)
+  K_t_w = torch.tensor(scene_constants['camera'][wrist_cam]['K_mat'], dtype=torch.float32, device=device)
 
   d1 = torch.zeros(6, requires_grad=True, device=device)
   d2 = torch.zeros(6, requires_grad=True, device=device)
   dhe = torch.zeros(6, requires_grad=True, device=device)
-
   optimizer = optim.Adam([d1, d2, dhe], lr=lr)
 
-  T1_init_t, T2_init_t, Tee_init_t = to_t(init_p1), to_t(init_p2), to_t(T_cam_ee_init)
+  T1_init_t = torch.tensor(prev_scene_state[cam1]['base_extrinsic'], dtype=torch.float32, device=device)
+  T2_init_t = torch.tensor(prev_scene_state[cam2]['base_extrinsic'], dtype=torch.float32, device=device)
+  Tee_init_t = torch.tensor(prev_scene_state[wrist_cam]['base_extrinsic'], dtype=torch.float32, device=device)
 
+  print(f"  ✅ Data ready! Launching GPU joint optimization engine ({n_steps} steps)...")
   for step in range(n_steps):
     optimizer.zero_grad()
 
-    # Chamfer
-    bc1 = (T1_init_t @ make_delta_T(d1, device) @ batch_P1)[:, :3, :].transpose(1, 2)
-    bc2 = (T2_init_t @ make_delta_T(d2, device) @ batch_P2)[:, :3, :].transpose(1, 2)
-    T_wrist_world = batch_Tee @ (Tee_init_t @ make_delta_T(dhe, device))
-    bcw = torch.bmm(T_wrist_world, batch_Pw)[:, :3, :].transpose(1, 2)
+    T1_opt = T1_init_t @ make_T(d1, device)
+    T2_opt = T2_init_t @ make_T(d2, device)
+    Tee_opt = Tee_init_t @ make_T(dhe, device)
+
+    # Chamfer: project environment points to world frame
+    bc1 = (T1_opt @ batch_Pc1)[:, :3, :].transpose(1, 2)
+    bc2 = (T2_opt @ batch_Pc2)[:, :3, :].transpose(1, 2)
+    T_wrist_c2w = batch_Tee @ Tee_opt
+    bcw = torch.bmm(T_wrist_c2w, batch_Pcw)[:, :3, :].transpose(1, 2)
 
     l12, o12 = batched_chamfer_distance(bc1, bc2, device)
     l1w, o1w = batched_chamfer_distance(bc1, bcw, device)
     l2w, o2w = batched_chamfer_distance(bc2, bcw, device)
     loss_chamfer = l12 + l1w + l2w
 
-    # Robot
-    l_rob1 = compute_robot_loss_batched(batch_X1, T1_init_t @ make_delta_T(d1, device), K_t1, batch_obs1)
-    l_rob2 = compute_robot_loss_batched(batch_X2, T2_init_t @ make_delta_T(d2, device), K_t2, batch_obs2)
-
-    # Wrist
-    l_wrist = torch.tensor(0.0, device=device)
-    if batch_P_ee is not None:
-      l_wrist = compute_wrist_loss_batched(batch_P_ee, Tee_init_t @ make_delta_T(dhe, device), K_t_w, batch_obs_w)
+    # Robot depth losses
+    l_rob1 = compute_robot_loss(batch_X1, T1_opt, K_t1, batch_obs1, depth_tolerance=0.15)
+    l_rob2 = compute_robot_loss(batch_X2, T2_opt, K_t2, batch_obs2, depth_tolerance=0.15)
+    l_wrist = compute_robot_loss(batch_P_ee, Tee_opt, K_t_w, batch_obs_w, depth_tolerance=float('inf'))
 
     loss_total = loss_chamfer + robot_weight * (l_rob1 + l_rob2 + l_wrist)
     loss_total.backward()
@@ -988,9 +709,9 @@ def _run_joint_alignment(scene_constants, prev_scene_state, pb_renderer, device,
 
     if step % 50 == 0 or step == n_steps - 1:
       bg_overlap = (o12 + o1w + o2w) / 3.0 * 100
-      shift_c1 = torch.norm(d1[:3]).item() * 1000
-      shift_c2 = torch.norm(d2[:3]).item() * 1000
-      shift_w = torch.norm(dhe[:3]).item() * 1000
+      shift_c1 = torch.norm(d1[3:]).item() * 1000
+      shift_c2 = torch.norm(d2[3:]).item() * 1000
+      shift_w = torch.norm(dhe[3:]).item() * 1000
       print(f"    Step {step:03d} | "
             f"Chmf: {loss_chamfer.item():.4f} | "
             f"Rob1: {l_rob1.item():.4f} | Rob2: {l_rob2.item():.4f} | Wrst: {l_wrist.item():.4f} | "
@@ -998,16 +719,13 @@ def _run_joint_alignment(scene_constants, prev_scene_state, pb_renderer, device,
             f"Shift → C1: {shift_c1:.2f}mm, C2: {shift_c2:.2f}mm, W: {shift_w:.2f}mm")
 
   with torch.no_grad():
-    final_p1 = (T1_init_t @ make_delta_T(d1, device)).cpu().numpy()
-    final_p2 = (T2_init_t @ make_delta_T(d2, device)).cpu().numpy()
-    final_cam_ee = (Tee_init_t @ make_delta_T(dhe, device)).cpu().numpy()
+    final_p1 = (T1_init_t @ make_T(d1, device)).cpu().numpy()
+    final_p2 = (T2_init_t @ make_T(d2, device)).cpu().numpy()
+    final_cam_ee = (Tee_init_t @ make_T(dhe, device)).cpu().numpy()
 
-  print(f"\n✅ {stage_name} complete! Joint shifts:")
-  print(f"  📷 [Static {cam1}]: {np.linalg.norm(d1[:3].detach().cpu().numpy()) * 1000:.2f} mm")
-  print(f"  📷 [Static {cam2}]: {np.linalg.norm(d2[:3].detach().cpu().numpy()) * 1000:.2f} mm")
-  print(f"  🦾 [Kinematic Wrist]: {np.linalg.norm(dhe[:3].detach().cpu().numpy()) * 1000:.2f} mm")
+  print(f"\n✅ {stage_name} complete!")
 
-  ultimate_scene_state = {cam: {} for cam in camera_ids}
+  ultimate_scene_state = {c: {} for c in scene_constants['camera'].keys()}
   ultimate_scene_state[cam1].update({
       "base_extrinsic": final_p1,
       "extrinsics": np.tile(final_p1, (n_frames, 1, 1)),
@@ -1024,31 +742,20 @@ def _run_joint_alignment(scene_constants, prev_scene_state, pb_renderer, device,
   return ultimate_scene_state
 
 
-def run_coarse_joint_alignment(scene_constants, base_scene_state, pb_renderer, device):
-  """Joint optimization with lr=0.001 and robot_weight=1.0."""
-  return _run_joint_alignment(
-      scene_constants, base_scene_state, pb_renderer, device,
-      lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Coarse",
-  )
-
-
-def run_fine_joint_alignment(scene_constants, coarse_scene_state, pb_renderer, device):
-  """Fine-tuning with lr=0.0001 and robot_weight=0.1."""
-  return _run_joint_alignment(
-      scene_constants, coarse_scene_state, pb_renderer, device,
-      lr=0.0001, n_steps=500, robot_weight=0.1, stage_name="Fine",
-  )
-
-
 # ---------------------------------------------------------------------------
 # 11. Export
 # ---------------------------------------------------------------------------
 def export_extrinsics(scene_constants, scene_state,
-                      export_root="~/droid_data/output/mv-tap/droid/extrinsics"):
+                      export_root="~/droid_data/output/mv-tap/droid/extrinsics",
+                      stage_suffix=None):
   """Save calibrated extrinsics for all cameras.
 
   Output layout:
-    <episode_id>/extrinsics.npz
+    <episode_id>/extrinsics.npz            (final)
+    <episode_id>/extrinsics_stage1.npz     (after VGGT / init)
+    <episode_id>/extrinsics_stage2.npz     (after robot alignment)
+    <episode_id>/extrinsics_stage3.npz     (after joint optimization)
+
       Keys per camera:
         <cam_id>_base_extrinsic  → (4, 4) static extrinsic matrix
         <cam_id>_extrinsics      → (N, 4, 4) per-frame trajectory
@@ -1057,16 +764,20 @@ def export_extrinsics(scene_constants, scene_state,
   out_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_str)))
   os.makedirs(out_dir, exist_ok=True)
 
+  fname = f"extrinsics_{stage_suffix}.npz" if stage_suffix else "extrinsics.npz"
+
   save_dict = {}
   for cam_id, state in scene_state.items():
+    if state.get("base_extrinsic") is None or state.get("extrinsics") is None:
+      continue
     save_dict[f"{cam_id}_base_extrinsic"] = state["base_extrinsic"].astype(np.float32)
     save_dict[f"{cam_id}_extrinsics"] = state["extrinsics"].astype(np.float32)
 
   # Also save wrist serial for downstream convenience
   save_dict["wrist_serial"] = np.array(scene_constants["meta"]["wrist_serial"])
 
-  np.savez_compressed(os.path.join(out_dir, "extrinsics.npz"), **save_dict)
-  print(f"  💾 Extrinsics saved to {out_dir}/extrinsics.npz")
+  np.savez_compressed(os.path.join(out_dir, fname), **save_dict)
+  print(f"  💾 Extrinsics saved to {out_dir}/{fname}")
 
 
 # ---------------------------------------------------------------------------
@@ -1085,6 +796,7 @@ if __name__ == "__main__":
   device = get_accelerator()
   vggt_model, load_fn, pose_fn = init_calibration_models()
   serials_db, extrinsics_db = load_metadata()
+
   # Discover available episodes from depth output
   depth_abs = os.path.abspath(os.path.expanduser(args.depth_root))
   available_eps = sorted([
@@ -1099,6 +811,9 @@ if __name__ == "__main__":
   target_eps = available_eps[args.rank::args.world_size]
   print(f"📋 Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
 
+  # Initialize tensor renderer once (shared across all episodes)
+  tensor_renderer = TensorRobotRenderer(device=device)
+
   succeeded_eps = []
 
   for idx, ep_id in enumerate(target_eps):
@@ -1110,42 +825,40 @@ if __name__ == "__main__":
 
       # Stage 0: Initialize from dataset extrinsics (if available)
       init_scene_state = init_camera_states(scene_constants, extrinsics_db)
-
-      # Check if all cameras have pre-calibrated extrinsics
       all_extrinsics_exist = all(
           state["extrinsics"] is not None
           for state in init_scene_state.values()
       )
 
-      # Stage 1: VGGT visual anchoring (always run for dual-base competition)
-      vggt_scene_state = vggt_warmup_extrinsics(
-          scene_constants, vggt_model, load_fn, pose_fn, device,
-      )
+      # Stage 1: VGGT visual anchoring (only if init extrinsics incomplete)
+      if all_extrinsics_exist:
+        print("  ✅ Full pre-calibrated extrinsics found, using Dataset Init as base.")
+        stage1_scene_state = init_scene_state
+        vggt_scene_state = None
+      else:
+        print("  ⚠️ Incomplete extrinsics, running VGGT visual anchoring...")
+        vggt_scene_state = vggt_warmup_extrinsics(
+            scene_constants, vggt_model, load_fn, pose_fn, device,
+        )
+        stage1_scene_state = vggt_scene_state
 
-      # External camera-robot alignment (dual-base competition)
-      pb_renderer = PyBulletRenderer_Robotiq()
-      robot_aligned_state = run_robot_alignment(
-          scene_constants, pb_renderer, device,
-          init_scene_state=init_scene_state if all_extrinsics_exist else None,
-          vggt_scene_state=vggt_scene_state,
-      )
+      # Save Stage 1 extrinsics
+      export_extrinsics(scene_constants, stage1_scene_state, stage_suffix="stage1")
 
-      # Wrist camera-gripper alignment
-      wrist_aligned_state = run_wrist_alignment(
-          scene_constants, robot_aligned_state, pb_renderer, device,
+      # Stage 2: Unified camera-robot alignment (external + wrist)
+      stage2_state = run_stage2_alignment(
+          scene_constants, tensor_renderer, stage1_scene_state,
       )
+      export_extrinsics(scene_constants, stage2_state, stage_suffix="stage2")
 
-      # Joint optimization (coarse)
-      joint_state = run_coarse_joint_alignment(
-          scene_constants, wrist_aligned_state, pb_renderer, device,
+      # Stage 3: Global joint optimization (Chamfer + Robot + Wrist)
+      final_state = run_global_joint_alignment(
+          scene_constants, stage2_state, tensor_renderer,
+          lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
       )
+      export_extrinsics(scene_constants, final_state, stage_suffix="stage3")
 
-      # Fine-tuning (refined)
-      final_state = run_fine_joint_alignment(
-          scene_constants, joint_state, pb_renderer, device,
-      )
-
-      # Export
+      # Final export (canonical name)
       export_extrinsics(scene_constants, final_state)
       succeeded_eps.append(ep_id)
       print(f"  ✅ Episode {ep_id} completed successfully.")
