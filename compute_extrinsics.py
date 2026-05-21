@@ -748,36 +748,41 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
 def export_extrinsics(scene_constants, scene_state,
                       export_root="~/droid_data/output/mv-tap/droid/extrinsics",
                       stage_suffix=None):
-  """Save calibrated extrinsics for all cameras.
+  """Save calibrated extrinsics as per-camera JSON files.
 
   Output layout:
-    <episode_id>/extrinsics.npz            (final)
-    <episode_id>/extrinsics_stage1.npz     (after VGGT / init)
-    <episode_id>/extrinsics_stage2.npz     (after robot alignment)
-    <episode_id>/extrinsics_stage3.npz     (after joint optimization)
+    <episode_id>/<cam_id>/extrinsics.json            (final)
+    <episode_id>/<cam_id>/extrinsics_stage1.json     (after VGGT / init)
+    <episode_id>/<cam_id>/extrinsics_stage2.json     (after robot alignment)
 
-      Keys per camera:
-        <cam_id>_base_extrinsic  → (4, 4) static extrinsic matrix
-        <cam_id>_extrinsics      → (N, 4, 4) per-frame trajectory
+  Each JSON contains:
+    base_extrinsic  → (4x4) list-of-lists, static extrinsic matrix
+    extrinsics      → (Nx4x4) list-of-lists, per-frame trajectory
+    is_wrist        → bool
   """
   ep_str = scene_constants["meta"]["episode_id"]
-  out_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_str)))
-  os.makedirs(out_dir, exist_ok=True)
+  wrist_serial = scene_constants["meta"]["wrist_serial"]
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_str)))
+  fname = f"extrinsics_{stage_suffix}.json" if stage_suffix else "extrinsics.json"
 
-  fname = f"extrinsics_{stage_suffix}.npz" if stage_suffix else "extrinsics.npz"
-
-  save_dict = {}
   for cam_id, state in scene_state.items():
     if state.get("base_extrinsic") is None or state.get("extrinsics") is None:
       continue
-    save_dict[f"{cam_id}_base_extrinsic"] = state["base_extrinsic"].astype(np.float32)
-    save_dict[f"{cam_id}_extrinsics"] = state["extrinsics"].astype(np.float32)
 
-  # Also save wrist serial for downstream convenience
-  save_dict["wrist_serial"] = np.array(scene_constants["meta"]["wrist_serial"])
+    cam_dir = os.path.join(ep_dir, cam_id)
+    os.makedirs(cam_dir, exist_ok=True)
 
-  np.savez_compressed(os.path.join(out_dir, fname), **save_dict)
-  print(f"  💾 Extrinsics saved to {out_dir}/{fname}")
+    payload = {
+        "base_extrinsic": state["base_extrinsic"].astype(np.float64).tolist(),
+        "extrinsics": state["extrinsics"].astype(np.float64).tolist(),
+        "is_wrist": (cam_id == wrist_serial),
+    }
+
+    out_path = os.path.join(cam_dir, fname)
+    with open(out_path, "w") as f:
+      json.dump(payload, f, indent=2)
+
+  print(f"  💾 Extrinsics saved to {ep_dir}/*/{fname}")
 
 
 # ---------------------------------------------------------------------------
