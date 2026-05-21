@@ -856,8 +856,6 @@ if __name__ == "__main__":
           scene_constants, stage2_state, tensor_renderer,
           lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
       )
-      export_extrinsics(scene_constants, final_state, stage_suffix="stage3")
-
       # Final export (canonical name)
       export_extrinsics(scene_constants, final_state)
       succeeded_eps.append(ep_id)
