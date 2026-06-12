@@ -3,6 +3,7 @@
 # Usage:
 #   bash run_parallel.sh                              # Compute depth, all episodes
 #   bash run_parallel.sh --mode extrinsics            # Compute extrinsics, all episodes
+#   bash run_parallel.sh --mode tracks                # Compute tracks, all episodes
 #   bash run_parallel.sh --limit 32                   # Limit to 32 episodes
 
 # ---------------------------------------------------------
@@ -28,8 +29,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$MODE" != "depth" && "$MODE" != "extrinsics" ]]; then
-    echo "❌ Invalid mode: $MODE (must be 'depth' or 'extrinsics')"
+if [[ "$MODE" != "depth" && "$MODE" != "extrinsics" && "$MODE" != "tracks" ]]; then
+    echo "❌ Invalid mode: $MODE (must be 'depth', 'extrinsics', or 'tracks')"
     exit 1
 fi
 
@@ -39,9 +40,12 @@ fi
 if [[ "$MODE" == "depth" ]]; then
     SCRIPT="compute_depth.py"
     OP_NAME="compute_depth"
-else
+elif [[ "$MODE" == "extrinsics" ]]; then
     SCRIPT="compute_extrinsics.py"
     OP_NAME="compute_extrinsics"
+else
+    SCRIPT="compute_tracks.py"
+    OP_NAME="compute_tracks"
 fi
 
 echo "🎯 Running: $SCRIPT ($OP_NAME)"
