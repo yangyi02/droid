@@ -11,6 +11,10 @@ Pipeline:
   Phase 4: Multi-keyframe CoTracker query mode cross-view completion
   Phase 5: Multi-view multi-frame nanmedian 3D fusion + smoothing
   Phase 6: Quality filtering + export
+
+Dual-Track Architecture:
+  Track A (Environment): CoTracker dense 2D → 3D dedup → cross-view query → median fusion
+  Track B (Robot):       URDF forward kinematics → per-link binding → cross-view projection
 """
 
 import argparse
@@ -202,72 +206,332 @@ def project_points_np(pts_world, K, T_cam2world):
 # 4. URDF Robot Renderer (for robot masking)
 # ---------------------------------------------------------------------------
 class PyBulletRenderer:
-  """Minimal PyBullet renderer for URDF-based robot mask generation."""
+  """Dual-body PyBullet renderer: Franka arm + Robotiq gripper.
 
-  def __init__(self, urdf_path=None):
-    self.physics_client = p.connect(p.DIRECT)
-    if urdf_path is None:
-      urdf_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "third_party", "PointWorld", "assets")
-      urdf_path = os.path.join(urdf_dir, "fr3_robotiq_simplified.urdf")
+  The 'robot' body renders the arm links (hand/finger hidden).
+  The 'ghost' body renders the gripper (arm links hidden).
+  Together they form the complete visual model.
+  """
 
-    self.robot_id = p.loadURDF(urdf_path, useFixedBase=True,
-                               flags=p.URDF_USE_MATERIAL_COLORS_FROM_MTL)
-    # Ghost copy for gripper
-    ghost_urdf = os.path.join(os.path.dirname(urdf_path),
-                              "fr3_robotiq_ghost.urdf")
-    if os.path.exists(ghost_urdf):
-      self.ghost_id = p.loadURDF(ghost_urdf, useFixedBase=True,
-                                 flags=p.URDF_USE_MATERIAL_COLORS_FROM_MTL)
-    else:
-      self.ghost_id = -1
+  def __init__(self, ghost_urdf=None):
+    import pybullet_data
+    import importlib.util
 
-  def update_robot_pose(self, joint_positions, gripper_state=None):
-    """Set robot joint angles."""
-    for i, angle in enumerate(joint_positions):
+    if ghost_urdf is None:
+      ghost_urdf = os.path.join(
+          os.path.dirname(os.path.abspath(__file__)),
+          "PointWorld/assets/franka_description/"
+          "franka_panda_robotiq_2f85_og.urdf")
+
+    if p.isConnected():
+      p.disconnect()
+    p.connect(p.DIRECT)
+    p.setAdditionalSearchPath(pybullet_data.getDataPath())
+
+    egl_spec = importlib.util.find_spec('eglRendererPlugin')
+    if egl_spec:
+      p.loadPlugin(egl_spec.origin, "_eglRendererPlugin")
+
+    # Real body: thin arm (hand/finger hidden)
+    self.robot_id = p.loadURDF("franka_panda/panda.urdf", useFixedBase=True)
+    self.arm_joints = [
+        i for i in range(p.getNumJoints(self.robot_id))
+        if "panda_joint" in p.getJointInfo(self.robot_id, i)[1].decode()
+        and p.getJointInfo(self.robot_id, i)[2] != p.JOINT_FIXED
+    ]
+
+    self.hidden_robot_links = []
+    for i in range(-1, p.getNumJoints(self.robot_id)):
+      name = (p.getBodyInfo(self.robot_id)[0].decode() if i == -1
+              else p.getJointInfo(self.robot_id, i)[12].decode())
+      if "hand" in name or "finger" in name:
+        p.changeVisualShape(self.robot_id, i, rgbaColor=[0, 0, 0, 0])
+        self.hidden_robot_links.append(i)
+
+    # Ghost body: Robotiq gripper (arm links hidden)
+    self.ghost_id = p.loadURDF(ghost_urdf, useFixedBase=True)
+    self.ghost_arm_joints = [
+        i for i in range(p.getNumJoints(self.ghost_id))
+        if "panda_joint" in p.getJointInfo(self.ghost_id, i)[1].decode()
+        and p.getJointInfo(self.ghost_id, i)[2] != p.JOINT_FIXED
+    ]
+
+    self.gripper_joints = []
+    self.gripper_signs = []
+    for i in range(p.getNumJoints(self.ghost_id)):
+      info = p.getJointInfo(self.ghost_id, i)
+      jname = info[1].decode()
+      if info[2] != p.JOINT_FIXED and "panda_joint" not in jname:
+        self.gripper_joints.append(i)
+        base_sign = -1 if "right" in jname else 1
+        if any(k in jname for k in ["inner_finger", "follower", "finger_tip"]):
+          self.gripper_signs.append(base_sign * -1)
+        else:
+          self.gripper_signs.append(base_sign)
+
+    self.hidden_ghost_links = []
+    for i in range(-1, p.getNumJoints(self.ghost_id)):
+      name = (p.getBodyInfo(self.ghost_id)[0].decode() if i == -1
+              else p.getJointInfo(self.ghost_id, i)[12].decode())
+      if "panda_link" in name:
+        p.changeVisualShape(self.ghost_id, i, rgbaColor=[0, 0, 0, 0])
+        self.hidden_ghost_links.append(i)
+
+  def update_robot_pose(self, joint_angles, gripper_state=None,
+                        gripper_width_offset=0.08):
+    """Synchronize both bodies to given joint configuration."""
+    for i, angle in zip(self.arm_joints, joint_angles):
       p.resetJointState(self.robot_id, i, angle)
-    if gripper_state is not None and self.ghost_id >= 0:
-      for i, angle in enumerate(joint_positions):
-        p.resetJointState(self.ghost_id, i, angle)
+    for i, angle in zip(self.ghost_arm_joints, joint_angles):
+      p.resetJointState(self.ghost_id, i, angle)
+
+    if gripper_state is not None and self.gripper_joints:
+      raw_val = (gripper_state[0]
+                 if isinstance(gripper_state, (list, np.ndarray))
+                 else gripper_state)
+      raw_val = np.clip(raw_val, 0.0, 1.0)
+      angle = (raw_val * 0.8028) - gripper_width_offset
+      for i, sign in zip(self.gripper_joints, self.gripper_signs):
+        p.resetJointState(self.ghost_id, i, angle * sign)
+    p.performCollisionDetection()
 
   def _get_projection_matrix(self, K, w, h, near=0.01, far=10.0):
     """Convert intrinsic matrix to OpenGL projection matrix."""
     fx, fy = K[0, 0], K[1, 1]
     cx, cy = K[0, 2], K[1, 2]
-    proj = np.zeros((4, 4))
-    proj[0, 0] = 2 * fx / w
-    proj[1, 1] = 2 * fy / h
-    proj[0, 2] = 1 - 2 * cx / w
-    proj[1, 2] = 2 * cy / h - 1
-    proj[2, 2] = -(far + near) / (far - near)
-    proj[2, 3] = -2 * far * near / (far - near)
-    proj[3, 2] = -1
-    return proj.T.flatten().tolist()
+    return [
+        2.0 * fx / w, 0.0, 0.0, 0.0,
+        0.0, 2.0 * fy / h, 0.0, 0.0,
+        1.0 - 2.0 * cx / w, 2.0 * cy / h - 1.0,
+        (far + near) / (near - far), -1.0,
+        0.0, 0.0, 2.0 * far * near / (near - far), 0.0,
+    ]
 
-  def render_mask(self, extrinsic, K, w, h):
-    """Render binary robot mask at given camera pose."""
+  def _render_raw(self, extrinsic, K, w, h):
+    """Common rendering call returning depth_buffer + seg_buffer."""
     cam_pos = extrinsic[:3, 3]
     target = cam_pos + extrinsic[:3, 2]
-    up = -extrinsic[:3, 1]
-    view_matrix = p.computeViewMatrix(cam_pos.tolist(), target.tolist(),
-                                      up.tolist())
+    view_matrix = p.computeViewMatrix(
+        cam_pos.tolist(), (cam_pos + extrinsic[:3, 2]).tolist(),
+        (-extrinsic[:3, 1]).tolist())
     proj_matrix = self._get_projection_matrix(K, w, h)
-
-    _, _, _, _, seg = p.getCameraImage(
+    _, _, _, depth_buf, seg_buf = p.getCameraImage(
         w, h, viewMatrix=view_matrix, projectionMatrix=proj_matrix,
         renderer=p.ER_BULLET_HARDWARE_OPENGL,
         flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX)
+    return depth_buf, seg_buf
 
-    seg_array = np.reshape(seg, (h, w)).astype(np.int32)
+  def render_depth(self, extrinsic, K, w, h):
+    """Render physical depth map from camera pose."""
+    depth_buf, _ = self._render_raw(extrinsic, K, w, h)
+    metric = 0.1 / (10.0 - 9.99 * np.reshape(depth_buf, (h, w)))
+    return np.where(metric < 9.9, metric, 0.0)
+
+  def render_mask(self, extrinsic, K, w, h):
+    """Render binary robot mask."""
+    _, seg_buf = self._render_raw(extrinsic, K, w, h)
+    seg_array = np.reshape(seg_buf, (h, w)).astype(np.int32)
     obj_ids = seg_array & 0xFFFFFF
-    mask = (obj_ids == self.robot_id)
-    if self.ghost_id >= 0:
-      mask |= (obj_ids == self.ghost_id)
-    return mask
+    link_ids = (seg_array >> 24) - 1
+    valid_robot = ((obj_ids == self.robot_id) &
+                   ~np.isin(link_ids, self.hidden_robot_links))
+    valid_ghost = ((obj_ids == self.ghost_id) &
+                   ~np.isin(link_ids, self.hidden_ghost_links))
+    return valid_robot | valid_ghost
+
+  def render_segmentation(self, extrinsic, K, w, h):
+    """Render full segmentation: (obj_ids, link_ids, metric_depth)."""
+    depth_buf, seg_buf = self._render_raw(extrinsic, K, w, h)
+    metric = 0.1 / (10.0 - 9.99 * np.reshape(depth_buf, (h, w)))
+    metric = np.where(metric < 9.9, metric, 0.0)
+    seg_array = np.reshape(seg_buf, (h, w)).astype(np.int32)
+    obj_ids = seg_array & 0xFFFFFF
+    link_ids = (seg_array >> 24) - 1
+    return obj_ids, link_ids, metric
 
 
 # ---------------------------------------------------------------------------
-# 5. Phase 1: Per-view Independent CoTracker
+# 5. URDF Kinematics Tracker (Track B: Robot)
+# ---------------------------------------------------------------------------
+class URDFKinematicsTracker:
+  """Forward kinematics-based robot 3D trajectory generator.
+
+  Binds seed 2D tracking points to URDF link frames at t=0,
+  then propagates them via forward kinematics across all frames.
+  """
+
+  def __init__(self, pb_renderer):
+    self.pb = pb_renderer
+
+  def _get_link_transform(self, obj_id, link_id):
+    """Get 4x4 world-frame transform for a PyBullet link."""
+    if link_id == -1:
+      pos, orn = p.getBasePositionAndOrientation(obj_id)
+    else:
+      state = p.getLinkState(obj_id, link_id)
+      pos, orn = state[0], state[1]
+    T = np.eye(4)
+    T[:3, :3] = R.from_quat(orn).as_matrix()
+    T[:3, 3] = pos
+    return T
+
+  def extract_robot_tracks(self, src_cam, scene_constants, scene_state,
+                           safe_margin=7):
+    """Extract 3D robot surface trajectories via URDF forward kinematics.
+
+    Returns:
+      traj_3d: (T, N_robot, 3) world coordinates
+      traj_2d: (T, N_robot, 2) pixel coordinates in src_cam
+      vis_2d:  (T, N_robot) visibility mask in src_cam
+      robot_indices: indices into the original tracks_2d
+    """
+    print(f"    🦾 URDF tracking [{src_cam}]")
+    src_data = scene_constants["camera"][src_cam]
+    src_state = scene_state[src_cam]
+    K_mat = src_data["K_mat"]
+    extrinsics = src_state["extrinsics"]
+    h_img, w_img = src_data["video_rgb"][0].shape[:2]
+    n_frames = len(src_data["video_rgb"])
+    tracks_2d_t0 = src_data["tracks_2d"][0]
+
+    # Frame 0: find seed points on robot
+    self.pb.update_robot_pose(
+        scene_constants["robot"]["joint_positions"][0],
+        gripper_state=scene_constants["robot"]["gripper_positions"][0])
+
+    obj_ids, link_ids, urdf_depth = self.pb.render_segmentation(
+        extrinsics[0], K_mat, w_img, h_img)
+    is_robot = ((obj_ids == self.pb.robot_id) |
+                (obj_ids == self.pb.ghost_id))
+
+    # Erode mask to avoid edge artifacts
+    kernel = np.ones((safe_margin, safe_margin), np.uint8)
+    is_robot_safe = cv2.erode(
+        is_robot.astype(np.uint8), kernel, iterations=1) > 0
+
+    u0 = np.clip(np.round(tracks_2d_t0[:, 0]).astype(int), 0, w_img - 1)
+    v0 = np.clip(np.round(tracks_2d_t0[:, 1]).astype(int), 0, h_img - 1)
+    robot_indices = np.where(is_robot_safe[v0, u0])[0]
+
+    if len(robot_indices) == 0:
+      print("      ⚠️ No robot points found at t=0.")
+      return None, None, None, None
+
+    print(f"      Found {len(robot_indices)} safe robot surface points.")
+
+    # Bind to local link frames
+    robot_objs = obj_ids[v0[robot_indices], u0[robot_indices]]
+    robot_links = link_ids[v0[robot_indices], u0[robot_indices]]
+    z0 = urdf_depth[v0[robot_indices], u0[robot_indices]]
+
+    pts_world_t0 = unproject_points_np(
+        tracks_2d_t0[robot_indices, 0],
+        tracks_2d_t0[robot_indices, 1],
+        z0, K_mat, extrinsics[0])
+
+    unique_parts = set(zip(robot_objs, robot_links))
+    local_pts_dict = {}
+    for oid, lid in unique_parts:
+      mask = (robot_objs == oid) & (robot_links == lid)
+      pts = pts_world_t0[mask]
+      T_link = self._get_link_transform(oid, lid)
+      T_inv = np.linalg.inv(T_link)
+      P_homo = np.hstack([pts, np.ones((len(pts), 1))]).T
+      local_pts_dict[(oid, lid)] = (mask, T_inv @ P_homo)
+
+    # Forward kinematics propagation
+    traj_3d = np.zeros((n_frames, len(robot_indices), 3), dtype=np.float32)
+    traj_2d = np.zeros((n_frames, len(robot_indices), 2), dtype=np.float32)
+    vis_2d = np.zeros((n_frames, len(robot_indices)), dtype=bool)
+
+    for t in range(n_frames):
+      self.pb.update_robot_pose(
+          scene_constants["robot"]["joint_positions"][t],
+          gripper_state=scene_constants["robot"]["gripper_positions"][t])
+
+      for oid, lid in unique_parts:
+        mask, P_local = local_pts_dict[(oid, lid)]
+        T_link_t = self._get_link_transform(oid, lid)
+        P_world_t = T_link_t @ P_local
+        traj_3d[t, mask, :] = P_world_t[:3, :].T
+
+      u_t, v_t, z_pred = project_points_np(
+          traj_3d[t], K_mat, extrinsics[t])
+      traj_2d[t, :, 0] = u_t
+      traj_2d[t, :, 1] = v_t
+
+      # Visibility: bounds + self-occlusion + env-occlusion
+      urdf_depth_t = self.pb.render_depth(
+          extrinsics[t], K_mat, w_img, h_img)
+      raw_depth_t = src_data["raw_depth"][t]
+
+      ui = np.clip(np.round(u_t).astype(int), 0, w_img - 1)
+      vi = np.clip(np.round(v_t).astype(int), 0, h_img - 1)
+
+      in_bounds = ((u_t >= 0) & (u_t < w_img) &
+                   (v_t >= 0) & (v_t < h_img) & (z_pred > 0))
+      z_urdf = urdf_depth_t[vi, ui]
+      not_self_occ = (z_urdf > 0) & (z_pred <= z_urdf + 0.015)
+      z_sensor = raw_depth_t[vi, ui]
+      not_env_occ = ~((z_sensor > 0) & (z_pred > z_sensor + 0.02))
+      vis_2d[t] = in_bounds & not_self_occ & not_env_occ
+
+    return traj_3d, traj_2d, vis_2d, robot_indices
+
+  def project_to_all_views(self, traj_3d, scene_constants, scene_state):
+    """Project robot 3D tracks to all camera views with visibility.
+
+    Returns:
+      per_cam_traj_2d: {cam_id: (T, N_robot, 2)}
+      per_cam_vis: {cam_id: (T, N_robot)}
+    """
+    camera_ids = list(scene_constants["camera"].keys())
+    T, N_robot, _ = traj_3d.shape
+    per_cam_traj_2d = {}
+    per_cam_vis = {}
+
+    for cam_id in camera_ids:
+      cam_data = scene_constants["camera"][cam_id]
+      cam_state = scene_state[cam_id]
+      K = cam_data["K_mat"]
+      h_img, w_img = cam_data["video_rgb"][0].shape[:2]
+
+      cam_traj_2d = np.zeros((T, N_robot, 2), dtype=np.float32)
+      cam_vis = np.zeros((T, N_robot), dtype=bool)
+
+      for t in range(T):
+        self.pb.update_robot_pose(
+            scene_constants["robot"]["joint_positions"][t],
+            gripper_state=scene_constants["robot"]["gripper_positions"][t])
+
+        u_t, v_t, z_pred = project_points_np(
+            traj_3d[t], K, cam_state["extrinsics"][t])
+        cam_traj_2d[t, :, 0] = u_t
+        cam_traj_2d[t, :, 1] = v_t
+
+        urdf_depth_t = self.pb.render_depth(
+            cam_state["extrinsics"][t], K, w_img, h_img)
+        raw_depth_t = cam_data["raw_depth"][t]
+
+        ui = np.clip(np.round(u_t).astype(int), 0, w_img - 1)
+        vi = np.clip(np.round(v_t).astype(int), 0, h_img - 1)
+
+        in_bounds = ((u_t >= 0) & (u_t < w_img) &
+                     (v_t >= 0) & (v_t < h_img) & (z_pred > 0))
+        z_urdf = urdf_depth_t[vi, ui]
+        not_self_occ = (z_urdf > 0) & (z_pred <= z_urdf + 0.015)
+        z_sensor = raw_depth_t[vi, ui]
+        not_env_occ = ~((z_sensor > 0) & (z_pred > z_sensor + 0.02))
+        cam_vis[t] = in_bounds & not_self_occ & not_env_occ
+
+      per_cam_traj_2d[cam_id] = cam_traj_2d
+      per_cam_vis[cam_id] = cam_vis
+
+    return per_cam_traj_2d, per_cam_vis
+
+
+# ---------------------------------------------------------------------------
+# 6. Phase 1: Per-view Independent CoTracker
 # ---------------------------------------------------------------------------
 def phase1_extract_2d_tracks(cotracker_model, scene_constants, device):
   """Run CoTracker3 dense 2D tracking on every camera view."""
@@ -750,7 +1014,11 @@ def export_tracks(scene_constants, scene_state, final_traj_3d,
 # ---------------------------------------------------------------------------
 def process_episode(episode_id, cotracker_model, pb_renderer, device,
                     depth_root, extrinsics_root, export_root):
-  """Full tracking pipeline for a single episode."""
+  """Full dual-track pipeline for a single episode.
+
+  Track B (Robot): URDF forward kinematics (no learning)
+  Track A (Environment): CoTracker multi-view fusion
+  """
   print(f"\n{'=' * 60}")
   print(f"🎬 Processing Episode: {episode_id}")
   print(f"{'=' * 60}")
@@ -760,6 +1028,7 @@ def process_episode(episode_id, cotracker_model, pb_renderer, device,
   scene_state = load_extrinsics(scene_constants, extrinsics_root)
 
   camera_ids = list(scene_constants["camera"].keys())
+  T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
 
   # Validate data
   has_video = all("video_rgb" in scene_constants["camera"][c]
@@ -769,9 +1038,71 @@ def process_episode(episode_id, cotracker_model, pb_renderer, device,
   if not has_video or not has_depth:
     raise ValueError("Missing video_rgb or raw_depth for some cameras")
 
-  # Phase 1: Per-view CoTracker
+  # ================================================================
+  # Phase 1: Per-view CoTracker (needed for both robot seed + env)
+  # ================================================================
   scene_constants = phase1_extract_2d_tracks(
       cotracker_model, scene_constants, device)
+
+  # ================================================================
+  # Track B: Robot points via URDF forward kinematics
+  # ================================================================
+  print("\n" + "=" * 60)
+  print("🦾 Track B: URDF Forward Kinematics Robot Tracking")
+  print("=" * 60)
+
+  urdf_tracker = URDFKinematicsTracker(pb_renderer)
+  robot_traj_3d_all = []
+  robot_per_cam_tracks_all = {cam: [] for cam in camera_ids}
+  robot_per_cam_vis_all = {cam: [] for cam in camera_ids}
+
+  for src_cam in camera_ids:
+    traj_3d_rob, traj_2d_rob, vis_rob, robot_indices = \
+        urdf_tracker.extract_robot_tracks(
+            src_cam, scene_constants, scene_state)
+
+    if traj_3d_rob is None or len(robot_indices) == 0:
+      continue
+
+    # Project robot 3D to all views
+    rob_per_cam_2d, rob_per_cam_vis = \
+        urdf_tracker.project_to_all_views(
+            traj_3d_rob, scene_constants, scene_state)
+
+    # Use source view's native 2D for itself
+    rob_per_cam_2d[src_cam] = traj_2d_rob
+    rob_per_cam_vis[src_cam] = vis_rob
+
+    robot_traj_3d_all.append(traj_3d_rob)
+    for cam in camera_ids:
+      robot_per_cam_tracks_all[cam].append(rob_per_cam_2d[cam])
+      robot_per_cam_vis_all[cam].append(rob_per_cam_vis[cam])
+
+  # Concatenate robot tracks from all source views
+  if robot_traj_3d_all:
+    robot_traj_3d = np.concatenate(robot_traj_3d_all, axis=1)
+    robot_per_cam_tracks = {
+        cam: np.concatenate(robot_per_cam_tracks_all[cam], axis=1)
+        for cam in camera_ids}
+    robot_per_cam_vis = {
+        cam: np.concatenate(robot_per_cam_vis_all[cam], axis=1)
+        for cam in camera_ids}
+    N_robot = robot_traj_3d.shape[1]
+    print(f"  🦾 Total robot points: {N_robot}")
+  else:
+    robot_traj_3d = np.zeros((T_frames, 0, 3), dtype=np.float32)
+    robot_per_cam_tracks = {
+        cam: np.zeros((T_frames, 0, 2), dtype=np.float32)
+        for cam in camera_ids}
+    robot_per_cam_vis = {
+        cam: np.zeros((T_frames, 0), dtype=bool)
+        for cam in camera_ids}
+    N_robot = 0
+    print("  ⚠️ No robot points extracted.")
+
+  # ================================================================
+  # Track A: Environment points via CoTracker multi-view fusion
+  # ================================================================
 
   # Phase 2: Lift to 3D + robot mask
   per_cam_env = phase2_lift_and_filter(
@@ -781,30 +1112,81 @@ def process_episode(episode_id, cotracker_model, pb_renderer, device,
   unified_pts_3d, unified_to_cam, N_unified = phase3_3d_dedup(
       per_cam_env, camera_ids)
 
-  if unified_pts_3d is None or N_unified == 0:
-    raise ValueError("No unified points after dedup")
+  if unified_pts_3d is not None and N_unified > 0:
+    # Phase 4: Cross-view completion
+    per_cam_tracks, per_cam_vis = phase4_cross_view_completion(
+        cotracker_model, scene_constants, scene_state,
+        per_cam_env, unified_pts_3d, unified_to_cam,
+        N_unified, device)
 
-  # Phase 4: Cross-view completion
-  per_cam_tracks, per_cam_vis = phase4_cross_view_completion(
-      cotracker_model, scene_constants, scene_state,
-      per_cam_env, unified_pts_3d, unified_to_cam,
-      N_unified, device)
+    # Phase 5: Median 3D fusion
+    (env_traj_3d, env_vis_global, env_per_cam_tracks,
+     env_per_cam_vis, N_env) = phase5_median_3d_fusion(
+        scene_constants, scene_state, per_cam_tracks, per_cam_vis,
+        N_unified)
+  else:
+    env_traj_3d = np.zeros((T_frames, 0, 3), dtype=np.float32)
+    env_per_cam_tracks = {
+        cam: np.zeros((T_frames, 0, 2), dtype=np.float32)
+        for cam in camera_ids}
+    env_per_cam_vis = {
+        cam: np.zeros((T_frames, 0), dtype=bool)
+        for cam in camera_ids}
+    env_vis_global = np.zeros((T_frames, 0), dtype=bool)
+    N_env = 0
 
-  # Phase 5: Median 3D fusion
-  (final_traj_3d, final_vis_global, final_per_cam_tracks,
-   final_per_cam_vis, N_final) = phase5_median_3d_fusion(
-      scene_constants, scene_state, per_cam_tracks, per_cam_vis,
-      N_unified)
+  # ================================================================
+  # Merge: Robot (Track B) + Environment (Track A)
+  # ================================================================
+  print("\n" + "=" * 60)
+  print("🔗 Merging Track A (Environment) + Track B (Robot)")
+  print("=" * 60)
+
+  # Robot visibility is already per-cam
+  robot_vis_global = np.ones((T_frames, N_robot), dtype=bool)
+  for cam in camera_ids:
+    robot_vis_global &= robot_per_cam_vis[cam]
+
+  final_traj_3d = np.concatenate(
+      [env_traj_3d, robot_traj_3d], axis=1)
+  final_vis_global = np.concatenate(
+      [env_vis_global, robot_vis_global], axis=1)
+  final_per_cam_tracks = {
+      cam: np.concatenate(
+          [env_per_cam_tracks[cam], robot_per_cam_tracks[cam]], axis=1)
+      for cam in camera_ids}
+  final_per_cam_vis = {
+      cam: np.concatenate(
+          [env_per_cam_vis[cam], robot_per_cam_vis[cam]], axis=1)
+      for cam in camera_ids}
+
+  N_final = N_env + N_robot
+  print(f"  📊 Environment: {N_env} | Robot: {N_robot} | Total: {N_final}")
 
   if N_final == 0:
-    raise ValueError("No points survived quality filtering")
+    raise ValueError("No points from either track")
 
-  # Phase 6: Export
+  # ================================================================
+  # Export
+  # ================================================================
   export_tracks(scene_constants, scene_state, final_traj_3d,
                 final_vis_global, final_per_cam_tracks, final_per_cam_vis,
                 export_root)
 
-  print(f"\n  ✅ Episode {episode_id}: {N_final} unified tracks exported.")
+  # Also save per-type metadata for downstream consumers
+  ep_dir = os.path.abspath(
+      os.path.expanduser(os.path.join(export_root, episode_id)))
+  np.savez_compressed(
+      os.path.join(ep_dir, "track_metadata.npz"),
+      n_env=np.array(N_env),
+      n_robot=np.array(N_robot),
+      # First N_env are environment, next N_robot are robot
+      point_type=np.array(
+          [0] * N_env + [1] * N_robot, dtype=np.uint8),
+  )
+
+  print(f"\n  ✅ Episode {episode_id}: {N_env} env + {N_robot} robot "
+        f"= {N_final} tracks exported.")
   return N_final
 
 
