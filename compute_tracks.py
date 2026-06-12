@@ -220,7 +220,7 @@ class PyBulletRenderer:
     if ghost_urdf is None:
       ghost_urdf = os.path.join(
           os.path.dirname(os.path.abspath(__file__)),
-          "PointWorld/assets/franka_description/"
+          "third_party/PointWorld/assets/franka_description/"
           "franka_panda_robotiq_2f85_og.urdf")
 
     if p.isConnected():
