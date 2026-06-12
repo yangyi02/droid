@@ -444,6 +444,10 @@ class URDFKinematicsTracker:
     traj_2d = np.zeros((n_frames, len(robot_indices), 2), dtype=np.float32)
     vis_2d = np.zeros((n_frames, len(robot_indices)), dtype=bool)
 
+    # Cache URDF depth per frame — render once, reuse across all points.
+    # PyBullet render is the dominant cost; don't call it multiple times/frame.
+    urdf_depth_cache = {}
+
     for t in range(n_frames):
       self.pb.update_robot_pose(
           scene_constants["robot"]["joint_positions"][t],
@@ -460,9 +464,9 @@ class URDFKinematicsTracker:
       traj_2d[t, :, 0] = u_t
       traj_2d[t, :, 1] = v_t
 
-      # Visibility: bounds + self-occlusion + env-occlusion
-      urdf_depth_t = self.pb.render_depth(
-          extrinsics[t], K_mat, w_img, h_img)
+      # Render once per frame and cache for project_to_all_views reuse
+      urdf_depth_t = self.pb.render_depth(extrinsics[t], K_mat, w_img, h_img)
+      urdf_depth_cache[(src_cam, t)] = urdf_depth_t
       raw_depth_t = src_data["raw_depth"][t]
 
       ui = np.clip(np.round(u_t).astype(int), 0, w_img - 1)
@@ -475,6 +479,11 @@ class URDFKinematicsTracker:
       z_sensor = raw_depth_t[vi, ui]
       not_env_occ = ~((z_sensor > 0) & (z_pred > z_sensor + 0.02))
       vis_2d[t] = in_bounds & not_self_occ & not_env_occ
+
+    # Store cache on self so project_to_all_views can reuse renders
+    if not hasattr(self, '_urdf_depth_cache'):
+      self._urdf_depth_cache = {}
+    self._urdf_depth_cache.update(urdf_depth_cache)
 
     return traj_3d, traj_2d, vis_2d, robot_indices
 
@@ -499,18 +508,25 @@ class URDFKinematicsTracker:
       cam_traj_2d = np.zeros((T, N_robot, 2), dtype=np.float32)
       cam_vis = np.zeros((T, N_robot), dtype=bool)
 
+      cache = getattr(self, '_urdf_depth_cache', {})
+
       for t in range(T):
-        self.pb.update_robot_pose(
-            scene_constants["robot"]["joint_positions"][t],
-            gripper_state=scene_constants["robot"]["gripper_positions"][t])
+        # Only call update_robot_pose + render_depth if not already cached
+        cache_key = (cam_id, t)
+        if cache_key not in cache:
+          self.pb.update_robot_pose(
+              scene_constants["robot"]["joint_positions"][t],
+              gripper_state=scene_constants["robot"]["gripper_positions"][t])
+          cache[cache_key] = self.pb.render_depth(
+              cam_state["extrinsics"][t], K, w_img, h_img)
+
+        urdf_depth_t = cache[cache_key]
 
         u_t, v_t, z_pred = project_points_np(
             traj_3d[t], K, cam_state["extrinsics"][t])
         cam_traj_2d[t, :, 0] = u_t
         cam_traj_2d[t, :, 1] = v_t
 
-        urdf_depth_t = self.pb.render_depth(
-            cam_state["extrinsics"][t], K, w_img, h_img)
         raw_depth_t = cam_data["raw_depth"][t]
 
         ui = np.clip(np.round(u_t).astype(int), 0, w_img - 1)
