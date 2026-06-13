@@ -5,52 +5,15 @@ Provides point cloud rendering, 2D tracking overlays, mask inspection,
 robot segmentation video, camera axes visualization, and 4D orbit video.
 """
 
-import inspect
-
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
 from tqdm import tqdm
 
-
-# ===========================================================================
-# Core Geometry Helpers (used by viz functions; kept lightweight here)
-# ===========================================================================
-
-def unproject_points_np(u, v, z, K, T_cam2world=None):
-  """Unproject 2D pixel coords + depth to 3D (NumPy)."""
-  x_cam = (u - K[0, 2]) * z / K[0, 0]
-  y_cam = (v - K[1, 2]) * z / K[1, 1]
-  pts_cam = np.stack([x_cam, y_cam, z, np.ones_like(z)], axis=0)
-  if T_cam2world is None:
-    return pts_cam[:3, :].T
-  return (T_cam2world @ pts_cam)[:3, :].T
-
-
-def project_points_np(pts_world, K, T_cam2world):
-  """Project 3D world points to 2D pixel coords (NumPy)."""
-  T_world2cam = np.linalg.inv(T_cam2world)
-  pts_homo = np.hstack([pts_world, np.ones((len(pts_world), 1))]).T
-  pts_cam = T_world2cam @ pts_homo
-  z_cam = pts_cam[2, :]
-  u = np.zeros_like(pts_cam[0, :])
-  v = np.zeros_like(pts_cam[1, :])
-  valid_mask = z_cam > 0
-  u[valid_mask] = (pts_cam[0, valid_mask] / z_cam[valid_mask]) * K[0, 0] + K[0, 2]
-  v[valid_mask] = (pts_cam[1, valid_mask] / z_cam[valid_mask]) * K[1, 1] + K[1, 2]
-  return u, v, z_cam
-
-
-def unproject_to_3d(depth, color_img, K_mat, T_cam2world=None,
-                    min_depth=0., max_depth=1.5):
-  """Unproject a depth map to colored 3D point cloud."""
-  mask = (depth > min_depth) & (depth < max_depth)
-  v, u = np.where(mask)
-  if T_cam2world is None:
-    T_cam2world = np.eye(4)
-  pts_world = unproject_points_np(u, v, depth[mask], K_mat, T_cam2world)
-  return pts_world, color_img[mask]
+from utils.geometry import project_points_np
+from utils.geometry import unproject_points_np
+from utils.geometry import unproject_to_3d
 
 
 # ===========================================================================
