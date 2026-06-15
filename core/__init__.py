@@ -1,1 +1,1 @@
-"""DROID Dataset Processing Pipeline — modular package."""
+"""DROID pipeline shared modules."""
