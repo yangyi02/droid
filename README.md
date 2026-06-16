@@ -1,60 +1,40 @@
-# DROID Extrinsic Calibration Pipeline
+# DROID Multi-View 3D Tracking Pipeline
 
-Multi-stage camera extrinsics calibration pipeline for the [DROID dataset](https://droid-dataset.github.io/),
-combining VGGT visual anchoring, differentiable depth-based robot alignment, and global joint optimization
-to produce high-quality 4×4 camera extrinsic matrices.
+Multi-stage pipeline for the [DROID dataset](https://droid-dataset.github.io/):
+stereo depth extraction, camera-robot extrinsics calibration, and dense 3D point tracking.
 
 ## Quickstart
 
 ```bash
-# 1. Clone repo with all dependencies in one shot
+# 1. Clone with all dependencies
 git clone --recurse-submodules https://github.com/yangyi02/droid.git
 cd droid
 
-# 2. Install dependencies and download model weights
+# 2. Install dependencies + download model weights
 bash setup.sh
 
 # 3. Mount GCS input/output buckets
 bash mount_gcs.sh
 
-# 4. Compute depth (stereo depth + gripper depth refinement)
-bash run_parallel.sh
-
-# 5. Compute extrinsics (camera extrinsics calibration)
-bash run_parallel.sh --mode extrinsics
+# 4. Run pipeline (3 stages)
+bash run_parallel.sh                    # Stage 1: depth
+bash run_parallel.sh --mode extrinsics  # Stage 2: extrinsics
+bash run_parallel.sh --mode tracks      # Stage 3: tracks
 ```
 
-> If you already cloned **without** `--recurse-submodules`, run `bash setup.sh` anyway —
-> it will call `git submodule update --init --recursive` automatically.
-
-## Data Setup
-
-The pipeline reads raw DROID data from a GCS bucket and writes outputs to another.
-Use `mount_gcs.sh` to mount both buckets via [gcsfuse](https://cloud.google.com/storage/docs/gcsfuse-cli):
-
-```bash
-bash mount_gcs.sh
-```
-
-This creates two FUSE mounts:
-
-| Mount | GCS Bucket / Prefix | Local Path |
-|-------|---------------------|------------|
-| Input (DROID raw) | `gs://gresearch/robotics/droid_raw` | `~/droid_data/input/robotics/droid_raw` |
-| Output (depth & extrinsics) | `gs://dm-tapnet/mv-tap` | `~/droid_data/output/mv-tap` |
-
-The script automatically unmounts stale FUSE mounts before re-mounting, so it is
-safe to run repeatedly.
-
-> To manually unmount:
-> ```bash
-> fusermount -u ~/droid_data/input/robotics/droid_raw
-> fusermount -u ~/droid_data/output/mv-tap
-> ```
+> If you cloned **without** `--recurse-submodules`, run `bash setup.sh` —
+> it calls `git submodule update --init --recursive` automatically.
 
 ## Pipeline Overview
 
-### Stage 1 — `process_droid_stage1.py`
+| Stage | Script | Core Modules | Description |
+|-------|--------|--------------|-------------|
+| 1. Depth | `compute_depth.py` | `core.depth` | SVO decode → S2M2 stereo depth → SAM gripper mask → depth distillation |
+| 2. Extrinsics | `compute_extrinsics.py` | `core.physics` | VGGT visual anchoring → differentiable robot alignment → global joint optimization |
+| 3. Tracks | `compute_tracks.py` | `core.tracking` | CoTracker 2D tracking → 3D lift → cross-view dedup → multi-view fusion |
+
+### Stage 1 — `compute_depth.py`
+
 Decodes raw ZED SVO stereo video, extracts robot kinematics, and infers metric depth.
 
 | Step | Description |
@@ -66,7 +46,7 @@ Decodes raw ZED SVO stereo video, extracts robot kinematics, and infers metric d
 | Depth distillation | Temporal median filtering within gripper mask |
 | Depth injection | Inject clean gripper depth into raw stereo stream |
 
-**Output** (`~/droid_data/output/mv-tap/droid/stage1/<episode_id>/`):
+**Output** (`~/droid_data/output/mv-tap/droid/depth/<episode_id>/`):
 ```
 robot.npz                      # joint_positions, T_ee_base_all, T_cam_ee_init, ...
 <cam_serial>/
@@ -78,71 +58,126 @@ robot.npz                      # joint_positions, T_ee_base_all, T_cam_ee_init, 
   gripper_depth.npz            # distilled gripper surface depth (wrist cam only)
 ```
 
-### Stage 2 — `process_droid_stage2.py`
+### Stage 2 — `compute_extrinsics.py`
+
 Multi-stage camera extrinsics calibration using differentiable rendering and point cloud alignment.
 
 | Stage | Description |
 |-------|-------------|
 | Stage 0 | Read pre-calibrated dataset extrinsics (if available) |
 | Stage 1 | VGGT visual anchoring from first frame |
-| Stage 2a | Dual-base competition: external camera ↔ robot arm alignment |
+| Stage 2a | External camera ↔ robot arm depth alignment |
 | Stage 2b | Wrist camera ↔ gripper body alignment |
-| Stage 3 | Global joint optimization — Chamfer + Robot + Wrist (lr=0.001) |
-| Stage 4 | Fine-tuning refinement (lr=0.0001, lower robot weight) |
+| Stage 3 | Global joint optimization (Chamfer + Robot + Wrist) |
 
-**Output** (`~/droid_data/output/mv-tap/droid/stage2/<episode_id>/`):
+**Output** (`~/droid_data/output/mv-tap/droid/extrinsics/<episode_id>/`):
 ```
-extrinsics.npz
-  <cam_serial>_base_extrinsic  # (4, 4) static extrinsic matrix
-  <cam_serial>_extrinsics      # (N, 4, 4) per-frame trajectory
-  wrist_serial                 # wrist camera serial string
+<cam_serial>/
+  extrinsics.json              # base_extrinsic (4x4), extrinsics (Nx4x4), is_wrist
+```
+
+### Stage 3 — `compute_tracks.py`
+
+Dense multi-view 3D point tracking via CoTracker + URDF kinematics.
+
+| Phase | Description |
+|-------|-------------|
+| Phase 1 | Per-view 2D tracking (CoTracker3) |
+| Phase 2 | Lift to 3D + robot/environment split (PyBullet masking) |
+| Phase 3 | Cross-view 3D deduplication |
+| Phase 4 | Cross-view completion (re-track unified points) |
+| Phase 5 | Median 3D fusion across views |
+
+**Output** (`~/droid_data/output/mv-tap/droid/tracks/<episode_id>/`):
+```
+tracks_3d.npz                  # final_traj_3d, final_vis_global
+<cam_serial>/
+  tracks_2d.npz                # per-camera 2D tracks + visibility
 ```
 
 ## Directory Structure
 
 ```
 droid/
-├── third_party/               # Dependencies (populated by git submodules + setup.sh)
-│   ├── s2m2/                  # Stereo matching model
-│   │   └── weights/           # Downloaded by setup.sh
-│   ├── vggt/                  # Visual camera pose estimation
-│   ├── co-tracker/            # Dense point tracking
-│   │   └── weights/           # Downloaded by setup.sh
-│   ├── PointWorld/            # Franka + Robotiq URDF assets (branch: data)
-│   ├── sam_weights/           # SAM ViT-H weights (downloaded by setup.sh)
-│   └── ZED_SDK_Linux_Ubuntu22.run  # ZED SDK offline installer (manual)
-├── process_droid_stage1.py    # Stage 1: depth extraction pipeline
-├── process_droid_stage2.py    # Stage 2: extrinsics calibration pipeline
+├── compute_depth.py           # Stage 1: SVO → stereo depth + gripper refinement
+├── compute_extrinsics.py      # Stage 2: VGGT + camera-robot alignment
+├── compute_tracks.py          # Stage 3: CoTracker + multi-view 3D fusion
+├── core/                      # Shared algorithmic modules
+│   ├── geometry.py            #   3D math: unproject, project, make_4x4, rodrigues
+│   ├── io.py                  #   Data loading: get_accelerator, load_depth/extrinsics
+│   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
+│   ├── physics.py             #   TensorRobotRenderer + PyBulletRenderer
+│   └── tracking.py            #   URDFKinematicsTracker (FK propagation + visibility)
+├── utils/
+│   └── visualization.py       # Notebook visualization helpers (point clouds, videos)
+├── pipeline.ipynb             # Interactive Colab notebook (thin orchestration layer)
 ├── run_parallel.sh            # Multi-GPU parallel runner
-├── mount_gcs.sh               # GCS bucket mount helper (input & output)
-├── setup.sh                   # One-shot dependency setup
-├── pipeline.ipynb             # Reference notebook
+├── setup.sh                   # One-shot dependency + weights setup
+├── mount_gcs.sh               # GCS bucket mount helper
+├── episodes.txt               # Full episode ID list
+├── verify_outputs.py          # Output verification script
+├── third_party/               # Dependencies (git submodules + downloaded weights)
+│   ├── s2m2/                  #   Stereo matching model
+│   ├── vggt/                  #   Visual camera pose estimation
+│   ├── co-tracker/            #   Dense point tracking
+│   ├── PointWorld/            #   Franka + Robotiq URDF assets (branch: data)
+│   └── sam_weights/           #   SAM ViT-H weights
 └── .gitmodules                # Submodule declarations
 ```
+
+## Data Setup
+
+The pipeline reads raw DROID data from a GCS bucket and writes outputs to another.
+Use `mount_gcs.sh` to mount both via [gcsfuse](https://cloud.google.com/storage/docs/gcsfuse-cli):
+
+```bash
+bash mount_gcs.sh
+```
+
+| Mount | GCS Bucket / Prefix | Local Path |
+|-------|---------------------|------------|
+| Input (DROID raw) | `gs://gresearch/robotics/droid_raw` | `~/droid_data/input/robotics/droid_raw` |
+| Output | `gs://dm-tapnet/mv-tap` | `~/droid_data/output/mv-tap` |
+
+> To manually unmount:
+> ```bash
+> fusermount -u ~/droid_data/input/robotics/droid_raw
+> fusermount -u ~/droid_data/output/mv-tap
+> ```
+
+## Running Options
+
+```bash
+bash run_parallel.sh                          # depth, all episodes
+bash run_parallel.sh --mode extrinsics        # extrinsics, all episodes
+bash run_parallel.sh --mode tracks            # tracks, all episodes
+bash run_parallel.sh --mode depth --limit 32  # depth, first 32 episodes
+```
+
+| Flag | Short | Values | Default | Description |
+|------|-------|--------|---------|-------------|
+| `--mode` | `-m` | `depth`, `extrinsics`, `tracks` | `depth` | Pipeline stage |
+| `--limit` | `-l` | integer | all | Max episodes to process |
+
+Jobs auto-scale to the number of GPUs detected by `nvidia-smi`.
+
+## Interactive Notebook
+
+Open [`pipeline.ipynb`](https://colab.research.google.com/github/yangyi02/droid/blob/main/pipeline.ipynb) in Colab for single-episode debugging.
+
+Each stage has two paths:
+- **🚧 Compute** — run from scratch
+- **☁️ Load** — pull pre-computed results from GCS (skip earlier stages)
 
 ## Dependencies
 
 ### ZED SDK (required for Stage 1 SVO decoding)
 
-The ZED SDK installer is stored in `third_party/` for offline use. Install it once on the target machine:
-
 ```bash
-chmod +x third_party/ZED_SDK_Linux_Ubuntu22.run
-./third_party/ZED_SDK_Linux_Ubuntu22.run silent runtime_only skip_tools
-
-# Install pyzed Python binding
+wget https://download.stereolabs.com/zedsdk/5.2/cu12/ubuntu22 -O ZED_SDK_Linux_Ubuntu22.run
+chmod +x ZED_SDK_Linux_Ubuntu22.run
+./ZED_SDK_Linux_Ubuntu22.run silent runtime_only skip_tools
 find /usr/local/zed/ -name "pyzed*.whl" -exec pip install {} \;
-```
-
-> The installer can also be downloaded fresh from Stereolabs:
-> ```
-> wget https://download.stereolabs.com/zedsdk/5.2/cu12/ubuntu22 -O ZED_SDK_Linux_Ubuntu22.run
-> ```
-
-### Python Packages
-```bash
-pip install pybullet pybullet-data opencv-python scipy tqdm h5py
-pip install git+https://github.com/facebookresearch/segment-anything.git
 ```
 
 ### Git Submodules (auto-cloned with `--recurse-submodules`)
@@ -162,27 +197,3 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 | CoTracker3 | HuggingFace `facebook/cotracker3` | `third_party/co-tracker/weights/` |
 | SAM ViT-H | `dl.fbaipublicfiles.com` | `third_party/sam_weights/` |
 | VGGT-1B | HuggingFace `facebook/VGGT-1B` | Auto-downloaded at first run |
-
-## Running Options
-
-```bash
-# Compute depth for all episodes (default mode)
-bash run_parallel.sh
-
-# Compute depth, limited to 32 episodes
-bash run_parallel.sh --limit 32
-
-# Compute extrinsics for all episodes
-bash run_parallel.sh --mode extrinsics
-
-# Compute extrinsics, limited to 32 episodes
-bash run_parallel.sh --mode extrinsics --limit 32
-```
-
-| Flag | Short | Values | Default | Description |
-|------|-------|--------|---------|-------------|
-| `--mode` | `-m` | `depth`, `extrinsics` | `depth` | Which pipeline stage to run |
-| `--limit` | `-l` | integer | all | Max number of episodes to process |
-
-Parallel jobs are automatically scaled to the number of available GPUs detected by `nvidia-smi`.
-Each GPU gets one job at a time: `CUDA_VISIBLE_DEVICES=<gpu_id>`.
