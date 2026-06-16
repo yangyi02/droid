@@ -1,2 +1,28 @@
-__pycache__
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Logs
 *.log
+
+# Model weights & large binaries
+*.pth
+*.ckpt
+*.svo
+*.svo2
+weights/
+
+# SAM weights (downloaded by setup.sh)
+third_party/sam_weights/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Parallel runner logs
+parallel_*_status.log
