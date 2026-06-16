@@ -1,11 +1,76 @@
 """Data I/O helpers shared across pipeline stages.
 
 Provides accelerator setup, metadata loading, and Stage 1/2 output reading.
+
+=============================================================================
+DATA CONTRACT — scene_constants
+=============================================================================
+The primary in-memory data structure shared across all three pipeline stages.
+All keys are optional unless marked (required).
+
+  scene_constants = {
+    'meta': {
+      'episode_id':    str              (required) e.g. "ILIAD+5e938e3b+2023-07-20"
+      'wrist_serial':  str              serial number of the wrist camera
+      'valid_indices': np.ndarray[int]  frame indices after idle filtering
+      'episode_path':  str              local path to raw episode dir
+    },
+
+    'robot': {
+      'joint_positions':    np.float32 (T, 7)   Franka joint angles
+      'gripper_positions':  np.float32 (T,)     gripper width
+      'T_ee_base_all':      np.float32 (T, 4,4) EE-to-base transform per frame
+      'T_cam_ee_init':      np.float32 (4, 4)   hand-eye transform (wrist cam)
+    },
+
+    'camera': {
+      '<cam_serial>': {
+        # Calibration  (all cameras)
+        'K_mat':            np.float32 (3, 3)    pinhole intrinsics
+        'baseline':         float                stereo baseline in metres
+        'zed_calibration':  dict                 raw ZED calibration payload
+
+        # Video  (all cameras, added by extract_svo_video)
+        'video_rgb':        np.uint8   (T,H,W,3) rectified left video
+        'video_right':      np.uint8   (T,H,W,3) rectified right video
+        'video_raw_rgb':    np.uint8   (T,H,W,3) raw (un-rectified) left video
+        'video_raw_right':  np.uint8   (T,H,W,3) raw right video
+        'first_frame_rgb':  np.uint8   (H,W,3)   first frame only (extrinsics mode)
+
+        # Depth  (all cameras, added by compute_stereo_depth)
+        'raw_depth':        np.float32 (T,H,W)   metric depth in metres
+
+        # Wrist camera only  (added by gripper refinement steps)
+        'original_raw_depth':       np.float32 (T,H,W)    depth before injection
+        'sam_real_masks':           np.bool_   (T,H,W)    SAM gripper mask
+        'empirical_gripper_depth':  np.float32 (T,H,W)    distilled gripper depth
+
+        # Tracking  (all cameras, added by phase1_extract_2d_tracks)
+        'tracks_2d':  np.float32 (T, N, 2)  CoTracker 2D point tracks
+        'vis_2d':     np.bool_   (T, N)      CoTracker visibility mask
+      }
+    }
+  }
+
+=============================================================================
+DATA CONTRACT — scene_state
+=============================================================================
+Per-camera extrinsics produced by Stage 2 (compute_extrinsics.py).
+Keyed by camera serial, same as scene_constants['camera'].
+
+  scene_state = {
+    '<cam_serial>': {
+      'base_extrinsic':  np.float32 (4, 4)    static reference camera-to-world
+      'extrinsics':      np.float32 (T, 4, 4) per-frame camera-to-world
+      'is_wrist':        bool                 True for wrist camera
+    }
+  }
+
+=============================================================================
 """
 
 import json
 import os
-import sys
 
 import cv2
 import numpy as np
