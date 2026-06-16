@@ -28,7 +28,7 @@ import torch.optim as optim
 from tqdm import tqdm
 
 from core.geometry import axis_angle_to_matrix, make_4x4, make_T
-from core.io import get_accelerator, load_depth_data
+from core.io import get_accelerator, load_depth_data, load_metadata
 from core.physics import TensorRobotRenderer
 
 
@@ -62,33 +62,6 @@ def init_calibration_models():
 # ---------------------------------------------------------------------------
 # 2. Metadata & Data Loading
 # ---------------------------------------------------------------------------
-def load_metadata():
-  """Load global dataset JSON mappings (same as Stage 1)."""
-  root_path = os.path.expanduser("~/droid_data/meta/1.0.1")
-  os.makedirs(root_path, exist_ok=True)
-
-  base_url = "https://huggingface.co/KarlP/droid/resolve/main"
-  files = [
-      "camera_serials.json",
-      "cam2base_extrinsic_superset.json",
-  ]
-
-  print(f"⬇️ Synchronizing metadata to {root_path}...")
-  for f in files:
-    if not os.path.exists(os.path.join(root_path, f)):
-      os.system(f"wget -q -nc -P {root_path} {base_url}/{f}")
-
-  def load_json(name):
-    with open(os.path.join(root_path, name), "r") as f:
-      return json.load(f)
-
-  serials_db = load_json("camera_serials.json")
-  extrinsics_db = load_json("cam2base_extrinsic_superset.json")
-
-  print(f"✅ Metadata ready!")
-  return serials_db, extrinsics_db
-
-
 # ---------------------------------------------------------------------------
 # 3. VGGT Visual Pose Estimation
 # ---------------------------------------------------------------------------
@@ -566,7 +539,7 @@ if __name__ == "__main__":
   print("🚀 DROID Stage 2: Camera Extrinsics Calibration Pipeline")
   device = get_accelerator()
   vggt_model, load_fn, pose_fn = init_calibration_models()
-  serials_db, extrinsics_db = load_metadata()
+  serials_db, _, _, extrinsics_db, _ = load_metadata()
 
   # Discover available episodes from depth output
   depth_abs = os.path.abspath(os.path.expanduser(args.depth_root))

@@ -24,7 +24,7 @@ from tqdm import tqdm
 from core.depth import (build_universal_gripper_mask, compute_stereo_depth,
                         distill_empirical_gripper_depth, inject_gripper_depth)
 from core.geometry import make_4x4
-from core.io import get_accelerator
+from core.io import get_accelerator, load_metadata
 
 # ---------------------------------------------------------------------------
 # 1. Foundation Models
@@ -67,39 +67,6 @@ def init_all_models():
 # ---------------------------------------------------------------------------
 # 2. Metadata Management
 # ---------------------------------------------------------------------------
-def load_metadata():
-  """Securely fetch and load global dataset JSON mappings."""
-  root_path = os.path.expanduser("~/droid_data/meta/1.0.1")
-  os.makedirs(root_path, exist_ok=True)
-
-  base_url = "https://huggingface.co/KarlP/droid/resolve/main"
-  files = [
-      "intrinsics.json",
-      "camera_serials.json",
-      "episode_id_to_path.json",
-      "keep_ranges_1_0_1.json",
-      "cam2base_extrinsic_superset.json",
-  ]
-
-  print(f"⬇️ Synchronizing metadata to {root_path}...")
-  for f in files:
-    if not os.path.exists(os.path.join(root_path, f)):
-      os.system(f"wget -q -nc -P {root_path} {base_url}/{f}")
-
-  def load_json(name):
-    with open(os.path.join(root_path, name), "r") as f:
-      return json.load(f)
-
-  serials_db = load_json("camera_serials.json")
-  id_to_path = load_json("episode_id_to_path.json")
-  keep_ranges = load_json("keep_ranges_1_0_1.json")
-  extrinsics_db = load_json("cam2base_extrinsic_superset.json")
-
-  valid_ids = sorted(set(serials_db.keys()) & set(id_to_path.keys()) & set(extrinsics_db.keys()))
-  print(f"✅ Metadata ready! Matched {len(valid_ids)} episodes with pre-calibrated extrinsics.")
-  return serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids
-
-
 # ---------------------------------------------------------------------------
 # 3. SVO Decoding & Kinematics Extraction
 # ---------------------------------------------------------------------------

@@ -84,6 +84,55 @@ def get_accelerator(force_egl=True):
   return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def load_metadata(meta_root="~/droid_data/meta/1.0.1"):
+  """Download (if needed) and load all global DROID dataset JSON mappings.
+
+  This is the single canonical implementation shared by all pipeline stages.
+  Files are cached locally in meta_root and only downloaded when absent.
+
+  Args:
+    meta_root: local directory to cache downloaded JSON files.
+
+  Returns:
+    serials_db:    dict  episode_id → {wrist_cam_serial, ext_cam_serials, ...}
+    id_to_path:    dict  episode_id → relative path within raw data root
+    keep_ranges:   dict  episode_key → list of (start, end) action frame ranges
+    extrinsics_db: dict  episode_id → pre-calibrated extrinsics (may be empty)
+    valid_ids:     list  episode IDs present in all three core databases
+  """
+  root_path = os.path.expanduser(meta_root)
+  os.makedirs(root_path, exist_ok=True)
+
+  base_url = "https://huggingface.co/KarlP/droid/resolve/main"
+  files = [
+      "camera_serials.json",
+      "episode_id_to_path.json",
+      "keep_ranges_1_0_1.json",
+      "cam2base_extrinsic_superset.json",
+  ]
+
+  print(f"⬇️  Synchronizing metadata to {root_path}...")
+  for f in files:
+    dest = os.path.join(root_path, f)
+    if not os.path.exists(dest):
+      os.system(f"wget -q -nc -P {root_path} {base_url}/{f}")
+
+  def _load(name):
+    with open(os.path.join(root_path, name), "r") as fh:
+      return json.load(fh)
+
+  serials_db    = _load("camera_serials.json")
+  id_to_path    = _load("episode_id_to_path.json")
+  keep_ranges   = _load("keep_ranges_1_0_1.json")
+  extrinsics_db = _load("cam2base_extrinsic_superset.json")
+
+  valid_ids = sorted(
+      set(serials_db.keys()) & set(id_to_path.keys()) & set(extrinsics_db.keys())
+  )
+  print(f"✅ Metadata ready: {len(valid_ids)} episodes with pre-calibrated extrinsics.")
+  return serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids
+
+
 def load_depth_data(episode_id, depth_root="~/droid_data/output/mv-tap/droid/depth",
                     load_video="first_frame"):
   """Reconstruct scene_constants from Stage 1 disk outputs.
