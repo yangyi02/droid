@@ -1,224 +1,200 @@
-# DROID Multi-View 3D Point Tracking: Data Generation Pipeline
+# Multi-View 3D Point Track Generation from DROID
 
-> **Status**: Draft for 3DV Multi-View TAP submission — DROID dataset section
+> **Status**: Draft for 3DV Multi-View TAP Submission
 >
-> **Source code**: [pipeline.ipynb](../pipeline.ipynb) · [README.md](../README.md)
+> `[cite ...]` markers indicate references to be filled during LaTeX conversion.
 
 ---
 
-## Recommended Structure
+## 1. Introduction and Motivation
 
-This report is structured as a **dataset/pipeline technical section** suitable for inclusion as part of a larger paper or as supplementary material. The recommended LaTeX sections are:
+3D point tracking can be approached from monocular video using learned depth estimation, but the resulting tracks lack metric accuracy and cross-view consistency. Multi-view setups with calibrated stereo cameras offer a path to higher-quality 3D annotations — provided the challenges of metric depth estimation, camera calibration, and cross-view fusion can be reliably solved. Generating such annotations at scale from real-world recordings is important for training and evaluating 3D point tracking models such as TAPVid-3D [cite TAPVid-3D].
 
-```
-\section{DROID Data Generation Pipeline}
-  \subsection{Overview}
-  \subsection{Stage 1: Metric Depth Estimation}
-  \subsection{Stage 2: Camera Extrinsics Calibration}
-  \subsection{Stage 3: Multi-View 3D Point Tracking}
-  \subsection{Implementation Details}
-```
+The DROID dataset [cite DROID] presents a compelling opportunity for this task. As one of the largest real-world robot manipulation datasets, DROID provides multi-view stereo video from 2–3 synchronized ZED cameras per episode, precise robot kinematics (7-DOF joint states, gripper telemetry), and pre-calibrated camera parameters — recorded across diverse lab environments and manipulation tasks. These rich signals, if properly exploited, could enable the construction of high-quality 3D point tracks without additional manual annotation.
+
+However, naively applying existing pipelines to DROID reveals three fundamental challenges:
+
+1. **Depth quality on close-range robot surfaces.** Stereo matching degrades severely on the robot gripper visible in the wrist camera. At close range (< 15 cm), the disparity becomes very large and can exceed the stereo matching search range, leading to noisy or missing depth. The specular metallic surface further compounds the problem. The wrist-mounted camera — the most informative viewpoint for manipulation — is most affected.
+
+2. **Camera extrinsics accuracy.** The DROID dataset spans hundreds of distinct physical setups with different camera mounting configurations. Pre-calibrated extrinsics, when available, may drift or be inaccurate. Even when multiple cameras are jointly optimized using robot alignment alone, this does not guarantee *multi-view geometric consistency* of the environment — a property essential for fusing observations across viewpoints into a single 3D coordinate frame.
+
+3. **Cross-view tracking consistency.** Standard 2D tracking operates per-camera, producing independent sets of 2D trajectories with no shared identity across viewpoints. PointWorld follows this approach — each camera's 2D tracks are lifted to 3D independently, which is sufficient for per-view world model training. However, for multi-view 3D tracking, this results in duplicated, inconsistent 3D tracks that cannot be meaningfully compared or fused across views.
+
+Prior work on DROID data processing, including the PointWorld pipeline [cite PointWorld], addresses these challenges with a general-purpose approach: FoundationStereo [cite FoundationStereo] for depth, VGGT [cite VGGT] for pose initialization, and per-camera CoTracker3 [cite CoTracker] for 2D tracking, with each camera processed independently. Notably, PointWorld processes only the two static external cameras by default, discarding the wrist-mounted camera entirely — arguably the most informative viewpoint for manipulation, as it captures close-up interactions between the gripper and objects. While this design is effective for single-view world model training (PointWorld's primary objective), it does not produce the multi-view consistent 3D tracks required for benchmarking and training 3D point tracking models, and leaves the wrist viewpoint — with its unique challenges and opportunities — entirely unexplored.
+
+We present a three-stage pipeline specifically designed to exploit DROID's unique signals — calibrated stereo baselines, synchronized robot kinematics, and overlapping multi-camera viewpoints — to generate dense, multi-view consistent 3D point tracks. Our key contributions are:
+
+- **Domain-aware depth**: We exploit the rigidity of the open gripper as a temporal prior to repair stereo depth failures on the wrist camera.
+- **Globally consistent calibration**: We jointly optimize all camera extrinsics by enforcing cross-view geometric agreement via truncated Chamfer distance, in addition to per-camera robot alignment.
+- **Multi-view 3D fusion**: We deduplicate, complete, and fuse tracks across viewpoints to produce a single set of globally consistent 3D trajectories with per-camera 2D projections.
 
 ---
 
-## Section: DROID Data Generation Pipeline
+## 2. Method
 
-### Overview
-
-We process raw episodes from the DROID dataset [cite DROID] into dense multi-view 3D point tracks through a three-stage pipeline. Each DROID episode consists of a robot manipulation task recorded by 2–3 ZED stereo cameras (two external cameras and one wrist-mounted camera), with synchronized robot joint states and gripper telemetry. Our pipeline outputs, for each episode: (1) metric depth maps, (2) per-frame camera-to-world extrinsics, and (3) dense 3D point trajectories with per-camera 2D projections and visibility labels.
+Our pipeline processes each DROID episode through three sequential stages. Each stage builds upon the outputs of the previous, progressively transforming raw stereo recordings and robot kinematics into dense, multi-view consistent 3D point tracks.
 
 ```mermaid
 graph LR
-    A["Raw DROID Episode<br/>(SVO stereo + H5 kinematics)"] --> B["Stage 1: Depth<br/>S2M2 + SAM"]
-    B --> C["Stage 2: Extrinsics<br/>VGGT + Differentiable Alignment"]
-    C --> D["Stage 3: Tracking<br/>CoTracker + URDF Fusion"]
-    D --> E["Output<br/>3D Tracks + 2D Projections"]
+    A["Raw Episode<br/>(stereo video + kinematics)"] --> B["Stage 1: Depth<br/>Stereo matching + gripper repair"]
+    B --> C["Stage 2: Extrinsics<br/>Visual init + robot alignment<br/>+ global joint optimization"]
+    C --> D["Stage 3: Tracking<br/>Per-view 2D tracking + FK<br/>+ cross-view 3D fusion"]
+    D --> E["Output<br/>3D tracks + per-cam 2D"]
 ```
 
-The pipeline is designed for automatic parallel execution across thousands of episodes. Each stage reads the outputs of previous stages from disk, enabling independent scaling and checkpointing. Table 1 summarizes the components used at each stage.
+### 2.1 Stage 1: Metric Depth with Gripper Refinement
 
-| Stage | Input | Models / Algorithms | Output |
-|-------|-------|---------------------|--------|
-| 1. Depth | ZED SVO stereo video, `trajectory.h5` | S2M2 (stereo matching), SAM ViT-H (segmentation) | Metric depth, gripper mask, calibration |
-| 2. Extrinsics | Stage 1 depth + first frames | VGGT-1B (visual pose), differentiable rendering | Per-frame 4×4 camera-to-world transforms |
-| 3. Tracking | Stage 1 depth + Stage 2 extrinsics + video | CoTracker3 (2D tracking), PyBullet (URDF FK) | Dense 3D point tracks + per-camera 2D tracks |
+**Stereo depth estimation.** Following prior work (e.g., PointWorld uses FoundationStereo [cite FoundationStereo]), we obtain metric depth from calibrated stereo pairs via stereo matching. We use S2M2 [cite S2M2], which achieves competitive or superior performance on standard benchmarks with a simpler deployment footprint. We apply aggressive confidence filtering, zeroing out disparities with confidence below 0.95. The rationale is that missing depth is recoverable (other frames or cameras can fill in), but incorrect depth silently corrupts extrinsics calibration and 3D fusion.
 
----
+**Gripper depth distillation.** While stereo depth estimation itself is standard, a key failure mode remains unaddressed by prior pipelines: the wrist camera captures the robot gripper as a permanent foreground object, and stereo matching fails on it because (1) the close-range geometry (< 15 cm) produces very large disparities that can exceed the stereo search range, and (2) the specular metallic surface further degrades matching quality. PointWorld sidesteps this issue by excluding the wrist camera entirely; we instead repair it.
 
-### Stage 1: Metric Depth Estimation
+We exploit a key domain insight: **the gripper starts each episode in a fixed open position, making it a rigid body with constant depth surface across these frames.** This allows us to distill a clean gripper depth from the noisy stereo observations across time:
 
-Stage 1 extracts metric depth maps from raw ZED stereo recordings. The pipeline consists of four sub-steps: SVO decoding, stereo depth estimation, gripper mask extraction, and gripper depth refinement.
+1. **Segmentation**: We extract a gripper mask using SAM [cite SAM] in a zero-shot manner — requiring no robot-specific training data. A consensus mask is computed by pixel-wise majority voting across frames where the gripper is in its initial open state (gripper position < 0.05) to stabilize against per-frame prediction variance. We use SAM rather than projecting the URDF model because the hand-eye transform is uncalibrated at this stage — that calibration occurs in Stage 2.
 
-#### SVO Decoding and Robot Kinematics
+2. **Temporal median**: Within the consensus mask, we compute the per-pixel temporal **median** depth across all initial-state frames. The median is robust to per-frame stereo noise, unlike the mean which would blur specular artifacts rather than suppress them.
 
-Each DROID episode stores stereo video in ZED's proprietary SVO format. We decode both rectified and unrectified left/right video streams along with per-frame intrinsics (focal length, principal point, distortion coefficients) and the stereo baseline (0.063m for wrist cameras, 0.120m for external cameras). Concurrently, we parse robot kinematics from the episode's HDF5 trajectory file, extracting 7-DOF joint positions, gripper states, and end-effector poses. We compute the static hand-eye transformation $T_\text{cam←ee}^\text{init}$ as:
+3. **Injection**: For frames where the gripper remains in its initial open state, the distilled template depth replaces the raw stereo depth within the mask, ensuring that downstream stages receive clean, consistent gripper geometry.
 
-$$T_\text{cam←ee}^\text{init} = T_\text{ee}(0)^{-1} \cdot T_\text{wrist\_ext}$$
+*Limitation.* This refinement applies only to the initial open-gripper state. Once the gripper begins grasping (closing), finger positions vary across frames and the rigidity prior no longer holds. Extending to arbitrary gripper configurations via FK-predicted finger geometry is a direction for future work.
 
-where $T_\text{ee}(0)$ is the end-effector pose at the first frame and $T_\text{wrist\_ext}$ is the pre-calibrated wrist camera extrinsic from the DROID metadata.
+### 2.2 Stage 2: Differentiable Extrinsics Calibration
 
-#### S2M2 Stereo Depth
+The key insight of this stage is that independent per-camera calibration — even with perfect depth and pose priors — does not guarantee *multi-view geometric consistency*. Our approach therefore combines per-camera robot alignment with a global joint optimization that enforces cross-camera agreement.
 
-We apply S2M2 [cite S2M2], a state-of-the-art stereo matching model (XL variant, with `torch.compile` acceleration and 3 refinement iterations), to each frame independently. Disparity maps are converted to metric depth via:
+**Initialization.** We initialize camera poses using VGGT [cite VGGT], a vision transformer that estimates multi-view relative poses from images. Using the wrist camera as anchor (its pose is known from robot kinematics), we chain relative transforms to obtain initial absolute poses for external cameras. When DROID metadata provides pre-calibrated extrinsics, we run the subsequent optimization from both initializations and select the result with lower final loss. This is preferable to COLMAP/SfM (which is unreliable in scenes dominated by the self-similar, reflective robot body) or PnP (which requires 3D–2D correspondences not available before calibration).
 
-$$Z = \frac{f_x \cdot b}{d}$$
+**Per-camera robot alignment.** We refine each camera's extrinsic by minimizing a differentiable depth re-projection loss against the known robot geometry. The robot is represented as a dense surface point cloud from the URDF model. For each frame, forward kinematics maps CAD points to world coordinates, which are projected into the camera. The loss penalizes the L1 difference between the projected and observed depth, with front-face culling and depth tolerance filtering to handle self-occlusion and outliers. The wrist camera is handled separately: the optimization operates in end-effector frame, effectively learning the actual hand-eye transformation $T_\text{cam→ee}$.
 
-where $f_x$ is the focal length, $b$ is the stereo baseline, and $d$ is the predicted disparity. We zero out pixels with S2M2 confidence below 0.95 to suppress unreliable matches.
-
-#### Gripper Mask Extraction via SAM
-
-The wrist camera captures the robot gripper as a permanent foreground object. To extract a clean gripper mask, we leverage SAM ViT-H [cite SAM] applied to frames where the gripper is closed (gripper position < 0.05). For each closed-gripper frame, we prompt SAM with 5 positive seed points in the lower image half (where the gripper typically appears) and 1 negative point in the upper half, along with a bounding box covering the lower image region. We filter candidate masks by area ratio (2%–45% of the image), scoring by $\text{SAM\_score} \times \text{area\_ratio}$.
-
-A **consensus mask** is computed by pixel-wise majority voting across all closed-gripper frames (threshold 0.5), followed by extraction of the largest connected component. This produces a stable, view-consistent gripper segmentation.
-
-#### Gripper Depth Refinement
-
-Raw stereo depth is unreliable on the gripper due to specular surfaces and close-range stereo failure modes. We address this with a two-step distillation-and-injection approach:
-
-1. **Distillation**: Within the consensus gripper mask, we collect depth values from closed-gripper frames (filtering to $Z < 0.15$m). We compute the per-pixel temporal median, producing a clean "template" gripper depth surface.
-
-2. **Injection**: For closed-gripper frames, wherever the distilled template has a valid depth value, we replace the raw stereo depth with the template depth.
-
-This ensures that gripper geometry is consistently represented across frames, which is critical for downstream extrinsics calibration and tracking.
-
----
-
-### Stage 2: Camera Extrinsics Calibration
-
-Stage 2 recovers per-frame camera-to-world 4×4 extrinsic matrices for all cameras. The approach combines visual priors from VGGT with differentiable rendering-based alignment against the known robot geometry.
-
-#### VGGT Visual Initialization
-
-When pre-calibrated extrinsics are unavailable, we initialize camera poses using VGGT-1B [cite VGGT], a vision transformer for multi-view pose estimation. We feed the first-frame images from all cameras to VGGT, obtaining pairwise relative poses. Using the wrist camera as an anchor (whose absolute pose is known from robot kinematics), we chain relative transforms to obtain initial world-frame estimates for all cameras:
-
-$$T_\text{ext←world} = T_\text{ref←world} \cdot T_\text{ref←tgt}^{-1}$$
-
-where $T_\text{ref←world} = T_\text{wrist←base}(0) \cdot T_\text{ref←wrist}$.
-
-#### Differentiable Camera-Robot Alignment
-
-We refine each camera's extrinsic independently by minimizing a depth re-projection loss against the known robot body geometry. We represent the robot as a dense point cloud of $\sim$100K surface points sampled proportionally to mesh face area from the Franka Panda + Robotiq 2F-85 URDF model. For each frame, forward kinematics maps these CAD points to world coordinates.
-
-The optimization uses a 6-DOF incremental parameterization $\delta = [\mathbf{r}, \mathbf{t}] \in \mathbb{R}^6$, where $\mathbf{r}$ is an axis-angle rotation and $\mathbf{t}$ is a translation, applied multiplicatively to the current extrinsic:
-
-$$T' = \Delta T(\delta) \cdot T_\text{current}$$
-
-with $\Delta T$ constructed via the differentiable Rodrigues formula (with Taylor-series fallback for small angles $\|\mathbf{r}\|^2 < 10^{-8}$).
-
-The depth re-projection loss projects robot CAD points into the camera, samples the observed depth map via bilinear interpolation (`grid_sample`), and penalizes the difference between predicted and observed depth. We apply front-face culling (surface normal dot product < 0) and depth tolerance filtering (0.15m for external cameras). The optimization runs Adam for 500 steps at learning rate $10^{-3}$.
-
-For the **wrist camera**, the optimization operates in end-effector frame using gripper-only CAD points, as the gripper is the only robot element visible.
-
-#### Global Joint Optimization
-
-After independent calibration, we jointly optimize all camera extrinsics simultaneously with a combined loss:
+**Global joint optimization.** After independent calibration, we jointly optimize all camera extrinsics simultaneously with a combined loss:
 
 $$\mathcal{L}_\text{total} = \mathcal{L}_\text{chamfer} + \lambda_\text{robot} \cdot \sum_{c} \mathcal{L}_\text{robot}^{(c)}$$
 
-where:
-- $\mathcal{L}_\text{chamfer}$ is the pairwise truncated Chamfer distance (cutoff 5cm) between environment point clouds from different cameras, using 2000 randomly downsampled points per frame per camera.
-- $\mathcal{L}_\text{robot}^{(c)}$ is the camera-robot depth alignment loss for camera $c$.
-- $\lambda_\text{robot} = 1.0$.
+The cross-camera term $\mathcal{L}_\text{chamfer}$ is the pairwise **truncated Chamfer distance** between environment point clouds from different cameras. Truncation (at 5 cm) is essential: without it, non-overlapping field-of-view regions dominate the loss. This loss directly enforces the geometric consistency required for multi-view fusion — when extrinsics are correct, environment point clouds from different cameras should overlap in 3D. The per-camera robot alignment loss $\mathcal{L}_\text{robot}^{(c)}$ prevents the Chamfer loss from drifting cameras away from the robot.
 
-This joint optimization ensures multi-view geometric consistency while maintaining alignment with the robot.
+The critical difference from PointWorld is the cross-view Chamfer term. Although PointWorld places all camera parameters in a single optimizer, each camera's loss depends only on its own robot depth alignment — there is no cross-camera coupling, making it mathematically equivalent to independent per-camera optimization. Robot-only alignment can succeed per-camera while leaving the environment geometrically inconsistent across views, because the robot occupies only a small fraction of the scene. Our Chamfer loss introduces the missing cross-camera coupling by directly penalizing environment inconsistency.
 
----
+### 2.3 Stage 3: Multi-View 3D Point Tracking
 
-### Stage 3: Multi-View 3D Point Tracking
-
-Stage 3 produces dense 3D point trajectories by combining learning-based 2D tracking with multi-view geometry and robot forward kinematics. We process environment points and robot points separately, then merge the results.
+The final stage produces dense 3D point trajectories with per-camera 2D projections and visibility labels. We employ a **dual-track architecture** that processes environment points and robot points through fundamentally different mechanisms.
 
 #### Environment Tracking
 
-**Phase 1 — Per-View 2D Tracking.**
-We run CoTracker3 [cite CoTracker] in offline mode (grid_size=30, query_frame=0) on each camera view independently, producing per-camera 2D tracks $\tau^{(c)} \in \mathbb{R}^{T \times N_c \times 2}$ and visibility masks $v^{(c)} \in \{0,1\}^{T \times N_c}$ (threshold > 0.5).
+**Per-view 2D tracking.** We run CoTracker3 [cite CoTracker] in offline mode on each camera independently. We choose the offline model over online mode (used in PointWorld with 16-frame clips) because it processes the full video at once, producing more temporally consistent tracks without clip-stitching artifacts and preserving long-range correspondences.
 
-**Phase 2 — 3D Lift and Robot Filtering.**
-At $t=0$, we render the robot mask via PyBullet (dilated by a 15×15 kernel for safety margin). Track seed points falling on the robot are removed. Remaining environment points are lifted to 3D world coordinates via unprojection with the calibrated extrinsics and metric depth (filtering to $0.05\text{m} < Z < 5.0\text{m}$).
+**3D lift with robot-environment separation.** Track seed points are separated into environment and robot using a rendered robot mask. Remaining environment points are lifted to 3D world coordinates via unprojection with calibrated depth and extrinsics.
 
-**Phase 3 — Cross-View 3D Deduplication.**
-We concatenate 3D seed points from all views and merge nearby points using a **Union-Find** algorithm on a kd-tree with merge radius $r = 1.5$cm, producing a unified set of $N_\text{unified}$ canonical 3D points (positioned at the median of each merged group).
+**Cross-view 3D deduplication.** A naive approach would treat each camera's lifted 3D points as independent, resulting in duplicate representations of the same physical surface point. We merge duplicates using a **Union-Find algorithm** over a kd-tree: any two seed points from different cameras within a merge radius of 1.5 cm in 3D are considered the same physical point. The canonical position is the coordinate-wise median of each merged group. Union-Find is preferred over alternatives such as Hungarian matching ($O(N^3)$, does not scale) or greedy nearest-neighbor (order-dependent). The 1.5 cm threshold is chosen to match the typical stereo depth noise level while preserving spatial detail.
 
-**Phase 4 — Cross-View Completion.**
-For each camera, we identify unified points that were not natively tracked in that view. These "missing" points are projected into the camera at 5 keyframes (evenly spaced across the video), with occlusion checks (sensor depth ≥ predicted depth − 2cm). CoTracker is re-run in query mode (with backward tracking) from each keyframe, and 2D trajectories from multiple keyframes are fused via per-coordinate temporal median.
+**Cross-view completion.** After deduplication, each camera is likely "missing" tracks for many unified points — either due to field-of-view differences or seed point selection. We project missing points into each camera at **multiple keyframes** spaced across the video, with occlusion checks, and re-run CoTracker in query mode. Using multiple keyframes (rather than one) dramatically increases the probability that at least one captures the point unoccluded, yielding substantially more complete per-view coverage. Tracks from multiple keyframes are fused via per-coordinate temporal median.
 
-**Phase 5 — Multi-View 3D Fusion.**
-For each (frame, point), we unproject from every camera view that has a valid 2D observation, then compute the **coordinate-wise median** across views to produce the final 3D trajectory. Temporal gaps are filled via linear interpolation, followed by Gaussian smoothing ($\sigma = 1.5$). Points visible in fewer than 2 camera views or fewer than 5 total frames are discarded.
+**Multi-view 3D fusion.** For each (frame, point) pair, we unproject from every camera with a valid 2D observation and compute the **coordinate-wise median** across views. The median is robust to single-view outliers (wrong depth, extrinsics error), effectively ignoring the worst-case camera. Temporal gaps are filled via linear interpolation and Gaussian smoothing. Points visible in fewer than 2 camera views or 5 total frames are discarded as unreliable.
 
-#### Robot Tracking via URDF Forward Kinematics
+#### Robot Tracking via Forward Kinematics
 
-We track robot surface points using the known URDF model and recorded joint states, bypassing appearance-based tracking entirely.
+Tracking the robot via appearance is fundamentally ill-posed: the robot body is self-similar, specular, and often partially occluded. We bypass appearance-based tracking entirely by exploiting the known kinematic model.
 
-At $t=0$, we render a per-link segmentation map via PyBullet and identify CoTracker seed points on the robot surface (after 7px erosion). For each seed point, we compute its coordinates in the local frame of its bound link:
+Each seed point on the robot surface is assigned to its nearest link and expressed in that link's local coordinate frame at $t=0$. For subsequent frames, forward kinematics propagates each point through the updated link transform, producing *exact* 3D trajectories (up to kinematic model accuracy). Visibility in each camera is determined by bounds checking, self-occlusion (against the rendered URDF depth), and environment occlusion (against the sensor depth).
 
-$$\mathbf{p}_\text{local} = T_\text{link}(0)^{-1} \cdot \mathbf{p}_\text{world}(0)$$
+Unlike PointWorld, which tracks only gripper-attached points via FK, our pipeline tracks points on **all robot links** (arm segments, joints, and gripper), providing substantially more complete robot surface coverage for downstream evaluation.
 
-For subsequent frames, we update the joint configuration in PyBullet and propagate each local point through the new link transform:
+#### Merging and Output
 
-$$\mathbf{p}_\text{world}(t) = T_\text{link}(t) \cdot \mathbf{p}_\text{local}$$
-
-Visibility at each frame is determined by three conditions:
-1. The projected 2D point is within image bounds
-2. Not self-occluded: $Z_\text{pred} \leq Z_\text{URDF} + 1.5\text{cm}$
-3. Not environment-occluded: $Z_\text{pred} \leq Z_\text{sensor} + 2\text{cm}$
-
-Robot 3D trajectories are projected to all camera views using the same visibility checks, producing per-camera 2D robot tracks.
-
-#### Track Merging and Export
-
-Environment tracks (type=0) and robot tracks (type=1) are concatenated along the point dimension. The final output per episode consists of:
-- Global 3D tracks: $\mathbf{T} \in \mathbb{R}^{T \times N \times 3}$, visibility $\mathbf{V} \in \{0,1\}^{T \times N}$
-- Per-camera 2D tracks: $\mathbf{T}^{(c)} \in \mathbb{R}^{T \times N \times 2}$, visibility $\mathbf{V}^{(c)} \in \{0,1\}^{T \times N}$
-- Per-camera intrinsics $(f_x, f_y, c_x, c_y)$ and world-to-camera extrinsics $T^{T \times 4 \times 4}$
-- Point type labels (environment vs. robot)
+Environment tracks and robot tracks are concatenated with type labels (environment vs. robot). The output format — global 3D tracks $\mathbf{T} \in \mathbb{R}^{T \times N \times 3}$, per-camera 2D tracks, visibility labels, and calibration data — is directly compatible with the TAPVid-3D [cite TAPVid-3D] evaluation protocol.
 
 ---
 
-### Implementation Details
+## 3. Comparison with PointWorld
 
-**Scale.** We process all valid DROID episodes where camera serial mapping, episode paths, and pre-calibrated extrinsics are jointly available. Each stage supports multi-GPU distributed execution via rank/world-size parallelism with file-locked progress tracking.
+PointWorld [cite PointWorld] processes DROID data with a similar three-stage architecture but targets a different objective: per-camera 3D point flows for single-view world model training. Our pipeline targets multi-view consistent 3D point tracks for 3D tracking evaluation. This difference in objective drives the key architectural distinctions:
 
-**Frame selection.** We use the DROID-provided `keep_ranges` metadata to select action-relevant frames, discarding idle periods. Videos are bounded between 48 and 250 frames.
+| Component | PointWorld | Ours | Motivation |
+|-----------|-----------|------|------------|
+| **Gripper depth** | ❌ Not addressed | ✅ Temporal median distillation | Exploits initial-state rigidity to repair stereo failures |
+| **Extrinsics** | Per-camera robot-depth (no cross-camera coupling) | Robot-depth + **cross-view Chamfer** | Robot-only alignment ≠ environment consistency |
+| **Multi-view fusion** | ❌ Each camera independent | ✅ Dedup + completion + median fusion | Essential for globally consistent 3D tracks |
+| **Wrist camera** | ❌ Excluded by default | ✅ Fully integrated | Most informative viewpoint for manipulation |
+| **2D tracker mode** | Online (16-frame clips) | **Offline** (48-frame clips) | No clip stitching; better long-range consistency |
+| **Robot tracking** | FK for gripper only | FK for **all robot links** | Full robot surface coverage |
+| **Hand-eye calibration** | Uses kinematic GT only | Optimizes $T_\text{cam→ee}$ | Accounts for actual mounting offset |
 
-**Model weights.** S2M2 XL weights from HuggingFace (`minimok/s2m2`); CoTracker3 offline checkpoint from HuggingFace (`facebook/cotracker3`); SAM ViT-H weights from Meta; VGGT-1B from HuggingFace (`facebook/VGGT-1B`, auto-downloaded).
+PointWorld's per-camera design is *intentional* — their downstream world model consumes single-camera observations. Our cross-view fusion is necessary because our downstream task (TAPVid-3D) requires globally consistent 3D tracks with multi-camera visibility labeling.
 
-**Robot model.** We use the Franka Panda + Robotiq 2F-85 URDF (`franka_panda_robotiq_2f85_og.urdf`). Surface points (100K) are sampled proportionally to mesh face area, with camera-attached meshes downweighted by $10^{-4}$. Gripper angle is mapped as: $\theta = \text{clip}(g, 0, 1) \times 0.8028 - 0.08$, where $g$ is the gripper state from telemetry.
+---
 
-**Key hyperparameters.** Table 2 summarizes important thresholds and parameters.
+## 4. Results
 
-| Parameter | Value | Stage | Purpose |
-|-----------|-------|-------|---------|
-| S2M2 confidence threshold | 0.95 | 1 | Disparity filtering |
-| Stereo baseline (wrist / external) | 0.063m / 0.120m | 1 | Depth from disparity |
-| Closed gripper threshold | < 0.05 | 1 | SAM mask frame selection |
-| SAM mask area ratio | 2%–45% | 1 | Mask quality filter |
-| Gripper depth ceiling | 0.15m | 1 | Depth distillation |
-| Optimization steps / learning rate | 500 / 10⁻³ | 2 | Adam for alignment |
-| Depth tolerance (external cameras) | 0.15m | 2 | Robot loss filtering |
-| Chamfer distance cutoff | 5cm | 2 | Truncated loss |
-| Chamfer downsampling | 2000 pts/frame | 2 | Computational budget |
-| CoTracker grid size | 30 | 3 | 2D tracking density |
-| Robot mask dilation | 15×15 px | 3 | Env/robot separation |
-| 3D deduplication radius | 1.5cm | 3 | Union-Find merge |
-| Self-occlusion tolerance | 1.5cm | 3 | URDF visibility |
-| Environment occlusion tolerance | 2cm | 3 | Depth-based visibility |
-| Temporal smoothing $\sigma$ | 1.5 | 3 | Gaussian filter |
-| Min. visible cameras / frames | 2 / 5 | 3 | Track quality filter |
+> **[TODO: Fill with `compute_stats.py` output]**
+
+### 4.1 Dataset Statistics
+
+| Metric | Value |
+|--------|-------|
+| Total candidate episodes | 24,044 |
+| Episodes with complete 3D tracks | `[TODO]` |
+| Average frames per episode | `[TODO]` |
+| Average 3D points per episode (env / robot) | `[TODO]` |
+| Average track length (frames) | `[TODO]` |
+| Average cameras per visible point | `[TODO]` |
+
+### 4.2 Self-Consistency Evaluation
+
+In the absence of ground-truth 3D depth in DROID, we evaluate pipeline quality via self-consistency metrics.
+
+**Reprojection error.** Fused 3D tracks are projected back to each camera using calibrated extrinsics and intrinsics. The L2 distance between reprojected and original 2D tracks measures the consistency between 3D fusion and per-camera 2D tracking.
+
+| Metric | Value |
+|--------|-------|
+| Mean / Median reprojection error (px) | `[TODO]` |
+| 95th percentile (px) | `[TODO]` |
+
+**Multi-view visibility.** The fraction of visible point-frame pairs observed from $\geq 2$ cameras measures the effectiveness of cross-view completion.
+
+| Metric | Value |
+|--------|-------|
+| % observations from ≥ 2 cameras | `[TODO]` |
+| Average cameras per visible point | `[TODO]` |
+
+### 4.3 Qualitative Results
+
+> **[TODO: Add figures]**
+> 1. Pipeline overview with representative intermediate outputs
+> 2. Gripper depth: raw stereo vs. refined
+> 3. Extrinsics: cross-camera point cloud alignment before/after joint optimization
+> 4. Tracking: 2D overlay on all views; 3D point cloud colored by type
+
+---
+
+## 5. Limitations and Future Work
+
+**Gripper depth** applies only to the initial open-gripper state. Once grasping begins and finger positions vary, the rigidity prior no longer holds. FK-predicted finger geometry could address this in future work.
+
+**Evaluation.** Without ground-truth depth, our quantitative evaluation relies on self-consistency metrics. Downstream task performance (e.g., 3D tracking model training on our data) would provide complementary evidence of data quality.
+
+**Scale.** Processing the full 24K-episode DROID dataset requires additional engineering effort on failure handling and compute scaling.
+
+---
+
+## 6. Implementation Details
+
+**Data format.** Each DROID episode stores stereo video in ZED SVO format. We extract rectified/unrectified stereo pairs, per-frame intrinsics, and stereo baselines (0.063 m wrist / 0.120 m external). Robot kinematics (7-DOF joints, gripper state, end-effector pose) are parsed from the episode HDF5 file. Frame selection follows DROID's `keep_ranges` metadata (action-relevant segments only, bounded to 48–250 frames).
+
+**Models.** S2M2 XL (`minimok/s2m2`, with `torch.compile` and 3 refinement iterations); SAM ViT-H; VGGT-1B (`facebook/VGGT-1B`); CoTracker3 offline (`facebook/cotracker3`).
+
+**Robot model.** Franka Panda + Robotiq 2F-85 URDF. 100K surface points sampled proportionally to mesh face area; camera-attached meshes downweighted by $10^{-4}$. Gripper angle: $\theta = \text{clip}(g, 0, 1) \times 0.8028 - 0.08$. PyBullet (headless, EGL) for rendering and segmentation.
+
+**Extrinsics optimization.** 6-DOF axis-angle + translation parameterization with differentiable Rodrigues formula (Taylor fallback for $\|\mathbf{r}\|^2 < 10^{-8}$). Four-stage pipeline: (0) dataset pre-calibration, (1) VGGT anchoring, (2) per-camera robot alignment (Adam, 500 steps, lr $10^{-3}$), (3) global joint optimization (500 steps). Robot depth loss uses front-face culling and 0.15 m depth tolerance. Chamfer loss uses 2000 downsampled points per camera per frame with 5 cm truncation.
+
+**Tracking details.** CoTracker: grid\_size=30, query\_frame=0, offline mode. Robot mask: PyBullet rendering with 15×15 px dilation. Union-Find dedup: 1.5 cm radius. Cross-view completion: 5 keyframes (frames 0, $T/4$, $T/2$, $3T/4$, $T{-}1$), query mode with backward tracking. Fusion: coordinate-wise nanmedian, linear interpolation for gaps, Gaussian smoothing ($\sigma=1.5$). Quality filter: $\geq$ 2 cameras, $\geq$ 5 visible frames. Robot seed erosion: 7 px. Visibility tolerances: 1.5 cm (self-occlusion), 2.0 cm (environment occlusion).
 
 ---
 
 ## Notes for LaTeX Conversion
 
-> **Converting to LaTeX**: This markdown is structured to map 1:1 to LaTeX sections. Key items to handle during conversion:
-> - Mermaid diagram → TikZ figure or included PDF/PNG
-> - Markdown tables → `\begin{table}...\end{table}` with `\caption` and `\label`
-> - Inline math `$...$` → same in LaTeX
-> - Display math `$$...$$` → `\begin{equation}...\end{equation}`
-> - `[cite X]` → `\cite{X}` with proper BibTeX keys
-> - Add figure references for: (1) pipeline overview diagram, (2) depth refinement visualization, (3) extrinsics alignment illustration, (4) tracking result examples
+> - Mermaid diagram → figure
+> - `[cite X]` → `\cite{X}`
+> - `[TODO]` → fill from `compute_stats.py`
+> - Section numbering adjustable for main paper vs. supplementary
 
-> **Figures to create**: The report would benefit from:
-> 1. **Pipeline overview figure** — the 3-stage flow with example outputs at each stage
-> 2. **Gripper depth refinement** — before/after comparison of raw vs. refined depth on wrist camera
-> 3. **Extrinsics calibration** — robot point cloud overlay on camera depth, or cross-camera point cloud alignment
-> 4. **Tracking results** — 2D track visualization on multiple views + 3D track point cloud
+### References:
+DROID, TAPVid-3D, PointWorld (arXiv:2601.03782), S2M2, SAM, VGGT-1B, CoTracker3, FoundationStereo, Depth Anything, DPT
