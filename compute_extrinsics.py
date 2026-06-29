@@ -15,6 +15,7 @@ Pipeline:
 import argparse
 import copy
 import fcntl
+import gc
 import json
 import os
 import sys
@@ -563,6 +564,14 @@ if __name__ == "__main__":
   for idx, ep_id in enumerate(target_eps):
     print(f"\n🎬 [{idx + 1}/{len(target_eps)}] Processing Episode: {ep_id}")
 
+    # Pre-initialize for safe cleanup in finally block
+    scene_constants = None
+    init_scene_state = None
+    vggt_scene_state = None
+    stage1_scene_state = None
+    stage2_state = None
+    final_state = None
+
     try:
       # Load Stage 1 outputs
       scene_constants = load_depth_data(ep_id, args.depth_root)
@@ -609,7 +618,17 @@ if __name__ == "__main__":
       print(f"  ❌ Episode {ep_id} failed: {e}")
       import traceback
       traceback.print_exc()
-      continue
+
+    finally:
+      # Free GPU memory between episodes to prevent OOM from fragmentation
+      scene_constants = None
+      init_scene_state = None
+      vggt_scene_state = None
+      stage1_scene_state = None
+      stage2_state = None
+      final_state = None
+      gc.collect()
+      torch.cuda.empty_cache()
 
   # Multi-process safe append
   extrinsics_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes_extrinsics.txt")
