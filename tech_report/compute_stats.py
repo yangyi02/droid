@@ -335,7 +335,7 @@ def compute_multiview_consistency(episode_id, tracks_root):
 
   multi_view_pts = multi_vis_count >= 2  # at least 2 cameras
 
-  n_multi_view = int(multi_view_pts.sum())
+  n_multi_view = int((multi_view_pts & vis_global).sum())
   n_visible = int(vis_global.sum())
 
   return {
