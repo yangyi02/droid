@@ -260,6 +260,9 @@ def extract_robot_physical_tensors(cam_id, scene_constants, tensor_renderer):
 
     cache_obs.append(torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
 
+  # Free cached GPU tensors from get_world_points (already copied into cache_X)
+  tensor_renderer.world_points_cache.clear()
+
   if not cache_X:
     return None, None
   return torch.stack(cache_X), torch.stack(cache_obs)
@@ -627,6 +630,8 @@ if __name__ == "__main__":
       stage1_scene_state = None
       stage2_state = None
       final_state = None
+      # Clear the per-joint-config GPU tensor cache (main source of OOM)
+      tensor_renderer.world_points_cache.clear()
       gc.collect()
       torch.cuda.empty_cache()
 
