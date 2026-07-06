@@ -16,7 +16,6 @@ import warnings
 import cv2
 import h5py
 import numpy as np
-import pyzed.sl as sl
 from scipy.spatial.transform import Rotation as R
 import torch
 from tqdm import tqdm
@@ -117,6 +116,8 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
 
 def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
   """Decode SVO video, extract full stereo calibration, both rectified/unrectified frames, and timestamps."""
+  import pyzed.sl as sl
+
   print("  🎥 Fast-decoding SVO video streams and physical calibration data (including timestamps)...")
   episode_path = scene_constants["meta"]["episode_path"]
 
@@ -301,9 +302,6 @@ def align_temporal_streams(scene_constants):
 
   print("    ✅ Global alignment complete. All dimensions are now consistent.")
   return scene_constants
-
-
-
 
 
 def _write_mp4(path, frames, fps=10.0):
