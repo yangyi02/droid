@@ -505,9 +505,9 @@ def inspect_gripper_extremes(scene_constants, scene_state, pb_renderer,
       img_rgb = cam_data['video_rgb'][frame_idx].copy()
       h_img, w_img = img_rgb.shape[:2]
       robot_mask = pb_renderer.render_mask(
-          extrinsics=cam_state['extrinsics'][frame_idx],
-          intrinsics=cam_data['K_mat'],
-          width=w_img, height=h_img) > 0
+          cam_state['extrinsics'][frame_idx],
+          cam_data['K_mat'],
+          w_img, h_img) > 0
       overlay = img_rgb.copy()
       overlay[robot_mask] = [50, 150, 255]
       blended_img = cv2.addWeighted(img_rgb, 0.6, overlay, 0.4, 0)
@@ -541,11 +541,13 @@ def inspect_gripper_extremes(scene_constants, scene_state, pb_renderer,
 
 
 def render_segmentation_video(scene_constants, scene_state, pb_renderer,
-                              tgt_width=1200):
+                              tgt_width=1200, max_frames=None):
   """Render a multi-camera robot segmentation overlay video."""
   camera_ids = list(scene_constants['camera'].keys())
   wrist_serial = scene_constants['meta']['wrist_serial']
   n_frames = len(scene_constants['camera'][camera_ids[0]]['video_rgb'])
+  if max_frames is not None:
+    n_frames = min(n_frames, max_frames)
   video_frames = []
 
   for frame_idx in tqdm(range(n_frames), desc="🎥 Rendering segmentation"):
@@ -560,9 +562,9 @@ def render_segmentation_video(scene_constants, scene_state, pb_renderer,
       img_rgb = cam_data['video_rgb'][frame_idx].copy()
       h_img, w_img = img_rgb.shape[:2]
       robot_mask = pb_renderer.render_mask(
-          extrinsics=cam_state['extrinsics'][frame_idx],
-          intrinsics=cam_data['K_mat'],
-          width=w_img, height=h_img) > 0
+          cam_state['extrinsics'][frame_idx],
+          cam_data['K_mat'],
+          w_img, h_img) > 0
       overlay = img_rgb.copy()
       overlay[robot_mask] = [50, 150, 255]
       blended_img = cv2.addWeighted(img_rgb, 0.6, overlay, 0.4, 0)
@@ -584,10 +586,12 @@ def render_segmentation_video(scene_constants, scene_state, pb_renderer,
 # ===========================================================================
 
 def render_cross_camera_axes(scene_constants, scene_state, axis_len=0.15,
-                             tgt_w=1200):
+                             tgt_w=1200, max_frames=None):
   """Render RGB coordinate axes of each camera as seen from other cameras."""
   cams = list(scene_constants['camera'].keys())
   n_frames = len(scene_state[cams[0]]['extrinsics'])
+  if max_frames is not None:
+    n_frames = min(n_frames, max_frames)
   axes_3d = np.array([
       [0, 0, 0, 1], [axis_len, 0, 0, 1],
       [0, axis_len, 0, 1], [0, 0, axis_len, 1]]).T
