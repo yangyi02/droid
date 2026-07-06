@@ -4,23 +4,24 @@
 Usage (from the droid/ directory):
   python tech_report/compute_stats.py                          # default paths
   python tech_report/compute_stats.py --tracks_root /path/to   # custom paths
+  python tech_report/compute_stats.py --max_episodes 200       # quick subset
+  python tech_report/compute_stats.py --workers 16             # parallelism
 
 Outputs:
   tech_report/stats_output/
     dataset_summary.json        — aggregate statistics
     per_episode_stats.csv       — per-episode breakdown
     failure_analysis.json       — failure analysis
-    timing_report.json          — compute cost estimates (if log data available)
 """
 
 import argparse
 import csv
-import glob
 import json
 import os
 import sys
-import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
 
 import numpy as np
 from tqdm import tqdm
@@ -60,7 +61,6 @@ def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):
       "failed_at_tracks": len((depth_eps & ext_eps) - track_eps),
   }
 
-  # List specific failures
   failed_ext = sorted(depth_eps - ext_eps)
   failed_tracks = sorted((depth_eps & ext_eps) - track_eps)
 
@@ -72,32 +72,84 @@ def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):
 
 
 # ============================================================================
-# 2. Per-Episode Track Statistics
+# 2. Per-Episode: All Stats in One Pass (merged I/O + vectorized reproj)
 # ============================================================================
 
-def compute_episode_track_stats(episode_id, tracks_root, depth_root=None):
-  """Compute detailed statistics for a single episode's tracks."""
+def _vectorized_reprojection_error(traj_3d, traj_2d, vis_2d, intrinsics,
+                                   extrinsics_w2c):
+  """Compute reprojection error with fully vectorized batch matmul.
+
+  Instead of looping over T frames, we broadcast:
+    pts_cam = extrinsics_w2c @ pts_homo  for all frames at once.
+
+  Args:
+    traj_3d: (T, N, 3)
+    traj_2d: (T, N, 2)
+    vis_2d: (T, N) bool
+    intrinsics: (4,) [fx, fy, cx, cy]
+    extrinsics_w2c: (T, 4, 4)
+
+  Returns:
+    1-D array of per-measurement reprojection errors, or empty array.
+  """
+  T, N, _ = traj_3d.shape
+  fx, fy, cx, cy = intrinsics
+
+  # Build homogeneous coords: (T, N, 4)
+  ones = np.ones((T, N, 1), dtype=traj_3d.dtype)
+  pts_homo = np.concatenate([traj_3d, ones], axis=2)  # (T, N, 4)
+
+  # Batch transform: (T, 4, 4) @ (T, 4, N) -> (T, 4, N) -> (T, N, 4)
+  pts_cam = np.einsum('tij,tnj->tni', extrinsics_w2c, pts_homo)  # (T, N, 4)
+
+  z = pts_cam[:, :, 2]  # (T, N)
+
+  # Valid: visible AND in front of camera
+  valid = vis_2d & (z > 0.01)  # (T, N)
+
+  if not valid.any():
+    return np.array([], dtype=np.float32)
+
+  # Project to 2D (only compute where valid, but vectorized)
+  # We compute for everything then mask — faster than fancy indexing
+  with np.errstate(divide='ignore', invalid='ignore'):
+    u_proj = fx * pts_cam[:, :, 0] / z + cx  # (T, N)
+    v_proj = fy * pts_cam[:, :, 1] / z + cy  # (T, N)
+
+  # Compute errors
+  du = u_proj - traj_2d[:, :, 0]  # (T, N)
+  dv = v_proj - traj_2d[:, :, 1]  # (T, N)
+  errors = np.sqrt(du * du + dv * dv)  # (T, N)
+
+  return errors[valid]
+
+
+def compute_all_episode_stats(episode_id, tracks_root, depth_root):
+  """Compute ALL statistics for a single episode in one pass.
+
+  Merges track stats, reprojection error, and multi-view consistency
+  into a single function to avoid redundant file I/O.
+  """
   tracks_dir = os.path.abspath(
       os.path.expanduser(os.path.join(tracks_root, episode_id)))
   if not os.path.exists(tracks_dir):
     return None
 
-  stats = {"episode_id": episode_id}
-
-  # Load 3D tracks
+  # ---- Load 3D tracks (once) ----
   tracks_3d_path = os.path.join(tracks_dir, "tracks_3d.npz")
   if not os.path.exists(tracks_3d_path):
     return None
 
-  data = np.load(tracks_3d_path)
-  traj_3d = data["traj_3d"]  # (T, N, 3)
-  vis_global = data["vis_global"]  # (T, N)
-
+  data_3d = np.load(tracks_3d_path)
+  traj_3d = data_3d["traj_3d"]      # (T, N, 3)
+  vis_global = data_3d["vis_global"]  # (T, N)
   T, N, _ = traj_3d.shape
+
+  stats = {"episode_id": episode_id}
   stats["n_frames"] = int(T)
   stats["n_points_total"] = int(N)
 
-  # Track metadata (env vs robot)
+  # ---- Track metadata ----
   meta_path = os.path.join(tracks_dir, "track_metadata.npz")
   if os.path.exists(meta_path):
     meta = np.load(meta_path)
@@ -107,25 +159,22 @@ def compute_episode_track_stats(episode_id, tracks_root, depth_root=None):
     stats["n_env_points"] = N
     stats["n_robot_points"] = 0
 
-  # Visibility statistics
-  vis_per_point = vis_global.sum(axis=0)  # (N,) frames visible per point
-  vis_per_frame = vis_global.sum(axis=1)  # (T,) points visible per frame
+  # ---- Visibility stats ----
+  vis_per_point = vis_global.sum(axis=0)  # (N,)
+  vis_per_frame = vis_global.sum(axis=1)  # (T,)
 
   stats["avg_track_length"] = float(np.mean(vis_per_point))
   stats["median_track_length"] = float(np.median(vis_per_point))
   stats["min_track_length"] = int(np.min(vis_per_point))
   stats["max_track_length"] = int(np.max(vis_per_point))
-  stats["pct_always_visible"] = float(
-      np.mean(vis_per_point == T) * 100)
-
+  stats["pct_always_visible"] = float(np.mean(vis_per_point == T) * 100)
   stats["avg_points_per_frame"] = float(np.mean(vis_per_frame))
   stats["min_points_per_frame"] = int(np.min(vis_per_frame))
   stats["max_points_per_frame"] = int(np.max(vis_per_frame))
 
-  # 3D trajectory extent
-  valid = vis_global  # (T, N)
-  if valid.any():
-    visible_pts = traj_3d[valid]  # (M, 3)
+  # ---- 3D extent ----
+  if vis_global.any():
+    visible_pts = traj_3d[vis_global]  # (M, 3)
     bbox_min = visible_pts.min(axis=0)
     bbox_max = visible_pts.max(axis=0)
     bbox_size = bbox_max - bbox_min
@@ -134,248 +183,102 @@ def compute_episode_track_stats(episode_id, tracks_root, depth_root=None):
     stats["scene_bbox_y_m"] = float(bbox_size[1])
     stats["scene_bbox_z_m"] = float(bbox_size[2])
 
-  # 3D motion: average displacement per point
-  deltas = np.diff(traj_3d, axis=0)  # (T-1, N, 3)
-  delta_norms = np.linalg.norm(deltas, axis=2)  # (T-1, N)
-  # Only consider visible-to-visible transitions
-  vis_transitions = vis_global[:-1] & vis_global[1:]  # (T-1, N)
+  # ---- 3D motion ----
+  deltas = np.diff(traj_3d, axis=0)
+  delta_norms = np.linalg.norm(deltas, axis=2)
+  vis_transitions = vis_global[:-1] & vis_global[1:]
   if vis_transitions.any():
-    avg_displacement = float(np.nanmean(
+    avg_disp = float(np.nanmean(
         np.where(vis_transitions, delta_norms, np.nan)))
-    total_displacement_per_point = np.nansum(
-        np.where(vis_transitions, delta_norms, 0.0), axis=0)  # (N,)
-    stats["avg_per_frame_displacement_mm"] = avg_displacement * 1000
-    stats["avg_total_displacement_mm"] = float(
-        np.mean(total_displacement_per_point)) * 1000
+    total_disp = np.nansum(
+        np.where(vis_transitions, delta_norms, 0.0), axis=0)
+    stats["avg_per_frame_displacement_mm"] = avg_disp * 1000
+    stats["avg_total_displacement_mm"] = float(np.mean(total_disp)) * 1000
 
-  # Per-camera 2D track stats
-  cam_dirs = [d for d in os.listdir(tracks_dir)
-              if os.path.isdir(os.path.join(tracks_dir, d))]
+  # ---- Per-camera data (single pass for all metrics) ----
+  cam_dirs = sorted([
+      d for d in os.listdir(tracks_dir)
+      if os.path.isdir(os.path.join(tracks_dir, d))
+  ])
   stats["n_cameras"] = len(cam_dirs)
 
-  cam_visibilities = []
+  cam_vis_list = []       # for multi-view consistency
+  all_reproj_errors = []  # for reprojection error
+
   for cam_dir_name in cam_dirs:
     cam_dir = os.path.join(tracks_dir, cam_dir_name)
-    tracks_2d_path = os.path.join(cam_dir, "tracks_2d.npz")
-    if os.path.exists(tracks_2d_path):
-      cam_data = np.load(tracks_2d_path)
-      cam_vis = cam_data["vis_2d"]  # (T, N)
-      cam_visibilities.append(cam_vis.sum(axis=0))  # (N,) per camera
 
-  if cam_visibilities:
-    # How many cameras see each point (at any frame)
-    n_cameras_per_point = np.sum(
-        [cv > 0 for cv in cam_visibilities], axis=0)
+    tracks_2d_path = os.path.join(cam_dir, "tracks_2d.npz")
+    intrinsics_path = os.path.join(cam_dir, "intrinsics.npy")
+    extrinsics_path = os.path.join(cam_dir, "extrinsics_w2c.npy")
+
+    if not os.path.exists(tracks_2d_path):
+      continue
+
+    cam_data = np.load(tracks_2d_path)
+    vis_2d = cam_data["vis_2d"]  # (T, N)
+    cam_vis_list.append(vis_2d)
+
+    # Reprojection error (vectorized)
+    if os.path.exists(intrinsics_path) and os.path.exists(extrinsics_path):
+      traj_2d = cam_data["traj_2d"]
+      intrinsics = np.load(intrinsics_path)
+      extrinsics_w2c = np.load(extrinsics_path)
+
+      errs = _vectorized_reprojection_error(
+          traj_3d, traj_2d, vis_2d, intrinsics, extrinsics_w2c)
+      if len(errs) > 0:
+        all_reproj_errors.append(errs)
+
+  # ---- Multi-view consistency ----
+  if cam_vis_list:
+    vis_stack = np.stack(cam_vis_list, axis=0)  # (C, T, N)
+    cams_per_obs = vis_stack.sum(axis=0)  # (T, N)
+
+    # Per-point: how many cameras ever see it
+    cam_ever_sees = (vis_stack.sum(axis=1) > 0)  # (C, N)
+    n_cameras_per_point = cam_ever_sees.sum(axis=0)  # (N,)
     stats["avg_cameras_per_point"] = float(np.mean(n_cameras_per_point))
+
+    # Per-(frame, point): multi-view rate
+    if vis_global.any():
+      cams_at_visible = cams_per_obs[vis_global]
+      stats["avg_cameras_per_visible_obs"] = float(cams_at_visible.mean())
+      stats["pct_multi_view"] = float(
+          (cams_at_visible >= 2).sum() / vis_global.sum() * 100)
+    else:
+      stats["avg_cameras_per_visible_obs"] = 0.0
+      stats["pct_multi_view"] = 0.0
+
+  # ---- Reprojection error ----
+  if all_reproj_errors:
+    all_errs = np.concatenate(all_reproj_errors)
+    stats["reproj_mean_px"] = float(np.mean(all_errs))
+    stats["reproj_median_px"] = float(np.median(all_errs))
+    stats["reproj_p95_px"] = float(np.percentile(all_errs, 95))
+    stats["reproj_p99_px"] = float(np.percentile(all_errs, 99))
+    stats["reproj_n_measurements"] = int(len(all_errs))
+
+  # ---- Disk usage ----
+  total_bytes = 0
+  n_files = 0
+  for dirpath, _, filenames in os.walk(tracks_dir):
+    for f in filenames:
+      fp = os.path.join(dirpath, f)
+      if os.path.isfile(fp):
+        total_bytes += os.path.getsize(fp)
+        n_files += 1
+  stats["tracks_size_mb"] = round(total_bytes / 1e6, 1)
 
   return stats
 
 
-# ============================================================================
-# 3. Reprojection Error (Self-Consistency Check)
-# ============================================================================
-
-def compute_reprojection_error(episode_id, tracks_root):
-  """Compute reprojection error: project 3D tracks back to each camera.
-
-  This is a self-consistency metric: if the 3D fusion is correct and
-  extrinsics are accurate, the reprojected 2D should match the tracked 2D.
-  """
-  tracks_dir = os.path.abspath(
-      os.path.expanduser(os.path.join(tracks_root, episode_id)))
-  if not os.path.exists(tracks_dir):
-    return None
-
-  data = np.load(os.path.join(tracks_dir, "tracks_3d.npz"))
-  traj_3d = data["traj_3d"]  # (T, N, 3)
-  T, N, _ = traj_3d.shape
-
-  cam_dirs = sorted([d for d in os.listdir(tracks_dir)
-                     if os.path.isdir(os.path.join(tracks_dir, d))])
-
-  errors_by_cam = {}
-  all_errors = []
-
-  for cam_dir_name in cam_dirs:
-    cam_dir = os.path.join(tracks_dir, cam_dir_name)
-
-    tracks_2d_path = os.path.join(cam_dir, "tracks_2d.npz")
-    intrinsics_path = os.path.join(cam_dir, "intrinsics.npy")
-    extrinsics_path = os.path.join(cam_dir, "extrinsics_w2c.npy")
-
-    if not all(os.path.exists(p) for p in
-               [tracks_2d_path, intrinsics_path, extrinsics_path]):
-      continue
-
-    cam_data = np.load(tracks_2d_path)
-    traj_2d_tracked = cam_data["traj_2d"]  # (T, N, 2)
-    vis_2d = cam_data["vis_2d"]  # (T, N)
-
-    intrinsics = np.load(intrinsics_path)  # (fx, fy, cx, cy)
-    extrinsics_w2c = np.load(extrinsics_path)  # (T, 4, 4)
-
-    fx, fy, cx, cy = intrinsics
-
-    # Project 3D → 2D for each frame
-    reproj_errors = np.full((T, N), np.nan, dtype=np.float32)
-
-    for t in range(T):
-      visible = vis_2d[t]  # (N,)
-      if not visible.any():
-        continue
-
-      pts_world = traj_3d[t, visible]  # (M, 3)
-      pts_h = np.concatenate(
-          [pts_world, np.ones((pts_world.shape[0], 1))], axis=1)  # (M, 4)
-
-      # World → Camera
-      pts_cam = (extrinsics_w2c[t] @ pts_h.T).T[:, :3]  # (M, 3)
-
-      # Skip points behind camera
-      valid = pts_cam[:, 2] > 0.01
-      if not valid.any():
-        continue
-
-      # Project
-      u = fx * pts_cam[valid, 0] / pts_cam[valid, 2] + cx
-      v = fy * pts_cam[valid, 1] / pts_cam[valid, 2] + cy
-
-      projected = np.stack([u, v], axis=1)  # (M', 2)
-
-      # Get tracked 2D for visible points
-      visible_indices = np.where(visible)[0]
-      valid_indices = visible_indices[valid]
-      tracked = traj_2d_tracked[t, valid_indices]  # (M', 2)
-
-      # Euclidean error
-      err = np.linalg.norm(projected - tracked, axis=1)
-      reproj_errors[t, valid_indices] = err
-
-    valid_errors = reproj_errors[~np.isnan(reproj_errors)]
-    if len(valid_errors) > 0:
-      errors_by_cam[cam_dir_name] = {
-          "mean_px": float(np.mean(valid_errors)),
-          "median_px": float(np.median(valid_errors)),
-          "p95_px": float(np.percentile(valid_errors, 95)),
-          "n_measurements": int(len(valid_errors)),
-      }
-      all_errors.extend(valid_errors.tolist())
-
-  if not all_errors:
-    return None
-
-  all_errors = np.array(all_errors)
-  return {
-      "episode_id": episode_id,
-      "overall_mean_px": float(np.mean(all_errors)),
-      "overall_median_px": float(np.median(all_errors)),
-      "overall_p95_px": float(np.percentile(all_errors, 95)),
-      "overall_p99_px": float(np.percentile(all_errors, 99)),
-      "n_total_measurements": int(len(all_errors)),
-      "per_camera": errors_by_cam,
-  }
-
-
-# ============================================================================
-# 4. Multi-View Consistency
-# ============================================================================
-
-def compute_multiview_consistency(episode_id, tracks_root):
-  """Measure multi-view 3D consistency.
-
-  For each visible (frame, point) pair, lift from each camera independently
-  and measure the variance of the resulting 3D positions.
-  """
-  tracks_dir = os.path.abspath(
-      os.path.expanduser(os.path.join(tracks_root, episode_id)))
-  if not os.path.exists(tracks_dir):
-    return None
-
-  cam_dirs = sorted([d for d in os.listdir(tracks_dir)
-                     if os.path.isdir(os.path.join(tracks_dir, d))])
-  if len(cam_dirs) < 2:
-    return None
-
-  # Load per-camera extrinsics and intrinsics
-  cam_data_list = []
-  for cam_dir_name in cam_dirs:
-    cam_dir = os.path.join(tracks_dir, cam_dir_name)
-    intrinsics_path = os.path.join(cam_dir, "intrinsics.npy")
-    extrinsics_path = os.path.join(cam_dir, "extrinsics_w2c.npy")
-    tracks_2d_path = os.path.join(cam_dir, "tracks_2d.npz")
-
-    if not all(os.path.exists(p) for p in
-               [intrinsics_path, extrinsics_path, tracks_2d_path]):
-      continue
-
-    intrinsics = np.load(intrinsics_path)
-    extrinsics_w2c = np.load(extrinsics_path)
-    td = np.load(tracks_2d_path)
-
-    cam_data_list.append({
-        "name": cam_dir_name,
-        "intrinsics": intrinsics,  # (fx, fy, cx, cy)
-        "extrinsics_w2c": extrinsics_w2c,  # (T, 4, 4)
-        "traj_2d": td["traj_2d"],  # (T, N, 2)
-        "vis_2d": td["vis_2d"],  # (T, N)
-    })
-
-  if len(cam_data_list) < 2:
-    return None
-
-  # For the fused 3D tracks, count how many cameras agree
-  data_3d = np.load(os.path.join(tracks_dir, "tracks_3d.npz"))
-  vis_global = data_3d["vis_global"]
-  T, N = vis_global.shape
-
-  # Count per-(frame, point) how many cameras see it
-  multi_vis_count = np.zeros((T, N), dtype=np.int32)
-  for cd in cam_data_list:
-    multi_vis_count += cd["vis_2d"].astype(np.int32)
-
-  multi_view_pts = multi_vis_count >= 2  # at least 2 cameras
-
-  n_multi_view = int((multi_view_pts & vis_global).sum())
-  n_visible = int(vis_global.sum())
-
-  return {
-      "episode_id": episode_id,
-      "n_cameras": len(cam_data_list),
-      "n_visible_measurements": n_visible,
-      "n_multi_view_measurements": n_multi_view,
-      "pct_multi_view": float(n_multi_view / max(1, n_visible) * 100),
-      "avg_cameras_per_visible_point": float(
-          multi_vis_count[vis_global].mean()) if vis_global.any() else 0,
-  }
-
-
-# ============================================================================
-# 5. Disk Size Analysis
-# ============================================================================
-
-def compute_disk_usage(episode_id, depth_root, extrinsics_root, tracks_root):
-  """Compute disk usage per stage for an episode."""
-  sizes = {}
-  for stage, root in [("depth", depth_root), ("extrinsics", extrinsics_root),
-                       ("tracks", tracks_root)]:
-    stage_dir = os.path.abspath(
-        os.path.expanduser(os.path.join(root, episode_id)))
-    if os.path.exists(stage_dir):
-      total = 0
-      n_files = 0
-      for dirpath, _, filenames in os.walk(stage_dir):
-        for f in filenames:
-          fp = os.path.join(dirpath, f)
-          if os.path.isfile(fp):
-            total += os.path.getsize(fp)
-            n_files += 1
-      sizes[stage] = {"bytes": total, "mb": round(total / 1e6, 1),
-                       "n_files": n_files}
-    else:
-      sizes[stage] = {"bytes": 0, "mb": 0, "n_files": 0}
-
-  sizes["total_mb"] = sum(s["mb"] for s in sizes.values() if isinstance(s, dict))
-  return sizes
+def _worker(episode_id, tracks_root, depth_root):
+  """Subprocess-safe wrapper."""
+  try:
+    return compute_all_episode_stats(episode_id, tracks_root, depth_root)
+  except Exception as e:
+    return {"episode_id": episode_id, "_error": str(e)}
 
 
 # ============================================================================
@@ -395,10 +298,15 @@ def main():
                       default="tech_report/stats_output")
   parser.add_argument("--max_episodes", type=int, default=-1,
                       help="Max episodes to analyze (-1 = all)")
+  parser.add_argument("--workers", type=int, default=0,
+                      help="Parallel workers (0 = auto = num CPUs)")
   args = parser.parse_args()
 
   output_dir = os.path.abspath(args.output_dir)
   os.makedirs(output_dir, exist_ok=True)
+
+  if args.workers <= 0:
+    args.workers = min(os.cpu_count() or 4, 32)
 
   print("=" * 60)
   print("DROID Pipeline: Dataset Statistics")
@@ -413,102 +321,108 @@ def main():
   print(json.dumps(coverage, indent=2))
 
   # ------------------------------------------------------------------
-  # 2. Per-Episode Track Statistics
+  # 2. Per-Episode Stats (parallel, single-pass)
   # ------------------------------------------------------------------
   completed_eps = episode_lists["all_completed"]
   if args.max_episodes > 0:
     completed_eps = completed_eps[:args.max_episodes]
 
-  print(f"\n📊 Stage 2: Per-episode track statistics ({len(completed_eps)} episodes)...")
+  print(f"\n📊 Stage 2: Per-episode stats "
+        f"({len(completed_eps)} episodes, {args.workers} workers)...")
 
   all_stats = []
-  all_reproj = []
-  all_consistency = []
-  all_disk = []
+  errors_list = []
 
-  for ep_id in tqdm(completed_eps, desc="Computing stats"):
-    # Track stats
-    stats = compute_episode_track_stats(
-        ep_id, args.tracks_root, args.depth_root)
-    if stats:
-      all_stats.append(stats)
+  worker_fn = partial(
+      _worker,
+      tracks_root=args.tracks_root,
+      depth_root=args.depth_root)
 
-    # Reprojection error
-    reproj = compute_reprojection_error(ep_id, args.tracks_root)
-    if reproj:
-      all_reproj.append(reproj)
+  with ProcessPoolExecutor(max_workers=args.workers) as pool:
+    futures = {pool.submit(worker_fn, ep_id): ep_id
+               for ep_id in completed_eps}
 
-    # Multi-view consistency
-    consistency = compute_multiview_consistency(ep_id, args.tracks_root)
-    if consistency:
-      all_consistency.append(consistency)
+    with tqdm(total=len(futures), desc="Computing stats") as pbar:
+      for future in as_completed(futures):
+        result = future.result()
+        if result is not None:
+          if "_error" in result:
+            errors_list.append(result)
+          else:
+            all_stats.append(result)
+        pbar.update(1)
 
-    # Disk usage
-    disk = compute_disk_usage(
-        ep_id, args.depth_root, args.extrinsics_root, args.tracks_root)
-    disk["episode_id"] = ep_id
-    all_disk.append(disk)
+  n_complete = len(all_stats)
+  n_errors = len(errors_list)
+  print(f"\n✅ {n_complete} episodes processed, {n_errors} errors")
+
+  if n_complete == 0:
+    print("❌ No episodes with valid tracks found.")
+    return
 
   # ------------------------------------------------------------------
   # 3. Aggregate Summary
   # ------------------------------------------------------------------
   summary = {"coverage": coverage}
 
-  if all_stats:
-    numeric_keys = [k for k in all_stats[0]
-                    if isinstance(all_stats[0][k], (int, float)) and k != "episode_id"]
-    agg = {}
-    for k in numeric_keys:
-      vals = [s[k] for s in all_stats if k in s and s[k] is not None]
-      if vals:
-        agg[k] = {
-            "mean": round(float(np.mean(vals)), 2),
-            "median": round(float(np.median(vals)), 2),
-            "min": round(float(np.min(vals)), 2),
-            "max": round(float(np.max(vals)), 2),
-            "std": round(float(np.std(vals)), 2),
-        }
-    summary["track_stats"] = agg
+  # Track stats aggregation
+  numeric_keys = [k for k in all_stats[0]
+                  if isinstance(all_stats[0][k], (int, float))
+                  and k != "episode_id"]
+  agg = {}
+  for k in numeric_keys:
+    vals = [s[k] for s in all_stats if k in s and s[k] is not None]
+    if vals:
+      agg[k] = {
+          "mean": round(float(np.mean(vals)), 2),
+          "median": round(float(np.median(vals)), 2),
+          "min": round(float(np.min(vals)), 2),
+          "max": round(float(np.max(vals)), 2),
+          "std": round(float(np.std(vals)), 2),
+      }
+  summary["track_stats"] = agg
 
-  if all_reproj:
-    mean_errors = [r["overall_mean_px"] for r in all_reproj]
-    median_errors = [r["overall_median_px"] for r in all_reproj]
-    p95_errors = [r["overall_p95_px"] for r in all_reproj]
+  # Reprojection error summary
+  reproj_means = [s["reproj_mean_px"] for s in all_stats
+                   if "reproj_mean_px" in s]
+  reproj_medians = [s["reproj_median_px"] for s in all_stats
+                     if "reproj_median_px" in s]
+  reproj_p95s = [s["reproj_p95_px"] for s in all_stats
+                  if "reproj_p95_px" in s]
+  if reproj_means:
     summary["reprojection_error"] = {
-        "mean_of_means_px": round(float(np.mean(mean_errors)), 2),
-        "mean_of_medians_px": round(float(np.mean(median_errors)), 2),
-        "mean_of_p95_px": round(float(np.mean(p95_errors)), 2),
-        "worst_episode_mean_px": round(float(np.max(mean_errors)), 2),
-        "best_episode_mean_px": round(float(np.min(mean_errors)), 2),
-        "n_episodes": len(all_reproj),
+        "mean_of_means_px": round(float(np.mean(reproj_means)), 2),
+        "mean_of_medians_px": round(float(np.mean(reproj_medians)), 2),
+        "mean_of_p95_px": round(float(np.mean(reproj_p95s)), 2),
+        "worst_episode_mean_px": round(float(np.max(reproj_means)), 2),
+        "best_episode_mean_px": round(float(np.min(reproj_means)), 2),
+        "n_episodes": len(reproj_means),
     }
 
-  if all_consistency:
-    pcts = [c["pct_multi_view"] for c in all_consistency]
-    avg_cams = [c["avg_cameras_per_visible_point"] for c in all_consistency]
+  # Multi-view consistency summary
+  pcts = [s["pct_multi_view"] for s in all_stats
+          if "pct_multi_view" in s]
+  avg_cams = [s["avg_cameras_per_visible_obs"] for s in all_stats
+              if "avg_cameras_per_visible_obs" in s]
+  if pcts:
     summary["multi_view_consistency"] = {
         "avg_pct_multi_view": round(float(np.mean(pcts)), 1),
         "avg_cameras_per_visible_point": round(float(np.mean(avg_cams)), 2),
-        "n_episodes": len(all_consistency),
+        "n_episodes": len(pcts),
     }
 
-  if all_disk:
-    depth_mb = [d["depth"]["mb"] for d in all_disk]
-    ext_mb = [d["extrinsics"]["mb"] for d in all_disk]
-    tracks_mb = [d["tracks"]["mb"] for d in all_disk]
+  # Disk usage summary
+  tracks_mbs = [s["tracks_size_mb"] for s in all_stats
+                if "tracks_size_mb" in s]
+  if tracks_mbs:
     summary["disk_usage"] = {
-        "avg_depth_mb": round(float(np.mean(depth_mb)), 1),
-        "avg_extrinsics_mb": round(float(np.mean(ext_mb)), 1),
-        "avg_tracks_mb": round(float(np.mean(tracks_mb)), 1),
-        "avg_total_mb": round(float(np.mean(depth_mb)) +
-                               float(np.mean(ext_mb)) +
-                               float(np.mean(tracks_mb)), 1),
+        "avg_tracks_mb": round(float(np.mean(tracks_mbs)), 1),
+        "total_tracks_gb": round(float(np.sum(tracks_mbs)) / 1000, 1),
     }
 
   # ------------------------------------------------------------------
   # 4. Save Results
   # ------------------------------------------------------------------
-  # Summary JSON
   summary_path = os.path.join(output_dir, "dataset_summary.json")
   with open(summary_path, "w") as f:
     json.dump(summary, f, indent=2)
@@ -516,20 +430,18 @@ def main():
 
   # Per-episode CSV
   if all_stats:
+    # Use union of all keys for CSV header
+    all_keys = set()
+    for s in all_stats:
+      all_keys.update(s.keys())
+    fieldnames = sorted(all_keys)
+
     csv_path = os.path.join(output_dir, "per_episode_stats.csv")
-    fieldnames = list(all_stats[0].keys())
     with open(csv_path, "w", newline="") as f:
-      writer = csv.DictWriter(f, fieldnames=fieldnames)
+      writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
       writer.writeheader()
       writer.writerows(all_stats)
     print(f"💾 Per-episode stats → {csv_path}")
-
-  # Reprojection error JSON
-  if all_reproj:
-    reproj_path = os.path.join(output_dir, "reprojection_errors.json")
-    with open(reproj_path, "w") as f:
-      json.dump(all_reproj, f, indent=2)
-    print(f"💾 Reprojection errors → {reproj_path}")
 
   # Failure analysis
   failure_path = os.path.join(output_dir, "failure_analysis.json")
@@ -540,6 +452,7 @@ def main():
             "at_extrinsics": episode_lists["failed_at_extrinsics"],
             "at_tracks": episode_lists["failed_at_tracks"],
         },
+        "compute_errors": errors_list,
     }, f, indent=2)
   print(f"💾 Failure analysis → {failure_path}")
 
