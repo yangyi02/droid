@@ -124,36 +124,48 @@ PointWorld's per-camera design is *intentional* — their downstream world model
 
 ## 4. Results
 
-> **[TODO: Fill with `compute_stats.py` output]**
+We report statistics over the **5,371 episodes** for which all three pipeline stages completed successfully, out of 5,580 processed (96.3% success rate). 209 episodes failed at Stage 3 (tracking), yielding no output.
 
 ### 4.1 Dataset Statistics
 
 | Metric | Value |
 |--------|-------|
 | Total candidate episodes | 24,044 |
-| Episodes with complete 3D tracks | `[TODO]` |
-| Average frames per episode | `[TODO]` |
-| Average 3D points per episode (env / robot) | `[TODO]` |
-| Average track length (frames) | `[TODO]` |
-| Average cameras per visible point | `[TODO]` |
+| Episodes processed (all 3 stages) | 5,580 |
+| Episodes with complete 3D tracks | **5,371** (96.3%) |
+| Episodes failed at Stage 3 (tracks) | 209 (3.7%) |
+| Average frames per episode | **160** (median 159, range 49–251) |
+| Average cameras per episode | **3.0** |
+| Average 3D points per episode | **1,227** (env 938 / robot 290) |
+| Average track length (frames) | **89** (median 85) |
+| % points visible in all frames | 23.4% |
+| Average cameras per point (any frame) | **2.29** |
+| Average points per frame (visible) | 695 |
+| Median scene spatial extent | 3.9 m |
+| Average per-frame 3D displacement | 2.25 mm/frame |
+| Average total 3D displacement per point | 184 mm |
+| Total tracks data size | **24.6 GB** (avg 4.6 MB/episode) |
 
 ### 4.2 Self-Consistency Evaluation
 
 In the absence of ground-truth 3D depth in DROID, we evaluate pipeline quality via self-consistency metrics.
 
-**Reprojection error.** Fused 3D tracks are projected back to each camera using calibrated extrinsics and intrinsics. The L2 distance between reprojected and original 2D tracks measures the consistency between 3D fusion and per-camera 2D tracking.
+**Reprojection error.** Fused 3D tracks are projected back to each camera using calibrated extrinsics and intrinsics. The L2 distance between reprojected and original 2D tracks measures the consistency between 3D fusion and per-camera 2D tracking. Measured over ~1.8 billion point-frame-camera observations across 5,371 episodes.
 
 | Metric | Value |
 |--------|-------|
-| Mean / Median reprojection error (px) | `[TODO]` |
-| 95th percentile (px) | `[TODO]` |
+| Median reprojection error (px) | **0.79 px** (mean of per-episode medians) |
+| Mean reprojection error (px) | 9.25 px (mean of per-episode means) |
+| 95th percentile (px) | 24.4 px (mean of per-episode p95) |
+
+> **Note on outliers.** The mean is inflated by a small number of episodes with poor extrinsics convergence (worst episode mean: 479 px). The median (0.79 px) is the more representative metric, indicating that the majority of tracks are tightly self-consistent.
 
 **Multi-view visibility.** The fraction of visible point-frame pairs observed from $\geq 2$ cameras measures the effectiveness of cross-view completion.
 
 | Metric | Value |
 |--------|-------|
-| % observations from ≥ 2 cameras | `[TODO]` |
-| Average cameras per visible point | `[TODO]` |
+| % observations from ≥ 2 cameras | **100%** |
+| Average cameras per visible point-frame | **2.19** |
 
 ### 4.3 Qualitative Results
 
