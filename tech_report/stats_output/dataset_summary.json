@@ -1,0 +1,228 @@
+{
+  "coverage": {
+    "total_unique_episodes": 5580,
+    "stage1_depth_completed": 5580,
+    "stage2_extrinsics_completed": 5580,
+    "stage3_tracks_completed": 5371,
+    "all_3_stages_completed": 5371,
+    "depth_only": 0,
+    "depth_and_extrinsics_only": 209,
+    "failed_at_extrinsics": 0,
+    "failed_at_tracks": 209
+  },
+  "track_stats": {
+    "n_frames": {
+      "mean": 160.39,
+      "median": 159.0,
+      "min": 49.0,
+      "max": 251.0,
+      "std": 48.32
+    },
+    "n_points_total": {
+      "mean": 1227.2,
+      "median": 1235.0,
+      "min": 180.0,
+      "max": 1966.0,
+      "std": 232.07
+    },
+    "n_env_points": {
+      "mean": 937.51,
+      "median": 939.0,
+      "min": 1.0,
+      "max": 1713.0,
+      "std": 236.54
+    },
+    "n_robot_points": {
+      "mean": 289.69,
+      "median": 283.0,
+      "min": 0.0,
+      "max": 1077.0,
+      "std": 92.94
+    },
+    "avg_track_length": {
+      "mean": 88.94,
+      "median": 85.46,
+      "min": 0.77,
+      "max": 193.02,
+      "std": 29.45
+    },
+    "median_track_length": {
+      "mean": 95.62,
+      "median": 91.0,
+      "min": 0.0,
+      "max": 248.0,
+      "std": 44.3
+    },
+    "min_track_length": {
+      "mean": 0.01,
+      "median": 0.0,
+      "min": 0.0,
+      "max": 6.0,
+      "std": 0.16
+    },
+    "max_track_length": {
+      "mean": 160.23,
+      "median": 159.0,
+      "min": 37.0,
+      "max": 251.0,
+      "std": 48.3
+    },
+    "pct_always_visible": {
+      "mean": 23.35,
+      "median": 22.47,
+      "min": 0.0,
+      "max": 85.68,
+      "std": 13.86
+    },
+    "avg_points_per_frame": {
+      "mean": 695.48,
+      "median": 691.37,
+      "min": 0.75,
+      "max": 1470.92,
+      "std": 200.56
+    },
+    "min_points_per_frame": {
+      "mean": 529.91,
+      "median": 518.0,
+      "min": 0.0,
+      "max": 1328.0,
+      "std": 208.42
+    },
+    "max_points_per_frame": {
+      "mean": 944.93,
+      "median": 942.0,
+      "min": 1.0,
+      "max": 1793.0,
+      "std": 241.96
+    },
+    "scene_extent_m": {
+      "mean": 4.29,
+      "median": 3.91,
+      "min": 0.3,
+      "max": 9.92,
+      "std": 1.75
+    },
+    "scene_bbox_x_m": {
+      "mean": 2.58,
+      "median": 1.8,
+      "min": 0.21,
+      "max": 7.99,
+      "std": 1.78
+    },
+    "scene_bbox_y_m": {
+      "mean": 2.87,
+      "median": 2.71,
+      "min": 0.11,
+      "max": 8.43,
+      "std": 1.1
+    },
+    "scene_bbox_z_m": {
+      "mean": 1.4,
+      "median": 1.33,
+      "min": 0.19,
+      "max": 4.56,
+      "std": 0.44
+    },
+    "avg_per_frame_displacement_mm": {
+      "mean": 2.25,
+      "median": 2.0,
+      "min": 0.22,
+      "max": 28.84,
+      "std": 1.24
+    },
+    "avg_total_displacement_mm": {
+      "mean": 183.8,
+      "median": 166.25,
+      "min": 5.29,
+      "max": 1347.28,
+      "std": 93.64
+    },
+    "n_cameras": {
+      "mean": 3.0,
+      "median": 3.0,
+      "min": 3.0,
+      "max": 3.0,
+      "std": 0.0
+    },
+    "avg_cameras_per_point": {
+      "mean": 2.29,
+      "median": 2.3,
+      "min": 1.01,
+      "max": 2.72,
+      "std": 0.14
+    },
+    "avg_cameras_per_visible_obs": {
+      "mean": 2.19,
+      "median": 2.19,
+      "min": 2.0,
+      "max": 2.56,
+      "std": 0.07
+    },
+    "pct_multi_view": {
+      "mean": 100.0,
+      "median": 100.0,
+      "min": 100.0,
+      "max": 100.0,
+      "std": 0.0
+    },
+    "reproj_mean_px": {
+      "mean": 9.25,
+      "median": 6.48,
+      "min": 1.66,
+      "max": 478.97,
+      "std": 13.15
+    },
+    "reproj_median_px": {
+      "mean": 0.84,
+      "median": 0.79,
+      "min": 0.0,
+      "max": 6.29,
+      "std": 0.43
+    },
+    "reproj_p95_px": {
+      "mean": 24.4,
+      "median": 15.92,
+      "min": 0.0,
+      "max": 1658.61,
+      "std": 51.77
+    },
+    "reproj_p99_px": {
+      "mean": 134.81,
+      "median": 83.0,
+      "min": 0.0,
+      "max": 9660.64,
+      "std": 236.43
+    },
+    "reproj_n_measurements": {
+      "mean": 339926.64,
+      "median": 324689.0,
+      "min": 24300.0,
+      "max": 875797.0,
+      "std": 125388.19
+    },
+    "tracks_size_mb": {
+      "mean": 4.58,
+      "median": 4.4,
+      "min": 0.4,
+      "max": 11.7,
+      "std": 1.71
+    }
+  },
+  "reprojection_error": {
+    "mean_of_means_px": 9.25,
+    "mean_of_medians_px": 0.84,
+    "mean_of_p95_px": 24.4,
+    "worst_episode_mean_px": 478.97,
+    "best_episode_mean_px": 1.66,
+    "n_episodes": 5371
+  },
+  "multi_view_consistency": {
+    "avg_pct_multi_view": 100.0,
+    "avg_cameras_per_visible_point": 2.19,
+    "n_episodes": 5371
+  },
+  "disk_usage": {
+    "avg_tracks_mb": 4.6,
+    "total_tracks_gb": 24.6
+  }
+}
