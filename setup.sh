@@ -31,7 +31,6 @@ echo ""
 echo "🐍 [2/4] Installing Python dependencies..."
 pip install -q \
     pybullet \
-    pybullet-data \
     opencv-python \
     scipy \
     tqdm \
