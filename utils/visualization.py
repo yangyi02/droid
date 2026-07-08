@@ -274,8 +274,27 @@ def render_distortion_comparison_video(scene_constants, tgt_width=1280):
 
 def render_2d_tracking_video(video_frames, tracks, visibility,
                              global_colors=None, linewidth=3,
-                             tracks_leave_trace=20):
-  """Render 2D point tracks with comet trails onto video frames."""
+                             tracks_leave_trace=20, tgt_size=None):
+  """Render 2D point tracks with comet trails onto video frames.
+
+  Args:
+    video_frames: (T, H, W, 3) array of RGB frames.
+    tracks: (T, N, 2) array of 2D track coordinates.
+    visibility: (T, N) boolean visibility array.
+    global_colors: optional (N, 3) color array.
+    linewidth: width of track lines.
+    tracks_leave_trace: number of frames for comet trail.
+    tgt_size: optional (H, W) tuple to resize output frames.
+  """
+  import mediapy as media  # lazy import
+  if tgt_size is not None:
+    orig_h, orig_w = video_frames[0].shape[:2]
+    new_h, new_w = tgt_size
+    video_frames = media.resize_video(np.array(video_frames), tgt_size)
+    scale_x = new_w / orig_w
+    scale_y = new_h / orig_h
+    tracks = tracks * np.array([scale_x, scale_y])
+
   n_frames, n_points, _ = tracks.shape
   point_radius = int(linewidth * 2)
   h_img, w_img = video_frames[0].shape[:2]
