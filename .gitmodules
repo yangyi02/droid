@@ -2,9 +2,6 @@
 	path = third_party/s2m2
 	url = https://github.com/junhong-3dv/s2m2.git
 
-[submodule "third_party/vggt"]
-	path = third_party/vggt
-	url = https://github.com/facebookresearch/vggt.git
 
 [submodule "third_party/co-tracker"]
 	path = third_party/co-tracker

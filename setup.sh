@@ -40,9 +40,8 @@ pip install -q \
 # SAM is pip-installable directly from GitHub
 pip install -q git+https://github.com/facebookresearch/segment-anything.git
 
-# co-tracker and vggt extra deps
+# co-tracker deps (vggt is installed on-demand in compute_extrinsics.py)
 pip install -q "$THIRD_PARTY/co-tracker"
-pip install -q "$THIRD_PARTY/vggt"
 
 echo "✅ Python dependencies installed."
 
@@ -90,8 +89,8 @@ else
     echo "  ⏭️  SAM weights already exist, skipping."
 fi
 
-# VGGT is loaded from HuggingFace Hub at runtime (no manual download needed)
-echo "  ℹ️  VGGT weights: auto-downloaded from HuggingFace Hub at first run."
+# VGGT: both package and weights are installed/downloaded on-demand in compute_extrinsics.py
+echo "  ℹ️  VGGT: installed on-demand from GitHub + weights from HuggingFace Hub at first use."
 
 echo "✅ All model weights ready."
 

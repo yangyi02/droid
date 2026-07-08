@@ -37,18 +37,24 @@ from core.physics import TensorRobotRenderer
 # 1. Model Loading (VGGT only for Stage 2)
 # ---------------------------------------------------------------------------
 def init_calibration_models():
-  """Load VGGT model for camera extrinsics estimation."""
+  """Load VGGT model for camera extrinsics estimation.
+
+  Installs the vggt package on-demand if not already installed.
+  """
+  import subprocess
+
   device = get_accelerator()
   print(f"🚀 Launching VGGT model onto {device} | CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}")
   if not torch.cuda.is_available():
     print("⚠️ WARNING: PyTorch cannot find a valid CUDA device.")
 
-  # Inject third-party repo paths (droid/third_party/ lives next to this script)
-  vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party")
-  for pkg in ["vggt"]:
-    path = os.path.join(vendor_dir, pkg)
-    if path not in sys.path:
-      sys.path.append(path)
+  # Install vggt package on-demand from GitHub (skipped if already installed)
+  try:
+    import vggt  # noqa: F401
+  except ImportError:
+    print("  📦 Installing vggt package from GitHub...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
+                           "git+https://github.com/facebookresearch/vggt.git"])
 
   from vggt.models.vggt import VGGT
   from vggt.utils.load_fn import load_and_preprocess_images
@@ -542,8 +548,10 @@ if __name__ == "__main__":
 
   print("🚀 DROID Stage 2: Camera Extrinsics Calibration Pipeline")
   device = get_accelerator()
-  vggt_model, load_fn, pose_fn = init_calibration_models()
   serials_db, _, _, extrinsics_db, _ = load_metadata()
+
+  # VGGT is lazy-loaded only when needed (like pyzed in compute_depth.py)
+  vggt_model, load_fn, pose_fn = None, None, None
 
   # Discover available episodes from depth output
   depth_abs = os.path.abspath(os.path.expanduser(args.depth_root))
@@ -592,6 +600,10 @@ if __name__ == "__main__":
         stage1_scene_state = init_scene_state
         vggt_scene_state = None
       else:
+        # Lazy-load VGGT on first use (avoids loading 1B model when not needed)
+        if vggt_model is None:
+          print("  📦 First episode needs VGGT — loading model...")
+          vggt_model, load_fn, pose_fn = init_calibration_models()
         print("  ⚠️ Incomplete extrinsics, running VGGT visual anchoring...")
         vggt_scene_state = vggt_warmup_extrinsics(
             scene_constants, vggt_model, load_fn, pose_fn, device,
