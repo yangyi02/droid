@@ -16,7 +16,7 @@ echo "🚀 DROID Pipeline Setup"
 echo "================================================"
 
 # ---------------------------------------------------------
-# 1. Git Submodules (s2m2, vggt, co-tracker, PointWorld)
+# 1. Git Submodules (s2m2, co-tracker, PointWorld)
 # ---------------------------------------------------------
 echo ""
 echo "📦 [1/4] Initializing git submodules..."
