@@ -198,14 +198,20 @@ def visualize_disparity_video(disp_array, vmax=100.0):
 
 
 def render_multicam_disparity_video(scene_constants, tgt_size=(128, 228),
-                                    disp_vmax=100.0):
+                                    disp_vmax=100.0, max_frames=None):
   """Generate a [left | right | disparity] multi-camera stitched video."""
   import mediapy as media  # lazy import; only needed in notebook contexts
   camera_rows = []
   for cam_data in scene_constants['camera'].values():
-    left_video = media.resize_video(cam_data['video_rgb'], tgt_size)
-    right_video = media.resize_video(cam_data['video_right'], tgt_size)
+    video_rgb = cam_data['video_rgb']
+    video_right = cam_data['video_right']
     raw_depth = cam_data['raw_depth'].astype(np.float32)
+    if max_frames is not None:
+      video_rgb = video_rgb[:max_frames]
+      video_right = video_right[:max_frames]
+      raw_depth = raw_depth[:max_frames]
+    left_video = media.resize_video(video_rgb, tgt_size)
+    right_video = media.resize_video(video_right, tgt_size)
     fx = cam_data['K_mat'][0, 0]
     baseline = cam_data['baseline']
     raw_disp = np.zeros_like(raw_depth)
@@ -276,7 +282,8 @@ def render_distortion_comparison_video(scene_constants, tgt_width=1280):
 
 def render_2d_tracking_video(video_frames, tracks, visibility,
                              global_colors=None, linewidth=3,
-                             tracks_leave_trace=20, tgt_size=None):
+                             tracks_leave_trace=20, tgt_size=None,
+                             max_frames=None):
   """Render 2D point tracks with comet trails onto video frames.
 
   Args:
@@ -287,8 +294,14 @@ def render_2d_tracking_video(video_frames, tracks, visibility,
     linewidth: width of track lines.
     tracks_leave_trace: number of frames for comet trail.
     tgt_size: optional (H, W) tuple to resize output frames.
+    max_frames: optional maximum frames to render.
   """
   import mediapy as media  # lazy import
+  if max_frames is not None:
+    video_frames = video_frames[:max_frames]
+    tracks = tracks[:max_frames]
+    visibility = visibility[:max_frames]
+
   if tgt_size is not None:
     orig_h, orig_w = video_frames[0].shape[:2]
     new_h, new_w = tgt_size
