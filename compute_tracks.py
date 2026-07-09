@@ -19,7 +19,6 @@ Dual-Track Architecture:
 
 import argparse
 import fcntl
-import json
 import os
 import random
 import sys
@@ -33,7 +32,6 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as R
 import torch
-from tqdm import tqdm
 
 from core.geometry import project_points_np, unproject_points_np
 from core.io import get_accelerator, load_depth_data, load_extrinsics

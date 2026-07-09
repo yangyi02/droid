@@ -10,7 +10,7 @@ import os
 
 import numpy as np
 import pybullet as p
-from scipy.spatial.transform import Rotation as R
+
 import torch
 import trimesh
 import yourdfpy
