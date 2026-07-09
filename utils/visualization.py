@@ -682,7 +682,7 @@ def render_cinematic_4d_orbit(scene_constants, scene_state,
                               width=640, height=360,
                               orbit_center=(0.4, 0.0, 0.0),
                               orbit_radius=1.2, camera_height=0.5,
-                              angle_start=None):
+                              angle_start=None, max_frames=None):
   """Render a 4D point cloud orbit video using pyrender."""
   import pyrender  # lazy import; heavy dependency
   if angle_start is None:
@@ -690,6 +690,8 @@ def render_cinematic_4d_orbit(scene_constants, scene_state,
 
   camera_ids = sorted(scene_constants['camera'].keys())
   n_frames = len(scene_state[camera_ids[0]]['extrinsics'])
+  if max_frames is not None:
+    n_frames = min(n_frames, max_frames)
 
   scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 1.0])
   cam_node = scene.add(
