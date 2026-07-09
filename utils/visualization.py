@@ -8,7 +8,6 @@ robot segmentation video, camera axes visualization, and 4D orbit video.
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import plotly.graph_objects as go
 from tqdm import tqdm
 
 from core.geometry import project_points_np
@@ -48,6 +47,7 @@ def inspect_dict_structure(data, name="scene_constants", indent=0):
 def show_plotly_point_cloud(pts, cols, title="3D Point Cloud",
                             max_points=150000, eye_pos=(-1.5, -1.5, 1.0)):
   """Interactive 3D point cloud rendering via Plotly."""
+  import plotly.graph_objects as go  # lazy import
   idx = np.random.permutation(len(pts))[:max_points]
   p, c = pts[idx], cols[idx]
   go.Figure(
@@ -96,6 +96,7 @@ def render_fused_point_cloud(scene_constants, scene_state, frame_idx=0,
 
 def render_distilled_gripper_3d(median_depth, K_mat, rgb_img):
   """Render the distilled gripper surface as an interactive 3D point cloud."""
+  import plotly.graph_objects as go  # lazy import
   v, u = np.where(median_depth > 0)
   z = median_depth[v, u]
   x = (u - K_mat[0, 2]) * z / K_mat[0, 0]
@@ -123,6 +124,7 @@ def show_animated_plotly_point_cloud(traj_3d, colors_rgb,
                                     title="Animated 3D Tracks",
                                     eye_pos=(0, -0.8, -1.5)):
   """Dynamic interactive 3D point cloud player with timeline slider."""
+  import plotly.graph_objects as go  # lazy import
   T, N, _ = traj_3d.shape
   hex_colors = [f'rgb({int(r)},{int(g)},{int(b)})' for r, g, b in colors_rgb]
 

@@ -11,7 +11,6 @@ import json
 import os
 import random
 import sys
-import warnings
 
 import cv2
 import h5py

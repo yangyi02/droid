@@ -35,7 +35,8 @@ pip install -q \
     scipy \
     tqdm \
     h5py \
-    mediapy
+    mediapy \
+    yourdfpy
 
 # SAM is pip-installable directly from GitHub
 pip install -q git+https://github.com/facebookresearch/segment-anything.git

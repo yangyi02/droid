@@ -22,13 +22,11 @@ import sys
 
 import cv2
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-from tqdm import tqdm
 
-from core.geometry import axis_angle_to_matrix, make_4x4, make_T
+from core.geometry import make_4x4, make_T
 from core.io import get_accelerator, load_depth_data, load_metadata
 from core.physics import TensorRobotRenderer
 
