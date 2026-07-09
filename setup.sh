@@ -36,7 +36,9 @@ pip install -q \
     tqdm \
     h5py \
     mediapy \
-    yourdfpy
+    yourdfpy \
+    plotly \
+    pyrender
 
 # SAM is pip-installable directly from GitHub
 pip install -q git+https://github.com/facebookresearch/segment-anything.git
