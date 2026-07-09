@@ -45,7 +45,8 @@ def inspect_dict_structure(data, name="scene_constants", indent=0):
 # ===========================================================================
 
 def show_plotly_point_cloud(pts, cols, title="3D Point Cloud",
-                            max_points=150000, eye_pos=(-1.5, -1.5, 1.0)):
+                            max_points=150000, eye_pos=(-1.5, -1.5, 1.0),
+                            height=600, width=1000):
   """Interactive 3D point cloud rendering via Plotly."""
   import plotly.graph_objects as go  # lazy import
   idx = np.random.permutation(len(pts))[:max_points]
@@ -57,7 +58,7 @@ def show_plotly_point_cloud(pts, cols, title="3D Point Cloud",
                       color=[f'rgb({r},{g},{b})' for r, g, b in c]))],
       layout=go.Layout(
           title=title, margin=dict(l=0, r=0, b=0, t=40),
-          height=500, showlegend=False,
+          width=width, height=height, showlegend=False,
           scene=dict(aspectmode='data',
                      camera=dict(eye=dict(x=eye_pos[0], y=eye_pos[1],
                                           z=eye_pos[2]))))
@@ -66,7 +67,8 @@ def show_plotly_point_cloud(pts, cols, title="3D Point Cloud",
 
 def render_fused_point_cloud(scene_constants, scene_state, frame_idx=0,
                              max_render_points=150000,
-                             eye_pos=(-1.2, -1.2, 0.8), use_tint=False):
+                             eye_pos=(-1.2, -1.2, 0.8), use_tint=False,
+                             height=600, width=1000):
   """Fuse multi-view depth into a single 3D point cloud and render."""
   camera_ids = sorted(scene_constants['camera'].keys())
   tint_colors = np.array([[0, 50, 0], [50, 0, 0], [0, 0, 50]])
@@ -91,7 +93,8 @@ def render_fused_point_cloud(scene_constants, scene_state, frame_idx=0,
     title += " 🎨 [Tinted Debug Mode]"
   show_plotly_point_cloud(
       pts=np.vstack(fused_points), cols=np.vstack(fused_colors),
-      title=title, max_points=max_render_points, eye_pos=eye_pos)
+      title=title, max_points=max_render_points, eye_pos=eye_pos,
+      height=height, width=width)
 
 
 def render_distilled_gripper_3d(median_depth, K_mat, rgb_img):
