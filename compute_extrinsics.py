@@ -534,15 +534,11 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
     h_img, w_img = cam_data['raw_depth'][0].shape[:2]
     K = cam_data['K_mat']
 
-    # Render robot mask at t=0 using current extrinsics
+    # Render masks at t=0 using current extrinsics
+    ext_t0 = scene_state[cam_id]['extrinsics'][0]
     pb_renderer.update_robot_pose(
         scene_constants['robot']['joint_positions'][0],
         gripper_state=scene_constants['robot']['gripper_positions'][0])
-    robot_mask = pb_renderer.render_mask(
-        scene_state[cam_id]['extrinsics'][0], K, w_img, h_img)
-    kernel = np.ones((15, 15), np.uint8)
-    robot_mask_d = cv2.dilate(
-        robot_mask.astype(np.uint8), kernel, iterations=1) > 0
 
     # Track positions at t=0
     u0 = tracks[0, :, 0]
@@ -550,15 +546,28 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
     u0i = np.clip(np.round(u0).astype(int), 0, w_img - 1)
     v0i = np.clip(np.round(v0).astype(int), 0, h_img - 1)
 
-    # Classify robot vs background at query frame
-    on_robot = robot_mask_d[v0i, u0i]
-
     if is_wrist:
-      selected = ~on_robot   # Wrist camera: background tracks (Scheme B)
+      # Scheme B: wrist camera — select BACKGROUND tracks
+      # Use full robot mask (dilated) to exclude robot region
+      robot_mask = pb_renderer.render_mask(ext_t0, K, w_img, h_img)
+      kernel = np.ones((15, 15), np.uint8)
+      robot_mask_d = cv2.dilate(
+          robot_mask.astype(np.uint8), kernel, iterations=1) > 0
+      on_robot = robot_mask_d[v0i, u0i]
+      selected = ~on_robot
       scheme = "background"
     else:
-      selected = on_robot    # Static camera: robot tracks (Scheme A)
-      scheme = "robot"
+      # Scheme A: static camera — select GRIPPER-ONLY tracks
+      # IMPORTANT: Only the gripper (ghost body) moves rigidly with T_ee(t).
+      # Arm links 1-6 have different FK chains and would give wrong
+      # reprojection if treated as part of EE.
+      gripper_mask = pb_renderer.render_gripper_mask(ext_t0, K, w_img, h_img)
+      kernel = np.ones((5, 5), np.uint8)
+      gripper_mask_d = cv2.dilate(
+          gripper_mask.astype(np.uint8), kernel, iterations=1) > 0
+      on_gripper = gripper_mask_d[v0i, u0i]
+      selected = on_gripper
+      scheme = "gripper"
 
     # Depth validity at t=0
     depth_0 = cam_data['raw_depth'][0].astype(np.float32)
@@ -645,8 +654,8 @@ def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device):
   targets = anchor['tracks_2d']   # (T, N, 2)
   vis = anchor['vis']             # (T, N)
 
-  if scheme == "robot":
-    # Scheme A: static camera, robot tracks
+  if scheme in ("robot", "gripper"):
+    # Scheme A: static camera, gripper/EE tracks
     # T_opt = T_cam_to_base (static camera extrinsic)
     T_base_to_cam = torch.linalg.inv(T_opt)
     T_ee_0_inv = torch.linalg.inv(T_ee_all[0])

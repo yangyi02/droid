@@ -255,6 +255,21 @@ class PyBulletRenderer:
                    ~np.isin(link_ids, self.hidden_ghost_links))
     return valid_robot | valid_ghost
 
+  def render_gripper_mask(self, extrinsic, K, w, h):
+    """Render binary mask of gripper/EE only (ghost body, no arm links).
+
+    Unlike render_mask() which includes the full arm, this returns only
+    pixels belonging to the gripper — the part that rigidly moves with
+    T_ee(t).  Used by Stage 5 track refinement to select points whose
+    motion is fully described by the EE forward kinematics.
+    """
+    _, seg_buf = self._render_raw(extrinsic, K, w, h)
+    seg_array = np.reshape(seg_buf, (h, w)).astype(np.int32)
+    obj_ids = seg_array & 0xFFFFFF
+    link_ids = (seg_array >> 24) - 1
+    return ((obj_ids == self.ghost_id) &
+            ~np.isin(link_ids, self.hidden_ghost_links))
+
   def render_segmentation(self, extrinsic, K, w, h):
     """Render full segmentation: (obj_ids, link_ids, metric_depth)."""
     depth_buf, seg_buf = self._render_raw(extrinsic, K, w, h)
