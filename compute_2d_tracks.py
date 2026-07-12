@@ -112,7 +112,12 @@ class CoTrackerBackend:
 # ===========================================================================
 
 class TAPNextBackend:
-  """TAPNext++ online frame-by-frame tracking at 512×512."""
+  """TAPNext++ online frame-by-frame tracking at 512×512.
+
+  Uses the high-level ``TAPNextPP.track_frame()`` API which handles all
+  preprocessing (BGR→RGB, resize, normalize to [-1,1], channels-last) and
+  coordinate conversion (model [0,256] ↔ display pixels) internally.
+  """
 
   def __init__(self, device, ckpt_path=None):
     """Initialize TAPNext++ model.
@@ -158,6 +163,9 @@ class TAPNextBackend:
   def track(self, video_rgb, grid_size=30):
     """Run online frame-by-frame tracking on a full video.
 
+    Uses ``TAPNextPP.track_frame()`` which expects BGR uint8 frames and
+    returns (x, y) positions in display pixel coordinates.
+
     Args:
       video_rgb: np.uint8 (T, H, W, 3) RGB video.
       grid_size: Grid density per axis.
@@ -169,78 +177,33 @@ class TAPNextBackend:
     """
     T, H, W, _ = video_rgb.shape
     N = grid_size * grid_size
-    res = self.model_resolution
 
-    # *** IMPORTANT: TAPNext++ inner model always works in [0, 256]
-    # coordinate space regardless of input resolution (256 or 512).
-    # Query points must be in [0, 256] and outputs come back in [0, 256].
-    INTERNAL_RES = 256.0
-    scale_x_to_model = INTERNAL_RES / W   # original → model [0, 256]
-    scale_y_to_model = INTERNAL_RES / H
-    scale_x_from_model = W / INTERNAL_RES  # model [0, 256] → original
-    scale_y_from_model = H / INTERNAL_RES
+    # Generate query points in original pixel coordinates (x, y)
+    queries_xy = generate_grid_queries(H, W, grid_size)  # (N, 2)
 
-    # Generate query points in [0, 256] model coordinate space
-    queries_orig = generate_grid_queries(H, W, grid_size)  # (N, 2) x,y
-    q_model_x = queries_orig[:, 0] * scale_x_to_model  # → [0, 256)
-    q_model_y = queries_orig[:, 1] * scale_y_to_model
-
-    # TAPNext++ query format: (B, N, 3) with (t, y, x) — note y,x order!
-    q_points = torch.zeros((1, N, 3), dtype=torch.float32, device=self.device)
-    q_points[0, :, 0] = 0  # query frame = 0
-    q_points[0, :, 1] = torch.from_numpy(q_model_y).float()
-    q_points[0, :, 2] = torch.from_numpy(q_model_x).float()
-
-    # Resize video to model input resolution
-    video_tensor = (
-        torch.from_numpy(video_rgb).float()
-        .permute(0, 3, 1, 2)  # (T, 3, H, W)
-    )
-    video_resized = torch.nn.functional.interpolate(
-        video_tensor, size=(res, res), mode='bilinear', align_corners=False,
-    )
-    video_batch = video_resized[None].to(self.device)  # (1, T, 3, res, res)
-
-    # Extract inner model
-    inner_model = (self.model._model
-                   if hasattr(self.model, '_model') else self.model)
-
-    # Frame-by-frame online tracking
-    with torch.amp.autocast('cuda', dtype=torch.float16, enabled=True):
-      pred_tracks_list, pred_vis_list = [], []
-
-      # First frame: initialize with query points
-      curr_tracks, _, curr_vis_logits, state = inner_model(
-          video=video_batch[:, :1], query_points=q_points,
-      )
-      pred_tracks_list.append(curr_tracks.cpu())
-      pred_vis_list.append((curr_vis_logits > 0).cpu())
-
-      # Subsequent frames: online tracking
-      for t in range(1, T):
-        curr_tracks, _, curr_vis_logits, state = inner_model(
-            video=video_batch[:, t:t+1], state=state,
-        )
-        pred_tracks_list.append(curr_tracks.cpu())
-        pred_vis_list.append((curr_vis_logits > 0).cpu())
-
-    # Concatenate: each element is (1, 1, N, 2) → cat → (1, T, N, 2)
-    tracks_model = torch.cat(pred_tracks_list, dim=1)  # (1, T, N, 2)
-    vis_model = torch.cat(pred_vis_list, dim=1)         # (1, T, N, 1) or (1,T,N)
-
-    # TAPNext++ tracks are in (y, x) order in [0, 256] model coords
-    # Convert to (x, y) in original pixel resolution
-    tracks_np = tracks_model[0].float().numpy()  # (T, N, 2) in [0,256] (y,x)
     tracks_out = np.zeros((T, N, 2), dtype=np.float32)
-    tracks_out[:, :, 0] = tracks_np[:, :, 1] * scale_x_from_model  # x
-    tracks_out[:, :, 1] = tracks_np[:, :, 0] * scale_y_from_model  # y
+    vis_out = np.zeros((T, N), dtype=bool)
+    state = None
 
-    vis_out = vis_model[0].squeeze(-1).bool().numpy()  # (T, N)
+    for t in range(T):
+      # track_frame() expects BGR uint8 frames — convert from RGB
+      frame_bgr = video_rgb[t, :, :, ::-1].copy()
 
-    del video_tensor, video_resized, video_batch
-    del tracks_model, vis_model, state
+      if t == 0:
+        # First frame: initialize tracking with query points
+        positions_xy, visible, state = self.model.track_frame(
+            frame_bgr, query_points_xy=queries_xy,
+        )
+      else:
+        # Subsequent frames: pass recurrent state
+        positions_xy, visible, state = self.model.track_frame(
+            frame_bgr, state=state,
+        )
+
+      tracks_out[t] = positions_xy  # (N, 2) in display (x, y) pixels
+      vis_out[t] = visible           # (N,) bool
+
     torch.cuda.empty_cache()
-
     return tracks_out, vis_out
 
 
