@@ -379,9 +379,33 @@ def get_cam_points_local_t(t, cam_data, device):
 
 
 def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_renderer,
-                                lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3"):
-  """Global joint optimization: Chamfer environment stitching + Robot depth + Wrist depth."""
-  print(f"\n🌍 {stage_name}: Global joint optimization (Chamfer + Robot + Wrist, lr={lr})...")
+                                lr=0.001, n_steps=500,
+                                chamfer_weight=1.0, robot_weight=1.0,
+                                track_anchors=None, track_weight=0.0,
+                                stage_name="Stage 3"):
+  """Global joint optimization: Chamfer + Robot depth + Wrist depth + optional 2D tracks.
+
+  When track_anchors and track_weight > 0 are provided, the 2D track
+  reprojection loss is added to the same optimization loop as Chamfer and
+  Robot depth.  This ensures all constraints pull together without any
+  single signal dominating.
+
+  Args:
+    scene_constants: Scene data dict.
+    prev_scene_state: Previous extrinsics to refine.
+    tensor_renderer: TensorRobotRenderer for robot point clouds.
+    lr: Learning rate.
+    n_steps: Number of optimization steps.
+    robot_weight: Weight for robot depth losses.
+    track_anchors: Optional dict from prepare_track_anchors(). When provided
+        with track_weight > 0, adds 2D track reprojection constraints.
+    track_weight: Weight for 2D track reprojection loss (0 = off).
+    stage_name: Display name for logging.
+  """
+  use_tracks = (track_anchors is not None and track_weight > 0)
+  track_tag = f" + Tracks(w={track_weight})" if use_tracks else ""
+  print(f"\n🌍 {stage_name}: Global joint optimization "
+        f"(Chamfer + Robot + Wrist{track_tag}, lr={lr})...")
   device = tensor_renderer.device
   wrist_cam = scene_constants['meta']['wrist_serial']
   ext_cams = [c for c in scene_constants['camera'].keys() if c != wrist_cam]
@@ -413,6 +437,12 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
   batch_Pc1, batch_Pc2, batch_Pcw = torch.stack(cache_Pc1), torch.stack(cache_Pc2), torch.stack(cache_Pcw)
   batch_Tee = torch.stack(cache_Tee)
 
+  # Prepare FK tensor for track loss (full sequence, not just valid Chamfer frames)
+  if use_tracks:
+    T_ee_all_t = torch.tensor(T_ee_all, dtype=torch.float32, device=device)
+    n_track_cams = sum(1 for c in [cam1, cam2, wrist_cam] if c in track_anchors)
+    print(f"  🎯 Track anchors available for {n_track_cams} cameras")
+
   K_t1 = torch.tensor(scene_constants['camera'][cam1]['K_mat'], dtype=torch.float32, device=device)
   K_t2 = torch.tensor(scene_constants['camera'][cam2]['K_mat'], dtype=torch.float32, device=device)
   K_t_w = torch.tensor(scene_constants['camera'][wrist_cam]['K_mat'], dtype=torch.float32, device=device)
@@ -425,6 +455,13 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
   T1_init_t = torch.tensor(prev_scene_state[cam1]['base_extrinsic'], dtype=torch.float32, device=device)
   T2_init_t = torch.tensor(prev_scene_state[cam2]['base_extrinsic'], dtype=torch.float32, device=device)
   Tee_init_t = torch.tensor(prev_scene_state[wrist_cam]['base_extrinsic'], dtype=torch.float32, device=device)
+
+  # Map camera IDs to their delta/init/K for track loss lookup
+  cam_opt_map = {
+      cam1: (d1, T1_init_t, K_t1),
+      cam2: (d2, T2_init_t, K_t2),
+      wrist_cam: (dhe, Tee_init_t, K_t_w),
+  }
 
   print(f"  ✅ Data ready! Launching GPU joint optimization engine ({n_steps} steps)...")
   for step in range(n_steps):
@@ -450,7 +487,23 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
     l_rob2 = compute_robot_loss(batch_X2, T2_opt, K_t2, batch_obs2, depth_tolerance=0.15)
     l_wrist = compute_robot_loss(batch_P_ee, Tee_opt, K_t_w, batch_obs_w, depth_tolerance=float('inf'))
 
-    loss_total = loss_chamfer + robot_weight * (l_rob1 + l_rob2 + l_wrist)
+    loss_total = chamfer_weight * loss_chamfer + robot_weight * (l_rob1 + l_rob2 + l_wrist)
+
+    # 2D track reprojection losses (when enabled)
+    loss_track = torch.tensor(0.0, device=device)
+    if use_tracks:
+      for cam_id in [cam1, cam2, wrist_cam]:
+        if cam_id not in track_anchors:
+          continue
+        d_cam, T_init_cam, K_cam = cam_opt_map[cam_id]
+        T_opt_cam = T_init_cam @ make_T(d_cam, device)
+        scheme = track_anchors[cam_id]['scheme']
+        l_trk = compute_track_reproj_loss(
+            track_anchors[cam_id], T_opt_cam, K_cam, T_ee_all_t,
+            scheme, device)
+        loss_track = loss_track + l_trk
+      loss_total = loss_total + track_weight * loss_track
+
     loss_total.backward()
     optimizer.step()
 
@@ -459,11 +512,19 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
       shift_c1 = torch.norm(d1[3:]).item() * 1000
       shift_c2 = torch.norm(d2[3:]).item() * 1000
       shift_w = torch.norm(dhe[3:]).item() * 1000
-      print(f"    Step {step:03d} | "
-            f"Chmf: {loss_chamfer.item():.4f} | "
-            f"Rob1: {l_rob1.item():.4f} | Rob2: {l_rob2.item():.4f} | Wrst: {l_wrist.item():.4f} | "
-            f"BG Overlap: {bg_overlap:.1f}% | "
-            f"Shift → C1: {shift_c1:.2f}mm, C2: {shift_c2:.2f}mm, W: {shift_w:.2f}mm")
+      log_parts = [
+          f"Step {step:03d}",
+          f"Chmf: {loss_chamfer.item():.4f}",
+          f"Rob1: {l_rob1.item():.4f}", f"Rob2: {l_rob2.item():.4f}",
+          f"Wrst: {l_wrist.item():.4f}",
+      ]
+      if use_tracks:
+        log_parts.append(f"Track: {loss_track.item():.2f}")
+      log_parts.extend([
+          f"BG Overlap: {bg_overlap:.1f}%",
+          f"Shift → C1: {shift_c1:.2f}mm, C2: {shift_c2:.2f}mm, W: {shift_w:.2f}mm",
+      ])
+      print(f"    {' | '.join(log_parts)}")
 
   with torch.no_grad():
     final_p1 = (T1_init_t @ make_T(d1, device)).cpu().numpy()
