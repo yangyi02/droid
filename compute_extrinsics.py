@@ -490,7 +490,362 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
 
 
 # ---------------------------------------------------------------------------
-# 11. Export
+# 11. Stage 5: 2D Track-Based Extrinsics Refinement
+# ---------------------------------------------------------------------------
+
+def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
+  """Lift tracked 2D points at t=0 to 3D and classify as robot or background.
+
+  For static cameras (Scheme A): selects robot-region tracks — points are
+  assumed to be on the EE link, moved by forward kinematics.
+  For the wrist camera (Scheme B): selects background tracks — points are
+  static in world frame while the camera moves.
+
+  Args:
+    scene_constants: Scene data dict with tracks_2d / vis_2d populated.
+    scene_state: Current extrinsics estimates for each camera.
+    pb_renderer: PyBulletRenderer for robot mask rendering.
+    device: Torch device.
+
+  Returns:
+    Dict[cam_id, dict] with per-camera anchor data:
+      P_cam0: (N, 4) float32, 3D points in camera frame at t=0 (homogeneous)
+      tracks_2d: (T, N, 2) float32, selected track positions over time
+      vis: (T, N) bool, visibility flags
+      scheme: "robot" or "background"
+  """
+  wrist_cam = scene_constants['meta']['wrist_serial']
+  anchors = {}
+
+  print("  📌 Preparing track anchors from t=0...")
+
+  for cam_id in scene_constants['camera']:
+    cam_data = scene_constants['camera'][cam_id]
+
+    if 'tracks_2d' not in cam_data or 'raw_depth' not in cam_data:
+      print(f"    ⚠️ [{cam_id}] Missing tracks_2d or depth, skipping.")
+      continue
+
+    tracks = cam_data['tracks_2d']   # (T, N, 2) float32
+    vis = cam_data['vis_2d']         # (T, N) bool
+    T_frames, N_total, _ = tracks.shape
+    is_wrist = (cam_id == wrist_cam)
+
+    h_img, w_img = cam_data['raw_depth'][0].shape[:2]
+    K = cam_data['K_mat']
+
+    # Render robot mask at t=0 using current extrinsics
+    pb_renderer.update_robot_pose(
+        scene_constants['robot']['joint_positions'][0],
+        gripper_state=scene_constants['robot']['gripper_positions'][0])
+    robot_mask = pb_renderer.render_mask(
+        scene_state[cam_id]['extrinsics'][0], K, w_img, h_img)
+    kernel = np.ones((15, 15), np.uint8)
+    robot_mask_d = cv2.dilate(
+        robot_mask.astype(np.uint8), kernel, iterations=1) > 0
+
+    # Track positions at t=0
+    u0 = tracks[0, :, 0]
+    v0 = tracks[0, :, 1]
+    u0i = np.clip(np.round(u0).astype(int), 0, w_img - 1)
+    v0i = np.clip(np.round(v0).astype(int), 0, h_img - 1)
+
+    # Classify robot vs background at query frame
+    on_robot = robot_mask_d[v0i, u0i]
+
+    if is_wrist:
+      selected = ~on_robot   # Wrist camera: background tracks (Scheme B)
+      scheme = "background"
+    else:
+      selected = on_robot    # Static camera: robot tracks (Scheme A)
+      scheme = "robot"
+
+    # Depth validity at t=0
+    depth_0 = cam_data['raw_depth'][0].astype(np.float32)
+    z0 = depth_0[v0i, u0i]
+    has_depth = (z0 > 0.05) & (z0 < 3.0)
+    selected = selected & vis[0] & has_depth
+
+    if selected.sum() < 5:
+      print(f"    ⚠️ [{cam_id}] {scheme}: only {selected.sum()} initial tracks, skipping.")
+      continue
+
+    sel_idx = np.where(selected)[0]
+
+    # Keep only tracks visible in >20% of frames
+    vis_frac = vis[:, sel_idx].mean(axis=0)
+    good = vis_frac > 0.2
+    sel_idx = sel_idx[good]
+
+    if len(sel_idx) < 5:
+      print(f"    ⚠️ [{cam_id}] {scheme}: only {len(sel_idx)} well-visible tracks, skipping.")
+      continue
+
+    # Cap at 500 for memory efficiency
+    if len(sel_idx) > 500:
+      rng = np.random.RandomState(42)
+      sel_idx = rng.choice(sel_idx, 500, replace=False)
+      sel_idx.sort()
+
+    # Lift to 3D in camera frame at t=0
+    u_s = u0[sel_idx].astype(np.float32)
+    v_s = v0[sel_idx].astype(np.float32)
+    z_s = z0[sel_idx].astype(np.float32)
+    x_c = (u_s - K[0, 2]) * z_s / K[0, 0]
+    y_c = (v_s - K[1, 2]) * z_s / K[1, 1]
+    P_cam0 = np.stack([x_c, y_c, z_s, np.ones_like(z_s)], axis=-1)
+
+    avg_vis = vis[:, sel_idx].mean() * 100
+    print(f"    ✅ [{cam_id}] {scheme}: {len(sel_idx)} tracks "
+          f"(avg vis: {avg_vis:.0f}%)")
+
+    anchors[cam_id] = {
+        'P_cam0': torch.tensor(P_cam0, dtype=torch.float32, device=device),
+        'tracks_2d': torch.tensor(
+            tracks[:, sel_idx], dtype=torch.float32, device=device),
+        'vis': torch.tensor(
+            vis[:, sel_idx], dtype=torch.bool, device=device),
+        'scheme': scheme,
+    }
+
+  return anchors
+
+
+def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device):
+  """Differentiable 2D track reprojection loss for one camera.
+
+  Scheme A (robot tracks on static camera):
+    Points are on the EE link. At t=0 they are lifted to EE-local coords:
+      P_ee = T_ee(0)^{-1} @ T_cam_to_base @ P_cam0
+    At time t, they are projected back through FK:
+      P_cam(t) = T_base_to_cam @ T_ee(t) @ P_ee
+
+  Scheme B (background tracks on wrist camera):
+    Points are static in world frame. At t=0 they are lifted to world:
+      P_world = T_ee(0) @ T_cam_ee @ P_cam0
+    At time t, the wrist camera has moved:
+      P_cam(t) = inv(T_ee(t) @ T_cam_ee) @ P_world
+
+  Both schemes produce predicted 2D positions via standard pinhole projection,
+  compared to tracked positions using Huber loss for robustness.
+
+  Args:
+    anchor: Dict from prepare_track_anchors: P_cam0, tracks_2d, vis, scheme.
+    T_opt: (4, 4) Current optimized extrinsic (cam-to-base for static,
+        cam-to-ee for wrist). Differentiable w.r.t. delta.
+    K: (3, 3) Camera intrinsics tensor.
+    T_ee_all: (T, 4, 4) FK transforms for all timesteps.
+    scheme: "robot" or "background".
+    device: Torch device.
+
+  Returns:
+    Scalar loss (Huber-robust mean reprojection error in pixel space).
+  """
+  P_cam0 = anchor['P_cam0']       # (N, 4)
+  targets = anchor['tracks_2d']   # (T, N, 2)
+  vis = anchor['vis']             # (T, N)
+
+  if scheme == "robot":
+    # Scheme A: static camera, robot tracks
+    # T_opt = T_cam_to_base (static camera extrinsic)
+    T_base_to_cam = torch.linalg.inv(T_opt)
+    T_ee_0_inv = torch.linalg.inv(T_ee_all[0])
+
+    # P_world at t=0 → P_ee (constant on EE link)
+    P_world0 = T_opt @ P_cam0.T                  # (4, N)
+    P_ee = T_ee_0_inv @ P_world0                  # (4, N)
+
+    # For all t: project through FK → camera
+    # P_world(t) = T_ee(t) @ P_ee → P_cam(t) = T_base_to_cam @ P_world(t)
+    P_ee_batch = P_ee.unsqueeze(0)                # (1, 4, N)
+    P_world_all = T_ee_all @ P_ee_batch           # (T, 4, N)
+    P_cam_all = T_base_to_cam.unsqueeze(0) @ P_world_all  # (T, 4, N)
+
+  elif scheme == "background":
+    # Scheme B: wrist camera, background tracks
+    # T_opt = T_cam_ee (hand-eye extrinsic)
+    # P_world = T_ee(0) @ T_cam_ee @ P_cam0 (constant in world)
+    T_cam_to_world_0 = T_ee_all[0] @ T_opt       # (4, 4)
+    P_world = T_cam_to_world_0 @ P_cam0.T         # (4, N)
+
+    # For all t: inv(T_ee(t) @ T_cam_ee) @ P_world
+    T_cam_to_world_all = T_ee_all @ T_opt.unsqueeze(0)   # (T, 4, 4)
+    T_world_to_cam_all = torch.linalg.inv(T_cam_to_world_all)
+    P_cam_all = T_world_to_cam_all @ P_world.unsqueeze(0)  # (T, 4, N)
+
+  else:
+    return torch.tensor(0.0, device=device)
+
+  # Pinhole projection → predicted 2D
+  Z = P_cam_all[:, 2, :].clamp(min=1e-4)                   # (T, N)
+  u_pred = K[0, 0] * P_cam_all[:, 0, :] / Z + K[0, 2]     # (T, N)
+  v_pred = K[1, 1] * P_cam_all[:, 1, :] / Z + K[1, 2]     # (T, N)
+  pred = torch.stack([u_pred, v_pred], dim=-1)              # (T, N, 2)
+
+  # Huber loss with δ=5 pixels for robustness to outlier tracks
+  pixel_err = (pred - targets).norm(dim=-1)                 # (T, N)
+  valid = vis & (Z > 0.05)
+
+  if valid.any():
+    err = pixel_err[valid]
+    delta = 5.0
+    huber = torch.where(
+        err < delta, 0.5 * err ** 2, delta * (err - 0.5 * delta))
+    return huber.mean()
+
+  return torch.tensor(0.0, device=device)
+
+
+def run_track_refinement(scene_constants, prev_scene_state, pb_renderer,
+                          track_anchors=None,
+                          lr=0.0005, n_steps=300,
+                          track_weight=1.0, reg_weight=0.01,
+                          stage_name="Stage 5"):
+  """Refine extrinsics using temporal 2D track reprojection consistency.
+
+  Takes the output of Stage 3 (or Stage 4) and applies a small delta
+  correction driven by 2D point track constraints:
+
+  - **Static cameras**: Robot-region tracks are reprojected through FK at each
+    time step.  The known robot motion acts as a "moving calibration target"
+    with sub-mm-accurate trajectory, providing very strong constraints.
+
+  - **Wrist camera**: Background tracks are reprojected through the moving
+    wrist.  The large EE motion range provides strong parallax constraints
+    on the hand-eye transform.
+
+  A regularization term keeps the solution close to the Stage 3 estimate,
+  preventing drift on degrees of freedom that tracks do not constrain well.
+
+  Args:
+    scene_constants: Scene data dict with tracks_2d, vis_2d, depth, FK.
+    prev_scene_state: Extrinsics from Stage 3/4 to refine.
+    pb_renderer: PyBulletRenderer for robot mask rendering.
+    track_anchors: Pre-computed anchors from prepare_track_anchors().
+        If None, they will be computed automatically.
+    lr: Learning rate for Adam optimizer.
+    n_steps: Number of optimization steps.
+    track_weight: Weight for the 2D reprojection loss.
+    reg_weight: Weight for regularization toward Stage 3 solution.
+    stage_name: Display name for logging.
+
+  Returns:
+    Refined scene_state dict.
+  """
+  print(f"\n🎯 {stage_name}: 2D Track-Based Extrinsics Refinement "
+        f"(lr={lr}, steps={n_steps}, track_w={track_weight})...")
+  device = get_accelerator()
+
+  wrist_cam = scene_constants['meta']['wrist_serial']
+  ext_cams = [c for c in scene_constants['camera'].keys() if c != wrist_cam]
+  n_frames = len(scene_constants['robot']['joint_positions'])
+  T_ee_all_np = scene_constants['robot']['T_ee_base_all']
+
+  # Prepare T_ee on GPU (shared across all cameras)
+  T_ee_all = torch.tensor(T_ee_all_np, dtype=torch.float32, device=device)
+
+  # Compute track anchors if not provided
+  if track_anchors is None:
+    track_anchors = prepare_track_anchors(
+        scene_constants, prev_scene_state, pb_renderer, device)
+
+  if not track_anchors:
+    print("  ⚠️ No valid track anchors found. Returning previous state unchanged.")
+    return copy.deepcopy(prev_scene_state)
+
+  # Setup per-camera optimization parameters
+  cam_params = {}   # cam_id → (delta, T_init, K, scheme)
+  opt_params = []
+
+  for cam_id in list(ext_cams) + [wrist_cam]:
+    if cam_id not in track_anchors:
+      continue
+
+    d = torch.zeros(6, requires_grad=True, device=device)
+    T_init = torch.tensor(
+        prev_scene_state[cam_id]['base_extrinsic'],
+        dtype=torch.float32, device=device)
+    K_t = torch.tensor(
+        scene_constants['camera'][cam_id]['K_mat'],
+        dtype=torch.float32, device=device)
+    scheme = track_anchors[cam_id]['scheme']
+
+    cam_params[cam_id] = (d, T_init, K_t, scheme)
+    opt_params.append(d)
+
+  if not opt_params:
+    print("  ⚠️ No cameras with track anchors to optimize.")
+    return copy.deepcopy(prev_scene_state)
+
+  optimizer = optim.Adam(opt_params, lr=lr)
+
+  print(f"  ✅ Optimizing {len(cam_params)} cameras: "
+        f"{[f'{c}({v[3]})' for c, v in cam_params.items()]}")
+  print(f"  🚀 Launching optimization ({n_steps} steps)...")
+
+  for step in range(n_steps):
+    optimizer.zero_grad()
+
+    loss_track_total = torch.tensor(0.0, device=device)
+    loss_reg_total = torch.tensor(0.0, device=device)
+    per_cam_losses = {}
+
+    for cam_id, (d, T_init, K_t, scheme) in cam_params.items():
+      T_opt = T_init @ make_T(d, device)
+
+      # Track reprojection loss
+      l_track = compute_track_reproj_loss(
+          track_anchors[cam_id], T_opt, K_t, T_ee_all, scheme, device)
+      loss_track_total = loss_track_total + l_track
+
+      # Regularization: keep delta small (stay near Stage 3 solution)
+      l_reg = d.norm() ** 2
+      loss_reg_total = loss_reg_total + l_reg
+
+      per_cam_losses[cam_id] = l_track.item()
+
+    loss = track_weight * loss_track_total + reg_weight * loss_reg_total
+    loss.backward()
+    optimizer.step()
+
+    if step % 30 == 0 or step == n_steps - 1:
+      shifts = {c: torch.norm(v[0][3:]).item() * 1000
+                for c, v in cam_params.items()}
+      rots = {c: torch.norm(v[0][:3]).item() * (180.0 / np.pi)
+              for c, v in cam_params.items()}
+      loss_strs = [f"{c}: {per_cam_losses[c]:.2f}px" for c in cam_params]
+      shift_strs = [f"{c}: {shifts[c]:.2f}mm/{rots[c]:.2f}°"
+                    for c in cam_params]
+      print(f"    Step {step:03d} | "
+            f"Track: {loss_track_total.item():.3f} | "
+            f"Reg: {loss_reg_total.item():.5f} | "
+            f"Per-cam: [{', '.join(loss_strs)}] | "
+            f"Δ: [{', '.join(shift_strs)}]")
+
+  # Build refined scene state
+  refined_state = copy.deepcopy(prev_scene_state)
+
+  with torch.no_grad():
+    for cam_id, (d, T_init, K_t, scheme) in cam_params.items():
+      T_final = (T_init @ make_T(d, device)).cpu().numpy()
+      is_wrist = (cam_id == wrist_cam)
+
+      refined_state[cam_id]['base_extrinsic'] = T_final
+      refined_state[cam_id]['extrinsics'] = (
+          T_ee_all_np @ T_final if is_wrist
+          else np.tile(T_final, (n_frames, 1, 1))
+      )
+
+      shift_mm = torch.norm(d[3:]).item() * 1000
+      rot_deg = torch.norm(d[:3]).item() * (180.0 / np.pi)
+      print(f"  ✅ [{cam_id}] {scheme}: Δshift={shift_mm:.2f}mm, Δrot={rot_deg:.2f}°")
+
+  print(f"\n✅ {stage_name} complete!")
+  return refined_state
+
+
+# ---------------------------------------------------------------------------
+# 12. Export
 # ---------------------------------------------------------------------------
 def export_extrinsics(scene_constants, scene_state,
                       export_root="~/droid_data/output/mv-tap/droid/extrinsics",
