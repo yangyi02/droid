@@ -569,9 +569,17 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
       selected = on_gripper
       scheme = "gripper"
 
-    # Depth validity at t=0
-    depth_0 = cam_data['raw_depth'][0].astype(np.float32)
-    z0 = depth_0[v0i, u0i]
+    # --- Depth source for 3D anchor initialization ---
+    # Scheme A (gripper): sensor depth on dark/metallic gripper is unreliable.
+    #   Use PyBullet-rendered depth from the CAD model instead.
+    # Scheme B (background): sensor depth is fine for background points.
+    if scheme == "gripper":
+      pb_depth = pb_renderer.render_depth(ext_t0, K, w_img, h_img).astype(np.float32)
+      z0 = pb_depth[v0i, u0i]
+    else:
+      depth_0 = cam_data['raw_depth'][0].astype(np.float32)
+      z0 = depth_0[v0i, u0i]
+
     has_depth = (z0 > 0.05) & (z0 < 3.0)
     selected = selected & vis[0] & has_depth
 
@@ -604,9 +612,53 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
     y_c = (v_s - K[1, 2]) * z_s / K[1, 1]
     P_cam0 = np.stack([x_c, y_c, z_s, np.ones_like(z_s)], axis=-1)
 
+    # Forward-model sanity check: project anchors at a subsequent visible
+    # frame using current extrinsics + FK and compare to the actual 2D track.
+    # A large initial error means the extrinsics/depth are off — no signal.
+    T_ee_all_np = scene_constants['robot']['T_ee_base_all']
+    T_ext0 = scene_state[cam_id]['extrinsics'][0]  # (4,4)
+    check_t = min(5, T_frames - 1)
+    check_vis = vis[check_t, sel_idx]
+    if check_vis.sum() >= 3:
+      P_cam0_h = P_cam0.T  # (4, N)
+      # For both schemes: T_ext0 = extrinsics[0] = T_cam_to_base at t=0.
+      # Static cameras: T_cam_to_base is constant, so extrinsics[t] = extrinsics[0].
+      # Wrist camera: extrinsics[t] already = T_ee_to_base[t] @ T_cam_ee.
+      if scheme == "gripper":
+        # Gripper points rigid in EE frame → project through FK
+        T_base_to_cam = np.linalg.inv(T_ext0)
+        T_ee0_inv = np.linalg.inv(T_ee_all_np[0])
+        P_world0 = T_ext0 @ P_cam0_h            # cam → world
+        P_ee = T_ee0_inv @ P_world0              # world → EE frame (constant)
+        P_world_t = T_ee_all_np[check_t] @ P_ee  # EE → world at t
+        P_cam_t = T_base_to_cam @ P_world_t
+      else:
+        # Background points static in world → use moving wrist extrinsics[t]
+        T_cam_to_base_0 = T_ext0                       # extrinsics[0] = T_cam→base
+        P_world = T_cam_to_base_0 @ P_cam0_h           # cam → world (constant P)
+        T_cam_to_base_t = scene_state[cam_id]['extrinsics'][check_t]
+        P_cam_t = np.linalg.inv(T_cam_to_base_t) @ P_world
+      Zc = np.clip(P_cam_t[2], 1e-4, None)
+      u_pred = K[0, 0] * P_cam_t[0] / Zc + K[0, 2]
+      v_pred = K[1, 1] * P_cam_t[1] / Zc + K[1, 2]
+      u_gt = tracks[check_t, sel_idx, 0]
+      v_gt = tracks[check_t, sel_idx, 1]
+      err_px = np.sqrt((u_pred - u_gt) ** 2 + (v_pred - v_gt) ** 2)
+      model_err = float(err_px[check_vis].mean()) if check_vis.any() else 999.
+    else:
+      model_err = 0.0  # not enough visible points to check
+
+    skip_thresh = 200.0
     avg_vis = vis[:, sel_idx].mean() * 100
+    depth_src = "PyBullet CAD" if scheme == "gripper" else "sensor"
     print(f"    ✅ [{cam_id}] {scheme}: {len(sel_idx)} tracks "
-          f"(avg vis: {avg_vis:.0f}%)")
+          f"(avg vis: {avg_vis:.0f}%, depth: {depth_src}, "
+          f"model err@t{check_t}: {model_err:.1f}px)")
+    if model_err > skip_thresh:
+      print(f"    ⛔ [{cam_id}] Initial model error too large "
+            f"({model_err:.1f}px > {skip_thresh}px), skipping — "
+            f"check Stage 3 extrinsics quality.")
+      continue
 
     anchors[cam_id] = {
         'P_cam0': torch.tensor(P_cam0, dtype=torch.float32, device=device),
