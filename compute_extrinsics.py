@@ -542,9 +542,24 @@ if __name__ == "__main__":
   parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
   parser.add_argument("--depth_root", type=str, default="~/droid_data/output/mv-tap/droid/depth",
                        help="Root directory of depth outputs")
+  parser.add_argument("--method", type=str, choices=["yourdfpy", "pybullet"], default="yourdfpy",
+                       help="Rendering engine for robot point cloud extraction")
+  parser.add_argument("--skip_stage3", action="store_true",
+                       help="Skip Stage 3 global joint optimization")
+  parser.add_argument("--stage4", action="store_true",
+                       help="Run Stage 4 fine-tuning after Stage 3")
+  parser.add_argument("--stage4_lr", type=float, default=0.0001,
+                       help="Learning rate for Stage 4 fine-tuning")
+  parser.add_argument("--stage4_robot_weight", type=float, default=0.1,
+                       help="Robot loss weight for Stage 4 fine-tuning")
+  parser.add_argument("--stage4_steps", type=int, default=500,
+                       help="Number of optimization steps for Stage 4")
+  parser.add_argument("--export_root", type=str,
+                       default="~/droid_data/output/mv-tap/droid/extrinsics",
+                       help="Root directory for extrinsics output")
   args = parser.parse_args()
 
-  print("🚀 DROID Stage 2: Camera Extrinsics Calibration Pipeline")
+  print(f"🚀 DROID Stage 2: Camera Extrinsics Calibration Pipeline [method={args.method}]")
   device = get_accelerator()
   serials_db, _, _, extrinsics_db, _ = load_metadata()
 
@@ -565,8 +580,20 @@ if __name__ == "__main__":
   target_eps = available_eps[args.rank::args.world_size]
   print(f"📋 Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
 
-  # Initialize tensor renderer once (shared across all episodes)
-  tensor_renderer = TensorRobotRenderer(device=device)
+  # Initialize renderer based on method
+  if args.method == "pybullet":
+    from core.physics import PyBulletRenderer
+    from core.pybullet_extrinsics import (
+        run_stage2_alignment_pybullet,
+        run_global_joint_alignment_pybullet,
+    )
+    pb_renderer = PyBulletRenderer()
+    tensor_renderer = None
+    print("  🔧 Using PyBullet rendering engine (V52 style)")
+  else:
+    pb_renderer = None
+    tensor_renderer = TensorRobotRenderer(device=device)
+    print("  🔧 Using yourdfpy TensorRobotRenderer (V55 style)")
 
   succeeded_eps = []
 
@@ -579,6 +606,7 @@ if __name__ == "__main__":
     vggt_scene_state = None
     stage1_scene_state = None
     stage2_state = None
+    stage3_state = None
     final_state = None
 
     try:
@@ -609,22 +637,62 @@ if __name__ == "__main__":
         stage1_scene_state = vggt_scene_state
 
       # Save Stage 1 extrinsics
-      export_extrinsics(scene_constants, stage1_scene_state, stage_suffix="stage1")
+      export_extrinsics(scene_constants, stage1_scene_state,
+                        export_root=args.export_root, stage_suffix="stage1")
 
-      # Stage 2: Unified camera-robot alignment (external + wrist)
-      stage2_state = run_stage2_alignment(
-          scene_constants, tensor_renderer, stage1_scene_state,
-      )
-      export_extrinsics(scene_constants, stage2_state, stage_suffix="stage2")
+      # Stage 2: Per-camera independent alignment (external + wrist)
+      if args.method == "pybullet":
+        stage2_state = run_stage2_alignment_pybullet(
+            scene_constants, pb_renderer, stage1_scene_state, device,
+        )
+      else:
+        stage2_state = run_stage2_alignment(
+            scene_constants, tensor_renderer, stage1_scene_state,
+        )
+      export_extrinsics(scene_constants, stage2_state,
+                        export_root=args.export_root, stage_suffix="stage2")
 
-      # Stage 3: Global joint optimization (Chamfer + Robot + Wrist)
-      final_state = run_global_joint_alignment(
-          scene_constants, stage2_state, tensor_renderer,
-          lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
-      )
-      # Final export (canonical name)
-      export_extrinsics(scene_constants, final_state)
-      succeeded_eps.append(ep_id)
+      if args.skip_stage3:
+        # Export Stage 2 result as final
+        export_extrinsics(scene_constants, stage2_state,
+                          export_root=args.export_root)
+        succeeded_eps.append(ep_id)
+      else:
+        # Stage 3: Global joint optimization (Chamfer + Robot + Wrist)
+        if args.method == "pybullet":
+          stage3_state = run_global_joint_alignment_pybullet(
+              scene_constants, stage2_state, pb_renderer, device,
+              lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
+          )
+        else:
+          stage3_state = run_global_joint_alignment(
+              scene_constants, stage2_state, tensor_renderer,
+              lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
+          )
+        export_extrinsics(scene_constants, stage3_state,
+                          export_root=args.export_root, stage_suffix="stage3")
+
+        # Stage 4: Optional fine-tuning (second pass of global joint alignment)
+        if args.stage4:
+          if args.method == "pybullet":
+            final_state = run_global_joint_alignment_pybullet(
+                scene_constants, stage3_state, pb_renderer, device,
+                lr=args.stage4_lr, n_steps=args.stage4_steps,
+                robot_weight=args.stage4_robot_weight, stage_name="Stage 4",
+            )
+          else:
+            final_state = run_global_joint_alignment(
+                scene_constants, stage3_state, tensor_renderer,
+                lr=args.stage4_lr, n_steps=args.stage4_steps,
+                robot_weight=args.stage4_robot_weight, stage_name="Stage 4",
+            )
+        else:
+          final_state = stage3_state
+
+        # Final export (canonical name)
+        export_extrinsics(scene_constants, final_state,
+                          export_root=args.export_root)
+        succeeded_eps.append(ep_id)
       print(f"  ✅ Episode {ep_id} completed successfully.")
 
     except Exception as e:
@@ -639,9 +707,11 @@ if __name__ == "__main__":
       vggt_scene_state = None
       stage1_scene_state = None
       stage2_state = None
+      stage3_state = None
       final_state = None
       # Clear the per-joint-config GPU tensor cache (main source of OOM)
-      tensor_renderer.world_points_cache.clear()
+      if tensor_renderer is not None:
+        tensor_renderer.world_points_cache.clear()
       gc.collect()
       torch.cuda.empty_cache()
 
