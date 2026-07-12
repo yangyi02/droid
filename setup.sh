@@ -46,6 +46,10 @@ pip install -q git+https://github.com/facebookresearch/segment-anything.git
 # co-tracker deps (vggt is installed on-demand in compute_extrinsics.py)
 pip install -q "$THIRD_PARTY/co-tracker"
 
+# TAPNext++ deps (optional, for compute_2d_tracks.py --method tapnext)
+pip install -q git+https://github.com/google-deepmind/tapnet.git 2>/dev/null || true
+pip install -q git+https://github.com/google-deepmind/recurrentgemma.git@main 2>/dev/null || true
+
 echo "✅ Python dependencies installed."
 
 # ---------------------------------------------------------
@@ -77,6 +81,19 @@ if [ ! -f "$COTRACKER_PTH" ]; then
     echo "  ✅ CoTracker3 weights downloaded."
 else
     echo "  ⏭️  CoTracker3 weights already exist, skipping."
+fi
+
+# TAPNext++ weights (512×512 model)
+TAPNEXT_WEIGHTS="$THIRD_PARTY/tapnext_weights"
+mkdir -p "$TAPNEXT_WEIGHTS"
+TAPNEXT_PTH="$TAPNEXT_WEIGHTS/tapnextpp_512.ckpt"
+if [ ! -f "$TAPNEXT_PTH" ]; then
+    echo "  ⬇️  Downloading TAPNext++ 512 checkpoint..."
+    wget -q -O "$TAPNEXT_PTH" \
+        "https://storage.googleapis.com/gresearch/tapnextpp/tapnextpp_512.ckpt"
+    echo "  ✅ TAPNext++ weights downloaded."
+else
+    echo "  ⏭️  TAPNext++ weights already exist, skipping."
 fi
 
 # SAM weights
