@@ -53,6 +53,12 @@ DEFAULT_EPISODES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Module-level model cache (avoid reloading VGGT between episodes)
+# ---------------------------------------------------------------------------
+_MODEL_CACHE = {}
+
+
+# ---------------------------------------------------------------------------
 # Experiment configs
 # ---------------------------------------------------------------------------
 
@@ -364,7 +370,6 @@ def run_single(episode_id, cfg, device, metadata, output_root,
           robot_data["wrist_serial"].item())
 
   # Load per-camera depth + video + calibration
-  wrist_serial = scene_constants["meta"].get("wrist_serial")
   for cam_id in scene_constants["camera"]:
     cam_dir = os.path.join(local_cache, cam_id)
     vid_path = os.path.join(cam_dir, "video_left.mp4")
@@ -385,11 +390,10 @@ def run_single(episode_id, cfg, device, metadata, output_root,
   all_ext = all(s["extrinsics"] is not None for s in scene_state.values())
 
   if not all_ext:
-    # Need VGGT — lazy-load
-    if not hasattr(run_single, "_vggt"):
-      vggt_model, load_fn, pose_fn = init_calibration_models()
-      run_single._vggt = (vggt_model, load_fn, pose_fn)
-    vggt_model, load_fn, pose_fn = run_single._vggt
+    # Need VGGT — lazy-load once and cache in module-level dict
+    if "vggt" not in _MODEL_CACHE:
+      _MODEL_CACHE["vggt"] = init_calibration_models()
+    vggt_model, load_fn, pose_fn = _MODEL_CACHE["vggt"]
     scene_state = vggt_warmup_extrinsics(
         scene_constants, vggt_model, load_fn, pose_fn, device)
 
@@ -398,11 +402,13 @@ def run_single(episode_id, cfg, device, metadata, output_root,
   pb_renderer = PyBulletRenderer()
   tensor_renderer = TensorRobotRenderer(device=device)
 
-  if use_pybullet:
+  if cfg["stage2_restarts"]:
+    # Multi-restart Stage 2 uses PyBullet renderer (5 outer × 100 inner)
     from core.pybullet_extrinsics import run_stage2_alignment_pybullet
     scene_state = run_stage2_alignment_pybullet(
         scene_constants, pb_renderer, scene_state, device)
   else:
+    # Single-sweep Stage 2 uses yourdfpy TensorRobotRenderer
     scene_state = run_stage2_alignment(
         scene_constants, tensor_renderer, scene_state)
 
@@ -468,20 +474,23 @@ def run_single(episode_id, cfg, device, metadata, output_root,
   with open(os.path.join(exp_dir, "metrics.json"), "w") as f:
     json.dump(metrics, f, indent=2, default=str)
 
+  def _fmt(v, fmt):
+    return format(v, fmt) if isinstance(v, float) and not np.isnan(v) else str(v)
+
   print(f"\n📊 [{config_id}] {episode_id}:")
-  print(f"   Chamfer: {metrics.get('chamfer_total', 'N/A'):.5f}")
-  print(f"   Robot C1: {metrics.get('robot_loss_cam1', 'N/A'):.5f} | "
-        f"C2: {metrics.get('robot_loss_cam2', 'N/A'):.5f} | "
-        f"W: {metrics.get('robot_loss_wrist', 'N/A'):.5f}")
-  print(f"   BG Overlap: {metrics.get('bg_overlap_pct', 'N/A'):.1f}%")
-  if not np.isnan(metrics.get("track_reproj_mean_px", float("nan"))):
-    print(f"   Track Reproj: {metrics['track_reproj_mean_px']:.2f}px")
+  print(f"   Chamfer: {_fmt(metrics.get('chamfer_total', float('nan')), '.5f')}")
+  print(f"   Robot C1: {_fmt(metrics.get('robot_loss_cam1', float('nan')), '.5f')} | "
+        f"C2: {_fmt(metrics.get('robot_loss_cam2', float('nan')), '.5f')} | "
+        f"W: {_fmt(metrics.get('robot_loss_wrist', float('nan')), '.5f')}")
+  print(f"   BG Overlap: {_fmt(metrics.get('bg_overlap_pct', float('nan')), '.1f')}%")
+  trk = metrics.get("track_reproj_mean_px", float("nan"))
+  if isinstance(trk, float) and not np.isnan(trk):
+    print(f"   Track Reproj: {trk:.2f}px")
   print(f"   Time: {metrics['elapsed_s']:.0f}s")
 
   # Cleanup GPU
   del pb_renderer
-  if "tensor_renderer" in dir():
-    del tensor_renderer
+  del tensor_renderer
   gc.collect()
   torch.cuda.empty_cache()
 
