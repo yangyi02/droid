@@ -233,7 +233,7 @@ def run_single(episode_id, cfg, device, metadata, output_root,
     os.system(f"gsutil -m rsync -r '{gcs_depth}/{episode_id}' '{local_cache}/' "
               "> /dev/null 2>&1")
 
-  # Load robot data
+  # Load robot data from cache
   robot_path = os.path.join(local_cache, "robot.npz")
   if os.path.exists(robot_path):
     robot_data = np.load(robot_path, allow_pickle=True)
@@ -244,6 +244,21 @@ def run_single(episode_id, cfg, device, metadata, output_root,
     if "wrist_serial" in robot_data:
       scene_constants["meta"]["wrist_serial"] = str(
           robot_data["wrist_serial"].item())
+
+  # Fallback: if robot.npz is missing or incomplete (old cache format),
+  # compute kinematics from the raw H5 trajectory file
+  if "T_ee_base_all" not in scene_constants["robot"]:
+    ep_path = scene_constants["meta"]["episode_path"]
+    h5_path = os.path.join(ep_path, "trajectory.h5")
+    if os.path.exists(h5_path):
+      from compute_depth import parse_robot_kinematics
+      print(f"  ⚠️ T_ee_base_all missing from cache, "
+            f"computing from H5...")
+      parse_robot_kinematics(scene_constants)
+    else:
+      raise RuntimeError(
+          f"Robot kinematics unavailable: no T_ee_base_all in "
+          f"robot.npz and no trajectory.h5 at {h5_path}")
 
   # Load per-camera depth + video + calibration
   for cam_id in scene_constants["camera"]:
