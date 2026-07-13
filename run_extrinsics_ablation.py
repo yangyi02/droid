@@ -5,9 +5,9 @@ Iterates over experiment configs × episodes, runs the extrinsics calibration
 pipeline with different settings, and saves structured metric results.
 
 Usage (from repo root on Colab or any machine with GPU):
-  python run_ablation.py --episodes 10 --configs E0,E4
-  python run_ablation.py --episode_id "ILIAD+5e938e3b+2023-07-20-11h-50m-51s" --configs E0
-  python run_ablation.py --all  # run everything
+  python run_extrinsics_ablation.py --episodes 10 --configs E0,E4
+  python run_extrinsics_ablation.py --episode_id "ILIAD+5e938e3b+2023-07-20-11h-50m-51s" --configs E0
+  python run_extrinsics_ablation.py --all  # run everything
 
 Results are saved to:
   ~/droid_data/output/ablation/<config_id>/<episode_id>/metrics.json
@@ -655,7 +655,7 @@ def main():
     write_summary(all_results, args.output_root)
   else:
     print(f"💡 Run with --summarize after all workers finish to aggregate:")
-    print(f"   python run_ablation.py --configs {args.configs} "
+    print(f"   python run_extrinsics_ablation.py --configs {args.configs} "
           f"--episodes {args.episodes} --output_root {args.output_root} "
           f"--summarize")
 

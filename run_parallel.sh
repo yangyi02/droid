@@ -55,7 +55,7 @@ elif [[ "$MODE" == "extrinsics" ]]; then
     SCRIPT="compute_extrinsics.py"
     OP_NAME="compute_extrinsics"
 elif [[ "$MODE" == "ablation" ]]; then
-    SCRIPT="run_ablation.py"
+    SCRIPT="run_extrinsics_ablation.py"
     OP_NAME="ablation"
 else
     SCRIPT="compute_tracks.py"
@@ -96,5 +96,5 @@ seq 0 $((NUM_GPUS-1)) | parallel -j "$NUM_GPUS" --ungroup --progress --joblog "$
 if [[ "$MODE" == "ablation" ]]; then
     echo ""
     echo "📊 Aggregating ablation results..."
-    python run_ablation.py --configs "$CONFIGS" --episodes "$EPISODES" --summarize
+    python run_extrinsics_ablation.py --configs "$CONFIGS" --episodes "$EPISODES" --summarize
 fi
