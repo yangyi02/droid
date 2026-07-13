@@ -276,6 +276,20 @@ def run_single(episode_id, cfg, device, metadata, output_root,
       scene_constants["camera"][cam_id]["K_mat"] = c["K_calib_left"]
       scene_constants["camera"][cam_id]["baseline"] = float(c["baseline"])
 
+  # ── Validate required data ──
+  missing = []
+  for cam_id, cam_data in scene_constants["camera"].items():
+    for key in ["raw_depth", "K_mat", "video_rgb"]:
+      if key not in cam_data:
+        missing.append(f"{cam_id}/{key}")
+  if missing:
+    raise RuntimeError(
+        f"Incomplete depth cache for {episode_id}. Missing: "
+        f"{missing}. Run compute_depth.py first or re-download "
+        f"from GCS: gsutil -m rsync -r "
+        f"'gs://dm-tapnet/mv-tap/droid/depth/{episode_id}' "
+        f"'{local_cache}/'")
+
   # ── Init extrinsics (Stage 0 + 1) ──
   scene_state, _MODEL_CACHE["vggt"] = init_extrinsics(
       scene_constants, extrinsics_db, device,
