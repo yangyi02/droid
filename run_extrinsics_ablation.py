@@ -62,132 +62,78 @@ _MODEL_CACHE = {}
 # Experiment configs
 # ---------------------------------------------------------------------------
 
+# Default values for optional config fields (merged into each config)
+_DEFAULTS = {
+    "backend": "yourdfpy",
+    "chamfer": True,
+    "robot_weight": 1.0,
+    "track_weight": 0.0,
+    "tracker": None,
+    "grid_size": 30,
+    "stage2_restarts": False,
+    "lr": 0.001,
+    "n_steps": 500,
+    "stage4": False,
+    "stage4_lr": 0.0001,
+    "stage4_steps": 500,
+    "stage4_robot_weight": 0.1,
+}
+
+
+def _cfg(desc, **overrides):
+  """Build a config dict from defaults + overrides."""
+  c = dict(_DEFAULTS)
+  c["desc"] = desc
+  c.update(overrides)
+  return c
+
+
 CONFIGS = {
     # ── Core ablations (Phase 1) ──
-    "E0": {
-        "desc": "Baseline: yourdfpy, Chamfer+Robot, no tracks",
-        "backend": "yourdfpy",
-        "chamfer": True,
-        "robot_weight": 1.0,
-        "track_weight": 0.0,
-        "tracker": None,
-        "grid_size": 30,
-        "stage2_restarts": False,
-    },
-    "E1": {
-        "desc": "PyBullet backend (instead of yourdfpy)",
-        "backend": "pybullet",
-        "chamfer": True,
-        "robot_weight": 1.0,
-        "track_weight": 0.0,
-        "tracker": None,
-        "grid_size": 30,
-        "stage2_restarts": True,
-    },
-    "E2": {
-        "desc": "No Chamfer loss (robot-only)",
-        "backend": "yourdfpy",
-        "chamfer": False,
-        "robot_weight": 1.0,
-        "track_weight": 0.0,
-        "tracker": None,
-        "grid_size": 30,
-        "stage2_restarts": False,
-    },
-    "E3": {
-        "desc": "No Robot depth loss (Chamfer-only)",
-        "backend": "yourdfpy",
-        "chamfer": True,
-        "robot_weight": 0.0,
-        "track_weight": 0.0,
-        "tracker": None,
-        "grid_size": 30,
-        "stage2_restarts": False,
-    },
-    "E4": {
-        "desc": "Chamfer+Robot+Tracks (CoTracker, w=0.001)",
-        "backend": "yourdfpy",
-        "chamfer": True,
-        "robot_weight": 1.0,
-        "track_weight": 0.001,
-        "tracker": "cotracker",
-        "grid_size": 30,
-        "stage2_restarts": False,
-    },
-    "E5": {
-        "desc": "Chamfer+Robot+Tracks (TAPNext++, w=0.001)",
-        "backend": "yourdfpy",
-        "chamfer": True,
-        "robot_weight": 1.0,
-        "track_weight": 0.001,
-        "tracker": "tapnext",
-        "grid_size": 30,
-        "stage2_restarts": False,
-    },
+    "E0":  _cfg("Baseline: yourdfpy, Chamfer+Robot, no tracks"),
+    "E1":  _cfg("PyBullet backend",
+               backend="pybullet", stage2_restarts=True),
+    "E2":  _cfg("No Chamfer (robot-only)", chamfer=False),
+    "E3":  _cfg("No Robot depth (Chamfer-only)", robot_weight=0.0),
+    "E4":  _cfg("Chamfer+Robot+Tracks (CoTracker, w=0.001)",
+               track_weight=0.001, tracker="cotracker"),
+    "E5":  _cfg("Chamfer+Robot+Tracks (TAPNext, w=0.001)",
+               track_weight=0.001, tracker="tapnext"),
 
     # ── Track weight sweep (Phase 2) ──
-    "E6": {
-        "desc": "Tracks (CoTracker, low weight=0.0001)",
-        "backend": "yourdfpy",
-        "chamfer": True,
-        "robot_weight": 1.0,
-        "track_weight": 0.0001,
-        "tracker": "cotracker",
-        "grid_size": 30,
-        "stage2_restarts": False,
-    },
-    "E7": {
-        "desc": "Tracks (CoTracker, high weight=0.01)",
-        "backend": "yourdfpy",
-        "chamfer": True,
-        "robot_weight": 1.0,
-        "track_weight": 0.01,
-        "tracker": "cotracker",
-        "grid_size": 30,
-        "stage2_restarts": False,
-    },
+    "E6":  _cfg("Tracks (CoTracker, w=0.0001)",
+               track_weight=0.0001, tracker="cotracker"),
+    "E7":  _cfg("Tracks (CoTracker, w=0.01)",
+               track_weight=0.01, tracker="cotracker"),
 
     # ── Secondary ablations (Phase 3) ──
-    "E8": {
-        "desc": "Tracks (CoTracker, sparse grid_size=15)",
-        "backend": "yourdfpy",
-        "chamfer": True,
-        "robot_weight": 1.0,
-        "track_weight": 0.001,
-        "tracker": "cotracker",
-        "grid_size": 15,
-        "stage2_restarts": False,
-    },
-    "E9": {
-        "desc": "Tracks (CoTracker, dense grid_size=50)",
-        "backend": "yourdfpy",
-        "chamfer": True,
-        "robot_weight": 1.0,
-        "track_weight": 0.001,
-        "tracker": "cotracker",
-        "grid_size": 50,
-        "stage2_restarts": False,
-    },
-    "E10": {
-        "desc": "Stage 2 multi-restart (yourdfpy, no tracks)",
-        "backend": "yourdfpy",
-        "chamfer": True,
-        "robot_weight": 1.0,
-        "track_weight": 0.0,
-        "tracker": None,
-        "grid_size": 30,
-        "stage2_restarts": True,
-    },
-    "E12": {
-        "desc": "PyBullet + Tracks (CoTracker, w=0.001)",
-        "backend": "pybullet",
-        "chamfer": True,
-        "robot_weight": 1.0,
-        "track_weight": 0.001,
-        "tracker": "cotracker",
-        "grid_size": 30,
-        "stage2_restarts": True,
-    },
+    "E8":  _cfg("Tracks (CoTracker, grid=15)",
+               track_weight=0.001, tracker="cotracker", grid_size=15),
+    "E9":  _cfg("Tracks (CoTracker, grid=50)",
+               track_weight=0.001, tracker="cotracker", grid_size=50),
+    "E10": _cfg("Stage 2 multi-restart", stage2_restarts=True),
+    "E12": _cfg("PyBullet + Tracks (CoTracker, w=0.001)",
+               backend="pybullet", stage2_restarts=True,
+               track_weight=0.001, tracker="cotracker"),
+
+    # ── Learning rate sweep (Phase 4) ──
+    "E13": _cfg("lr=0.0003 (3x lower)", lr=0.0003),
+    "E14": _cfg("lr=0.003  (3x higher)", lr=0.003),
+
+    # ── Optimization steps sweep (Phase 5) ──
+    "E15": _cfg("n_steps=200 (short)", n_steps=200),
+    "E16": _cfg("n_steps=1000 (long)", n_steps=1000),
+
+    # ── Stage 4 fine-tuning (Phase 6) ──
+    "E17": _cfg("Baseline + Stage 4 fine-tune",
+               stage4=True),
+    "E18": _cfg("Tracks (CoTracker) + Stage 4 fine-tune",
+               track_weight=0.001, tracker="cotracker",
+               stage4=True),
+
+    # ── Robot weight sweep (Phase 7) ──
+    "E19": _cfg("robot_weight=0.1 (weak robot)", robot_weight=0.1),
+    "E20": _cfg("robot_weight=10.0 (strong robot)", robot_weight=10.0),
 }
 
 
@@ -314,7 +260,7 @@ def run_single(episode_id, cfg, device, metadata, output_root,
     scene_state = run_stage2_alignment(
         scene_constants, tensor_renderer, scene_state)
 
-  # ── 2D Tracking (if needed) ──
+  # ── 2D Tracking (if needed for optimization) ──
   track_anchors = None
   if cfg["track_weight"] > 0 and cfg["tracker"] is not None:
     from compute_2d_tracks import init_tracker, run_2d_tracking
@@ -331,14 +277,15 @@ def run_single(episode_id, cfg, device, metadata, output_root,
 
   # ── Stage 3: Global joint optimization ──
   chamfer_w = 1.0 if cfg["chamfer"] else 0.0
+  s3_lr = cfg.get("lr", 0.001)
+  s3_steps = cfg.get("n_steps", 500)
 
   if use_pybullet:
     from core.pybullet_extrinsics import run_global_joint_alignment_pybullet
-    # PyBullet Stage 3 (Chamfer + Robot); then yourdfpy pass adds tracks
     scene_state = run_global_joint_alignment_pybullet(
         scene_constants, scene_state, pb_renderer, device,
-        robot_weight=cfg["robot_weight"])
-    # Second pass with tracks if requested (pybullet doesn't support tracks)
+        robot_weight=cfg["robot_weight"],
+        lr=s3_lr, n_steps=s3_steps)
     if track_anchors and cfg["track_weight"] > 0:
       scene_state = run_global_joint_alignment(
           scene_constants, scene_state, tensor_renderer,
@@ -348,23 +295,59 @@ def run_single(episode_id, cfg, device, metadata, output_root,
           track_weight=cfg["track_weight"],
           stage_name="Stage 3b (Track refine)")
   else:
-    # yourdfpy path — supports all options natively
     scene_state = run_global_joint_alignment(
         scene_constants, scene_state, tensor_renderer,
+        lr=s3_lr, n_steps=s3_steps,
         chamfer_weight=chamfer_w,
         robot_weight=cfg["robot_weight"],
         track_anchors=track_anchors,
         track_weight=cfg["track_weight"])
 
-  # ── Evaluate ──
+  # ── Stage 4: Optional fine-tuning pass ──
+  if cfg.get("stage4", False):
+    s4_lr = cfg.get("stage4_lr", 0.0001)
+    s4_steps = cfg.get("stage4_steps", 500)
+    s4_rw = cfg.get("stage4_robot_weight", 0.1)
+    scene_state = run_global_joint_alignment(
+        scene_constants, scene_state, tensor_renderer,
+        lr=s4_lr, n_steps=s4_steps,
+        chamfer_weight=chamfer_w,
+        robot_weight=s4_rw,
+        track_anchors=track_anchors,
+        track_weight=cfg["track_weight"],
+        stage_name="Stage 4 (Fine-Tune)")
+
+  # ── Evaluate: base metrics ──
   metrics = evaluate_extrinsics(
       scene_constants, scene_state, device,
-      tensor_renderer=tensor_renderer,
-      track_anchors=track_anchors)
+      tensor_renderer=tensor_renderer)
   metrics["config_id"] = config_id
   metrics["episode_id"] = episode_id
   metrics["desc"] = cfg["desc"]
   metrics["elapsed_s"] = time.time() - t0
+
+  # ── Evaluate: dual-tracker track reproj (always both) ──
+  from compute_2d_tracks import init_tracker, run_2d_tracking
+  if tracker_cache is None:
+    tracker_cache = {}
+  for trk_method in ("cotracker", "tapnext"):
+    key = f"track_reproj_{trk_method}_px"
+    try:
+      if trk_method not in tracker_cache:
+        tracker_cache[trk_method] = init_tracker(trk_method, device)
+      sc_tmp = copy.deepcopy(scene_constants)
+      sc_tmp = run_2d_tracking(
+          tracker_cache[trk_method], sc_tmp, device, grid_size=30)
+      anchors_tmp = prepare_track_anchors(
+          sc_tmp, scene_state, pb_renderer, device)
+      m_tmp = evaluate_extrinsics(
+          sc_tmp, scene_state, device,
+          tensor_renderer=tensor_renderer,
+          track_anchors=anchors_tmp)
+      metrics[key] = m_tmp.get("track_reproj_mean_px", float("nan"))
+    except Exception as e:
+      print(f"  ⚠️ {trk_method} eval skipped: {e}")
+      metrics[key] = float("nan")
 
   # ── Save extrinsics + metrics ──
   exp_dir = os.path.join(output_root, config_id, episode_id)
@@ -378,18 +361,17 @@ def run_single(episode_id, cfg, device, metadata, output_root,
     json.dump(metrics, f, indent=2, default=str)
 
   def _fmt(v, fmt):
-    return format(v, fmt) if isinstance(v, float) and not np.isnan(v) else str(v)
+    return format(v, fmt) if isinstance(v, float) and not np.isnan(v) else "—"
 
   print(f"\n📊 [{config_id}] {episode_id}:")
-  print(f"   Chamfer: {_fmt(metrics.get('chamfer_total', float('nan')), '.5f')}")
-  print(f"   Robot C1: {_fmt(metrics.get('robot_loss_cam1', float('nan')), '.5f')} | "
-        f"C2: {_fmt(metrics.get('robot_loss_cam2', float('nan')), '.5f')} | "
-        f"W: {_fmt(metrics.get('robot_loss_wrist', float('nan')), '.5f')}")
-  print(f"   BG Overlap: {_fmt(metrics.get('bg_overlap_pct', float('nan')), '.1f')}%")
-  trk = metrics.get("track_reproj_mean_px", float("nan"))
-  if isinstance(trk, float) and not np.isnan(trk):
-    print(f"   Track Reproj: {trk:.2f}px")
-  print(f"   Time: {metrics['elapsed_s']:.0f}s")
+  print(f"   Chamfer:  {_fmt(metrics.get('chamfer_total'), '.5f')}")
+  print(f"   Robot:    C1={_fmt(metrics.get('robot_loss_cam1'), '.5f')}"
+        f"  C2={_fmt(metrics.get('robot_loss_cam2'), '.5f')}"
+        f"  W={_fmt(metrics.get('robot_loss_wrist'), '.5f')}")
+  print(f"   BG Ovlp:  {_fmt(metrics.get('bg_overlap_pct'), '.1f')}%")
+  print(f"   Track px: cotracker={_fmt(metrics.get('track_reproj_cotracker_px'), '.2f')}"
+        f"  tapnext={_fmt(metrics.get('track_reproj_tapnext_px'), '.2f')}")
+  print(f"   Time:     {metrics['elapsed_s']:.0f}s")
 
   # Cleanup GPU
   del pb_renderer
@@ -414,7 +396,10 @@ def write_summary(all_results, output_root):
       "config_id", "episode_id", "desc",
       "chamfer_total", "chamfer_12", "chamfer_1w", "chamfer_2w",
       "robot_loss_cam1", "robot_loss_cam2", "robot_loss_wrist",
-      "bg_overlap_pct", "track_reproj_mean_px", "elapsed_s",
+      "bg_overlap_pct",
+      "track_reproj_cotracker_px", "track_reproj_tapnext_px",
+      "track_reproj_mean_px",  # legacy compat
+      "elapsed_s",
   ]
 
   with open(csv_path, "w", newline="") as f:
@@ -423,44 +408,50 @@ def write_summary(all_results, output_root):
     for row in all_results:
       writer.writerow(row)
 
-  # Print aggregate summary per config
-  print(f"\n{'='*80}")
-  print("📊 ABLATION SUMMARY")
-  print(f"{'='*80}")
-
+  # ── Aggregate summary per config ──
   configs_seen = {}
   for r in all_results:
     cid = r["config_id"]
-    if cid not in configs_seen:
-      configs_seen[cid] = []
-    configs_seen[cid].append(r)
+    configs_seen.setdefault(cid, []).append(r)
 
-  header = (f"{'Config':<8} {'Desc':<45} {'Chamfer':>10} {'Robot':>10} "
-            f"{'BG Ovlp':>8} {'Track':>8} {'N':>3}")
+  def _agg(rows, key):
+    vals = [r[key] for r in rows
+            if not np.isnan(r.get(key, float("nan")))]
+    return f"{np.mean(vals):.4f}" if vals else "—"
+
+  def _agg1(rows, key):
+    vals = [r[key] for r in rows
+            if not np.isnan(r.get(key, float("nan")))]
+    return f"{np.mean(vals):.1f}" if vals else "—"
+
+  print(f"\n{'='*110}")
+  print("📊 ABLATION SUMMARY (mean over episodes)")
+  print(f"{'='*110}")
+  header = (f"{'ID':<5} {'Description':<40} {'Chamfer':>8} "
+            f"{'Robot':>8} {'BG%':>6} "
+            f"{'CoTrk px':>9} {'TAP px':>9} {'N':>3} {'Time':>5}")
   print(header)
-  print("-" * len(header))
+  print("─" * len(header))
 
   for cid, rows in configs_seen.items():
-    desc = rows[0]["desc"][:43]
-    chamf_vals = [r["chamfer_total"] for r in rows
-                  if not np.isnan(r.get("chamfer_total", float("nan")))]
-    rob_vals = [r["robot_loss_cam1"] + r["robot_loss_cam2"]
+    desc = rows[0]["desc"][:38]
+    # Combined robot = cam1 + cam2 (exclude wrist for comparability)
+    rob_vals = [r.get("robot_loss_cam1", 0) + r.get("robot_loss_cam2", 0)
                 for r in rows
                 if not np.isnan(r.get("robot_loss_cam1", float("nan")))]
-    bg_vals = [r["bg_overlap_pct"] for r in rows
-               if not np.isnan(r.get("bg_overlap_pct", float("nan")))]
-    trk_vals = [r["track_reproj_mean_px"] for r in rows
-                if not np.isnan(r.get("track_reproj_mean_px", float("nan")))]
+    rob_s = f"{np.mean(rob_vals):.4f}" if rob_vals else "—"
+    time_vals = [r.get("elapsed_s", 0) for r in rows]
+    time_s = f"{np.mean(time_vals):.0f}s" if time_vals else "—"
 
-    chamf_s = f"{np.mean(chamf_vals):.5f}" if chamf_vals else "N/A"
-    rob_s = f"{np.mean(rob_vals):.5f}" if rob_vals else "N/A"
-    bg_s = f"{np.mean(bg_vals):.1f}%" if bg_vals else "N/A"
-    trk_s = f"{np.mean(trk_vals):.1f}px" if trk_vals else "—"
+    print(f"{cid:<5} {desc:<40} "
+          f"{_agg(rows, 'chamfer_total'):>8} "
+          f"{rob_s:>8} "
+          f"{_agg1(rows, 'bg_overlap_pct') + '%':>6} "
+          f"{_agg1(rows, 'track_reproj_cotracker_px'):>9} "
+          f"{_agg1(rows, 'track_reproj_tapnext_px'):>9} "
+          f"{len(rows):>3} {time_s:>5}")
 
-    print(f"{cid:<8} {desc:<45} {chamf_s:>10} {rob_s:>10} "
-          f"{bg_s:>8} {trk_s:>8} {len(rows):>3}")
-
-  print(f"\n💾 Results saved to: {csv_path}")
+  print(f"\n💾 Full results: {csv_path}")
 
 
 def collect_results_from_disk(output_root, config_ids, episodes):
@@ -672,6 +663,8 @@ def main():
           "robot_loss_wrist": float("nan"),
           "bg_overlap_pct": float("nan"),
           "track_reproj_mean_px": float("nan"),
+          "track_reproj_cotracker_px": float("nan"),
+          "track_reproj_tapnext_px": float("nan"),
           "elapsed_s": 0,
       }
       # Write error metrics to disk so summarize can pick it up
