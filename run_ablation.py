@@ -471,8 +471,6 @@ def main():
                       help="Worker rank for distributed execution (0-indexed)")
   parser.add_argument("--world_size", type=int, default=1,
                       help="Total number of parallel workers")
-  parser.add_argument("--gpu", type=int, default=None,
-                      help="GPU device index (default: same as --rank)")
   parser.add_argument("--summarize", action="store_true",
                       help="Only aggregate existing results from disk "
                            "(no computation, run after all workers finish)")
@@ -582,12 +580,9 @@ def main():
   metadata = (id_to_path, serials_db, keep_ranges, extrinsics_db,
               raw_data_root, depth_cache_root)
 
-  # ── GPU selection ──
-  gpu_id = args.gpu if args.gpu is not None else args.rank
-  if torch.cuda.is_available() and gpu_id < torch.cuda.device_count():
-    device = torch.device(f"cuda:{gpu_id}")
-  else:
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+  # GPU: always use cuda:0 — GPU isolation via CUDA_VISIBLE_DEVICES (same
+  # pattern as compute_extrinsics.py / run_parallel.sh)
+  device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
   os.environ["PYOPENGL_PLATFORM"] = "egl"
 
