@@ -192,129 +192,6 @@ CONFIGS = {
 
 
 # ---------------------------------------------------------------------------
-# Metric collection
-# ---------------------------------------------------------------------------
-
-def evaluate_extrinsics(scene_constants, scene_state, device,
-                        track_anchors=None):
-  """Compute extrinsics quality metrics without re-running optimization.
-
-  Returns a dict with:
-    chamfer_12, chamfer_1w, chamfer_2w: pairwise Chamfer distances
-    robot_loss_cam1, robot_loss_cam2, robot_loss_wrist
-    bg_overlap_pct: average BG overlap %
-    per_cam_shift_mm, per_cam_rot_deg: extrinsic magnitude from origin
-    track_model_err_px: mean FK-based reprojection error (if anchors given)
-  """
-  from compute_extrinsics import (
-      extract_robot_physical_tensors, get_cam_points_local_t,
-      batched_chamfer_distance, compute_robot_loss,
-  )
-
-
-  wrist_cam = scene_constants["meta"]["wrist_serial"]
-  ext_cams = [c for c in scene_constants["camera"].keys() if c != wrist_cam]
-  cam1, cam2 = ext_cams[0], ext_cams[1]
-  n_frames = len(scene_constants["robot"]["joint_positions"])
-  T_ee_all = scene_constants["robot"]["T_ee_base_all"]
-
-  # Lazily create tensor_renderer for evaluation only
-  from core.physics import TensorRobotRenderer
-  eval_renderer = TensorRobotRenderer(device=device)
-
-  metrics = {}
-
-  # --- Robot depth losses ---
-  for cam_id, key_prefix in [(cam1, "cam1"), (cam2, "cam2"), (wrist_cam, "wrist")]:
-    try:
-      batch_X, batch_obs = extract_robot_physical_tensors(
-          cam_id, scene_constants, eval_renderer)
-      T_opt = torch.tensor(
-          scene_state[cam_id]["base_extrinsic"],
-          dtype=torch.float32, device=device)
-      K_t = torch.tensor(
-          scene_constants["camera"][cam_id]["K_mat"],
-          dtype=torch.float32, device=device)
-      tol = float("inf") if cam_id == wrist_cam else 0.15
-      loss = compute_robot_loss(batch_X, T_opt, K_t, batch_obs,
-                                depth_tolerance=tol)
-      metrics[f"robot_loss_{key_prefix}"] = loss.item()
-    except Exception as e:
-      metrics[f"robot_loss_{key_prefix}"] = float("nan")
-      print(f"    ⚠️ Robot loss failed for {cam_id}: {e}")
-
-  # --- Chamfer losses ---
-  try:
-    cache_Pc1, cache_Pc2, cache_Pcw, cache_Tee = [], [], [], []
-    for t in range(n_frames):
-      pc1 = get_cam_points_local_t(t, scene_constants["camera"][cam1], device)
-      pc2 = get_cam_points_local_t(t, scene_constants["camera"][cam2], device)
-      pcw = get_cam_points_local_t(t, scene_constants["camera"][wrist_cam], device)
-      if pc1 is not None and pc2 is not None and pcw is not None:
-        cache_Pc1.append(pc1)
-        cache_Pc2.append(pc2)
-        cache_Pcw.append(pcw)
-        cache_Tee.append(torch.tensor(T_ee_all[t], dtype=torch.float32, device=device))
-
-    batch_Pc1 = torch.stack(cache_Pc1)
-    batch_Pc2 = torch.stack(cache_Pc2)
-    batch_Pcw = torch.stack(cache_Pcw)
-    batch_Tee = torch.stack(cache_Tee)
-
-    T1 = torch.tensor(scene_state[cam1]["base_extrinsic"], dtype=torch.float32, device=device)
-    T2 = torch.tensor(scene_state[cam2]["base_extrinsic"], dtype=torch.float32, device=device)
-    Tw = torch.tensor(scene_state[wrist_cam]["base_extrinsic"], dtype=torch.float32, device=device)
-
-    bc1 = (T1 @ batch_Pc1)[:, :3, :].transpose(1, 2)
-    bc2 = (T2 @ batch_Pc2)[:, :3, :].transpose(1, 2)
-    bcw = torch.bmm(batch_Tee @ Tw, batch_Pcw)[:, :3, :].transpose(1, 2)
-
-    l12, o12 = batched_chamfer_distance(bc1, bc2, device)
-    l1w, o1w = batched_chamfer_distance(bc1, bcw, device)
-    l2w, o2w = batched_chamfer_distance(bc2, bcw, device)
-
-    metrics["chamfer_12"] = l12.item()
-    metrics["chamfer_1w"] = l1w.item()
-    metrics["chamfer_2w"] = l2w.item()
-    metrics["chamfer_total"] = (l12 + l1w + l2w).item()
-    metrics["bg_overlap_pct"] = (o12 + o1w + o2w).item() / 3.0 * 100
-  except Exception as e:
-    metrics["chamfer_total"] = float("nan")
-    metrics["bg_overlap_pct"] = float("nan")
-    print(f"    ⚠️ Chamfer eval failed: {e}")
-
-  # --- Track model error (if anchors provided) ---
-  if track_anchors:
-    from compute_extrinsics import compute_track_reproj_loss
-    T_ee_t = torch.tensor(T_ee_all, dtype=torch.float32, device=device)
-    total_err = 0.0
-    n_cam = 0
-    for cam_id in track_anchors:
-      T_opt = torch.tensor(
-          scene_state[cam_id]["base_extrinsic"],
-          dtype=torch.float32, device=device)
-      K_t = torch.tensor(
-          scene_constants["camera"][cam_id]["K_mat"],
-          dtype=torch.float32, device=device)
-      scheme = track_anchors[cam_id]["scheme"]
-      l = compute_track_reproj_loss(
-          track_anchors[cam_id], T_opt, K_t, T_ee_t, scheme, device)
-      total_err += l.item()
-      n_cam += 1
-    metrics["track_reproj_mean_px"] = total_err / max(n_cam, 1)
-  else:
-    metrics["track_reproj_mean_px"] = float("nan")
-
-  # --- Extrinsic magnitude from identity ---
-  for cam_id in scene_constants["camera"]:
-    T = scene_state[cam_id]["base_extrinsic"]
-    metrics[f"shift_mm_{cam_id}"] = float(np.linalg.norm(T[:3, 3]) * 1000)
-
-  # Cleanup
-  del eval_renderer
-  torch.cuda.empty_cache()
-
-  return metrics
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +206,7 @@ def run_single(episode_id, cfg, device, metadata, output_root,
   from compute_extrinsics import (
       init_extrinsics,
       run_stage2_alignment, run_global_joint_alignment, export_extrinsics,
-      prepare_track_anchors,
+      prepare_track_anchors, evaluate_extrinsics,
   )
   from core.physics import PyBulletRenderer, TensorRobotRenderer
 
@@ -449,6 +326,7 @@ def run_single(episode_id, cfg, device, metadata, output_root,
   # ── Evaluate ──
   metrics = evaluate_extrinsics(
       scene_constants, scene_state, device,
+      tensor_renderer=tensor_renderer,
       track_anchors=track_anchors)
   metrics["config_id"] = config_id
   metrics["episode_id"] = episode_id

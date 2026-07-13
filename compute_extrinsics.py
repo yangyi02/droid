@@ -864,8 +864,165 @@ def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device):
 
 
 # ---------------------------------------------------------------------------
-# 12. Export
+# 11b. Evaluate Extrinsics Quality
 # ---------------------------------------------------------------------------
+def evaluate_extrinsics(scene_constants, scene_state, device,
+                        tensor_renderer=None, track_anchors=None):
+  """Compute extrinsics quality metrics without re-running optimization.
+
+  Can be called after any stage to monitor calibration quality.
+
+  Args:
+    scene_constants: Scene data dict.
+    scene_state: Current extrinsics state.
+    device: Torch device.
+    tensor_renderer: Optional TensorRobotRenderer to reuse. If None, one
+        is created temporarily (slower but standalone).
+    track_anchors: Optional track anchors for 2D reprojection eval.
+
+  Returns:
+    Dict with metrics: chamfer_total, robot_loss_*, bg_overlap_pct,
+    track_reproj_mean_px, shift_mm_*.
+  """
+  own_renderer = False
+  if tensor_renderer is None:
+    from core.physics import TensorRobotRenderer
+    tensor_renderer = TensorRobotRenderer(device=device)
+    own_renderer = True
+
+  wrist_cam = scene_constants["meta"]["wrist_serial"]
+  ext_cams = [c for c in scene_constants["camera"].keys() if c != wrist_cam]
+  cam1, cam2 = ext_cams[0], ext_cams[1]
+  n_frames = len(scene_constants["robot"]["joint_positions"])
+  T_ee_all = scene_constants["robot"]["T_ee_base_all"]
+
+  metrics = {}
+
+  # --- Robot depth losses ---
+  for cam_id, key_prefix in [(cam1, "cam1"), (cam2, "cam2"),
+                              (wrist_cam, "wrist")]:
+    try:
+      batch_X, batch_obs = extract_robot_physical_tensors(
+          cam_id, scene_constants, tensor_renderer)
+      T_opt = torch.tensor(
+          scene_state[cam_id]["base_extrinsic"],
+          dtype=torch.float32, device=device)
+      K_t = torch.tensor(
+          scene_constants["camera"][cam_id]["K_mat"],
+          dtype=torch.float32, device=device)
+      tol = float("inf") if cam_id == wrist_cam else 0.15
+      loss = compute_robot_loss(batch_X, T_opt, K_t, batch_obs,
+                                depth_tolerance=tol)
+      metrics[f"robot_loss_{key_prefix}"] = loss.item()
+    except Exception as e:
+      metrics[f"robot_loss_{key_prefix}"] = float("nan")
+
+  # --- Chamfer losses ---
+  try:
+    cache_Pc1, cache_Pc2, cache_Pcw, cache_Tee = [], [], [], []
+    for t in range(n_frames):
+      pc1 = get_cam_points_local_t(t, scene_constants["camera"][cam1], device)
+      pc2 = get_cam_points_local_t(t, scene_constants["camera"][cam2], device)
+      pcw = get_cam_points_local_t(
+          t, scene_constants["camera"][wrist_cam], device)
+      if pc1 is not None and pc2 is not None and pcw is not None:
+        cache_Pc1.append(pc1)
+        cache_Pc2.append(pc2)
+        cache_Pcw.append(pcw)
+        cache_Tee.append(
+            torch.tensor(T_ee_all[t], dtype=torch.float32, device=device))
+
+    batch_Pc1 = torch.stack(cache_Pc1)
+    batch_Pc2 = torch.stack(cache_Pc2)
+    batch_Pcw = torch.stack(cache_Pcw)
+    batch_Tee = torch.stack(cache_Tee)
+
+    T1 = torch.tensor(
+        scene_state[cam1]["base_extrinsic"],
+        dtype=torch.float32, device=device)
+    T2 = torch.tensor(
+        scene_state[cam2]["base_extrinsic"],
+        dtype=torch.float32, device=device)
+    Tw = torch.tensor(
+        scene_state[wrist_cam]["base_extrinsic"],
+        dtype=torch.float32, device=device)
+
+    bc1 = (T1 @ batch_Pc1)[:, :3, :].transpose(1, 2)
+    bc2 = (T2 @ batch_Pc2)[:, :3, :].transpose(1, 2)
+    bcw = torch.bmm(batch_Tee @ Tw, batch_Pcw)[:, :3, :].transpose(1, 2)
+
+    l12, o12 = batched_chamfer_distance(bc1, bc2, device)
+    l1w, o1w = batched_chamfer_distance(bc1, bcw, device)
+    l2w, o2w = batched_chamfer_distance(bc2, bcw, device)
+
+    metrics["chamfer_12"] = l12.item()
+    metrics["chamfer_1w"] = l1w.item()
+    metrics["chamfer_2w"] = l2w.item()
+    metrics["chamfer_total"] = (l12 + l1w + l2w).item()
+    metrics["bg_overlap_pct"] = (o12 + o1w + o2w).item() / 3.0 * 100
+  except Exception as e:
+    metrics["chamfer_total"] = float("nan")
+    metrics["bg_overlap_pct"] = float("nan")
+
+  # --- Track model error (if anchors provided) ---
+  if track_anchors:
+    T_ee_t = torch.tensor(T_ee_all, dtype=torch.float32, device=device)
+    total_err = 0.0
+    n_cam = 0
+    for cam_id in track_anchors:
+      T_opt = torch.tensor(
+          scene_state[cam_id]["base_extrinsic"],
+          dtype=torch.float32, device=device)
+      K_t = torch.tensor(
+          scene_constants["camera"][cam_id]["K_mat"],
+          dtype=torch.float32, device=device)
+      scheme = track_anchors[cam_id]["scheme"]
+      l = compute_track_reproj_loss(
+          track_anchors[cam_id], T_opt, K_t, T_ee_t, scheme, device)
+      total_err += l.item()
+      n_cam += 1
+    metrics["track_reproj_mean_px"] = total_err / max(n_cam, 1)
+  else:
+    metrics["track_reproj_mean_px"] = float("nan")
+
+  # --- Extrinsic magnitude from identity ---
+  for cam_id in scene_constants["camera"]:
+    T = scene_state[cam_id]["base_extrinsic"]
+    metrics[f"shift_mm_{cam_id}"] = float(np.linalg.norm(T[:3, 3]) * 1000)
+
+  if own_renderer:
+    del tensor_renderer
+    torch.cuda.empty_cache()
+
+  return metrics
+
+
+def print_metrics(metrics, stage_name=""):
+  """Pretty-print key metrics in a compact one-block summary."""
+  chamfer = metrics.get("chamfer_total", float("nan"))
+  rob1 = metrics.get("robot_loss_cam1", float("nan"))
+  rob2 = metrics.get("robot_loss_cam2", float("nan"))
+  robw = metrics.get("robot_loss_wrist", float("nan"))
+  overlap = metrics.get("bg_overlap_pct", float("nan"))
+  track = metrics.get("track_reproj_mean_px", float("nan"))
+
+  header = f"📊 Metrics after {stage_name}" if stage_name else "📊 Metrics"
+  print(f"\n{header}")
+  print(f"  Chamfer total: {chamfer:.4f}")
+  print(f"  Robot depth:   cam1={rob1:.4f}  cam2={rob2:.4f}  wrist={robw:.4f}")
+  print(f"  BG overlap:    {overlap:.1f}%")
+  if not np.isnan(track):
+    print(f"  Track reproj:  {track:.2f} px")
+
+  shift_keys = [k for k in sorted(metrics.keys()) if k.startswith("shift_mm_")]
+  if shift_keys:
+    shifts = [f"{k.replace('shift_mm_', '')}={metrics[k]:.1f}mm"
+              for k in shift_keys]
+    print(f"  Shift from 0:  {', '.join(shifts)}")
+  print()
+
+
+
 def export_extrinsics(scene_constants, scene_state,
                       export_root="~/droid_data/output/mv-tap/droid/extrinsics",
                       stage_suffix=None):
@@ -988,6 +1145,10 @@ if __name__ == "__main__":
       # Stage 0+1: Dataset extrinsics → VGGT fallback
       stage1_scene_state, vggt_models = init_extrinsics(
           scene_constants, extrinsics_db, device, vggt_models=vggt_models)
+      print_metrics(
+          evaluate_extrinsics(scene_constants, stage1_scene_state, device,
+                              tensor_renderer=tensor_renderer),
+          stage_name="Stage 0+1 (Init)")
 
       # Save Stage 1 extrinsics
       export_extrinsics(scene_constants, stage1_scene_state,
@@ -1002,6 +1163,10 @@ if __name__ == "__main__":
         stage2_state = run_stage2_alignment(
             scene_constants, tensor_renderer, stage1_scene_state,
         )
+      print_metrics(
+          evaluate_extrinsics(scene_constants, stage2_state, device,
+                              tensor_renderer=tensor_renderer),
+          stage_name="Stage 2 (Per-Camera Alignment)")
       export_extrinsics(scene_constants, stage2_state,
                         export_root=args.export_root, stage_suffix="stage2")
 
@@ -1022,6 +1187,10 @@ if __name__ == "__main__":
               scene_constants, stage2_state, tensor_renderer,
               lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
           )
+        print_metrics(
+            evaluate_extrinsics(scene_constants, stage3_state, device,
+                                tensor_renderer=tensor_renderer),
+            stage_name="Stage 3 (Global Joint)")
         export_extrinsics(scene_constants, stage3_state,
                           export_root=args.export_root, stage_suffix="stage3")
 
@@ -1039,6 +1208,10 @@ if __name__ == "__main__":
                 lr=args.stage4_lr, n_steps=args.stage4_steps,
                 robot_weight=args.stage4_robot_weight, stage_name="Stage 4",
             )
+          print_metrics(
+              evaluate_extrinsics(scene_constants, final_state, device,
+                                  tensor_renderer=tensor_renderer),
+              stage_name="Stage 4 (Fine-Tuning)")
         else:
           final_state = stage3_state
 
