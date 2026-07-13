@@ -225,13 +225,17 @@ def run_single(episode_id, cfg, device, metadata, output_root,
       episode_id, raw_data_root,
       id_to_path, serials_db, keep_ranges)
 
-  # Load depth from GCS cache
+  # Load depth from GCS cache (use robot.npz as completeness marker)
   local_cache = os.path.join(depth_cache_root, episode_id)
-  if not os.path.exists(local_cache):
+  robot_path = os.path.join(local_cache, "robot.npz")
+  if not os.path.exists(robot_path):
     gcs_depth = "gs://dm-tapnet/mv-tap/droid/depth"
     os.makedirs(local_cache, exist_ok=True)
-    os.system(f"gsutil -m rsync -r '{gcs_depth}/{episode_id}' '{local_cache}/' "
-              "> /dev/null 2>&1")
+    print(f"  📥 Downloading depth cache from GCS...")
+    ret = os.system(
+        f"gsutil -m rsync -r '{gcs_depth}/{episode_id}' '{local_cache}/'")
+    if ret != 0:
+      print(f"  ⚠️ gsutil returned {ret}, depth cache may be incomplete")
 
   # Load robot data from cache
   robot_path = os.path.join(local_cache, "robot.npz")
