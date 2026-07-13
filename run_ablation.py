@@ -333,7 +333,7 @@ def run_single(episode_id, cfg, device, metadata, output_root,
   )
   from core.physics import PyBulletRenderer, TensorRobotRenderer
 
-  id_to_path, serials_db, keep_ranges, extrinsics_db = metadata
+  id_to_path, serials_db, keep_ranges, extrinsics_db, raw_data_root, depth_cache_root = metadata
   config_id = cfg["_id"]
 
   print(f"\n{'='*70}")
@@ -345,12 +345,11 @@ def run_single(episode_id, cfg, device, metadata, output_root,
 
   # ── Stage 0-1: Init ──
   scene_constants = init_episode(
-      episode_id,
-      os.path.expanduser("~/droid_data/input/robotics/droid_raw/1.0.1"),
+      episode_id, raw_data_root,
       id_to_path, serials_db, keep_ranges)
 
   # Load depth from GCS cache
-  local_cache = f"/content/droid_depth_cache/{episode_id}"
+  local_cache = os.path.join(depth_cache_root, episode_id)
   if not os.path.exists(local_cache):
     gcs_depth = "gs://dm-tapnet/mv-tap/droid/depth"
     os.makedirs(local_cache, exist_ok=True)
@@ -579,6 +578,10 @@ def main():
                       help="Output directory")
   parser.add_argument("--seed", type=int, default=42,
                       help="Random seed for episode sampling")
+  parser.add_argument("--meta_root", type=str, default=None,
+                      help="Path to directory containing camera_serials.json, "
+                           "episode_id_to_path.json, etc. "
+                           "Auto-detected or downloaded if not specified.")
   args = parser.parse_args()
 
   # Parse config list
@@ -599,24 +602,80 @@ def main():
     episodes = rng.sample(DEFAULT_EPISODES,
                           min(args.episodes, len(DEFAULT_EPISODES)))
 
-  # Load metadata
-  root_path = os.path.expanduser(
-      "~/droid_data/input/robotics/droid_raw/1.0.1")
-  # Fallback to Colab paths
-  for alt in ["/content/droid_raw/1.0.1", root_path]:
-    if os.path.exists(os.path.join(alt, "episode_id_to_path.json")):
-      root_path = alt
-      break
+  # Load metadata JSONs (downloaded from HuggingFace on first use)
+  META_FILES = [
+      "camera_serials.json",
+      "episode_id_to_path.json",
+      "keep_ranges_1_0_1.json",
+      "cam2base_extrinsic_superset.json",
+  ]
+  HF_BASE = "https://huggingface.co/KarlP/droid/resolve/main"
+
+  # Search candidate paths; use the first one that has the metadata files
+  meta_root = args.meta_root
+  if meta_root is None:
+    candidates = [
+        "/content/droid_raw/1.0.1",          # Colab default
+        os.path.expanduser("~/droid_workspace/droid/metadata"),  # GPU server
+        os.path.expanduser("~/droid_data/input/robotics/droid_raw/1.0.1"),
+    ]
+    for cand in candidates:
+      if os.path.exists(os.path.join(cand, "episode_id_to_path.json")):
+        meta_root = cand
+        break
+
+  if meta_root is None:
+    # Auto-download from HuggingFace into ~/droid_workspace/droid/metadata
+    meta_root = os.path.expanduser("~/droid_workspace/droid/metadata")
+    os.makedirs(meta_root, exist_ok=True)
+    print(f"📥 Downloading metadata JSONs from HuggingFace → {meta_root}")
+    for fname in META_FILES:
+      dest = os.path.join(meta_root, fname)
+      if not os.path.exists(dest):
+        ret = os.system(f"wget -q -O '{dest}' '{HF_BASE}/{fname}'")
+        if ret != 0:
+          print(f"  ❌ Failed to download {fname}")
+          sys.exit(1)
+        print(f"  ✅ {fname}")
+      else:
+        print(f"  ⏭️  {fname} (cached)")
+
+  print(f"📂 Metadata root: {meta_root}")
 
   def load_json(name):
-    with open(os.path.join(root_path, name)) as f:
+    with open(os.path.join(meta_root, name)) as f:
       return json.load(f)
 
   id_to_path = load_json("episode_id_to_path.json")
   serials_db = load_json("camera_serials.json")
   keep_ranges = load_json("keep_ranges_1_0_1.json")
   extrinsics_db = load_json("cam2base_extrinsic_superset.json")
-  metadata = (id_to_path, serials_db, keep_ranges, extrinsics_db)
+
+  # Raw episode data root (SVO files, etc.)
+  raw_data_root_candidates = [
+      os.path.expanduser("~/droid_data/input/robotics/droid_raw/1.0.1"),
+      "/content/droid_raw/1.0.1",
+      os.path.expanduser("~/droid_workspace/data/droid_raw/1.0.1"),
+  ]
+  raw_data_root = next(
+      (p for p in raw_data_root_candidates if os.path.isdir(p)),
+      raw_data_root_candidates[0])  # fallback (may not exist — OK for depth-only)
+
+  # Depth cache root (pre-computed depth NPZs downloaded from GCS)
+  depth_cache_candidates = [
+      os.path.expanduser("~/droid_data/depth_cache"),
+      "/content/droid_depth_cache",
+      os.path.expanduser("~/droid_workspace/droid/depth_cache"),
+  ]
+  depth_cache_root = next(
+      (p for p in depth_cache_candidates if os.path.isdir(p)),
+      depth_cache_candidates[0])  # fallback (will be created on first use)
+
+  print(f"   Raw data: {raw_data_root}")
+  print(f"   Depth cache: {depth_cache_root}")
+
+  metadata = (id_to_path, serials_db, keep_ranges, extrinsics_db,
+              raw_data_root, depth_cache_root)
 
   device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
   os.makedirs(args.output_root, exist_ok=True)
