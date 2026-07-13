@@ -621,15 +621,19 @@ def main():
     cfg = copy.deepcopy(CONFIGS[cid])
     cfg["_id"] = cid
 
-    # Skip if already completed (enables restarts and deduplication)
+    # Skip if already completed successfully (re-run errors)
     result_path = os.path.join(args.output_root, cid, eid, "metrics.json")
     if os.path.exists(result_path):
-      print(f"\n⏭️  [{i+1}/{len(my_jobs)}] {cid} | {eid} — already done, "
-            f"loading")
       with open(result_path) as f:
-        metrics = json.load(f)
-      my_results.append(metrics)
-      continue
+        prev_metrics = json.load(f)
+      if "error" not in prev_metrics:
+        print(f"\n⏭️  [{i+1}/{len(my_jobs)}] {cid} | {eid} — already done, "
+              f"loading")
+        my_results.append(prev_metrics)
+        continue
+      else:
+        print(f"\n🔄 [{i+1}/{len(my_jobs)}] {cid} | {eid} — "
+              f"previous run failed, retrying...")
 
     print(f"\n🚀 [{i+1}/{len(my_jobs)}] {cid} | {eid} "
           f"(worker {args.rank})")
