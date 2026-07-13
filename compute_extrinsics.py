@@ -198,6 +198,51 @@ def vggt_warmup_extrinsics(scene_constants, vggt_model, load_fn, pose_fn, device
   return new_scene_state
 
 
+def init_extrinsics(scene_constants, extrinsics_db, device,
+                    vggt_models=None):
+  """Initialize camera extrinsics: dataset first, VGGT fallback.
+
+  Combines Stage 0 (dataset init) and Stage 1 (VGGT anchoring) into a
+  single call.  If all cameras have pre-calibrated extrinsics in the
+  dataset metadata, VGGT is skipped entirely.
+
+  Args:
+    scene_constants: Scene data dict.
+    extrinsics_db: Dict of pre-calibrated extrinsics keyed by episode_id.
+    device: Torch device.
+    vggt_models: Optional tuple ``(vggt_model, load_fn, pose_fn)`` to
+        reuse a previously loaded VGGT model.  If ``None`` and VGGT is
+        needed, the model is loaded on demand.
+
+  Returns:
+    scene_state: Dict with ``base_extrinsic`` and ``extrinsics`` per camera.
+    vggt_models: Tuple ``(vggt_model, load_fn, pose_fn)``, or ``None``
+        if VGGT was never loaded.  Callers should cache this across
+        episodes to avoid reloading the 1B model.
+  """
+  # Stage 0: try dataset extrinsics
+  scene_state = init_camera_states(scene_constants, extrinsics_db)
+
+  all_extrinsics_exist = all(
+      state["extrinsics"] is not None for state in scene_state.values()
+  )
+
+  if all_extrinsics_exist:
+    print("  ✅ Full pre-calibrated extrinsics found, skipping VGGT.")
+    return scene_state, vggt_models
+
+  # Stage 1: VGGT visual anchoring (lazy-load model on first use)
+  if vggt_models is None:
+    print("  📦 Loading VGGT model (first use)...")
+    vggt_models = init_calibration_models()
+  vggt_model, load_fn, pose_fn = vggt_models
+
+  scene_state = vggt_warmup_extrinsics(
+      scene_constants, vggt_model, load_fn, pose_fn, device)
+
+  return scene_state, vggt_models
+
+
 # ---------------------------------------------------------------------------
 # 8. Shared Loss & Data Factory
 # ---------------------------------------------------------------------------
@@ -1040,8 +1085,8 @@ if __name__ == "__main__":
   device = get_accelerator()
   serials_db, _, _, extrinsics_db, _ = load_metadata()
 
-  # VGGT is lazy-loaded only when needed (like pyzed in compute_depth.py)
-  vggt_model, load_fn, pose_fn = None, None, None
+  # VGGT is lazy-loaded only when needed (cached across episodes)
+  vggt_models = None
 
   # Discover available episodes from depth output
   depth_abs = os.path.abspath(os.path.expanduser(args.depth_root))
@@ -1079,8 +1124,6 @@ if __name__ == "__main__":
 
     # Pre-initialize for safe cleanup in finally block
     scene_constants = None
-    init_scene_state = None
-    vggt_scene_state = None
     stage1_scene_state = None
     stage2_state = None
     stage3_state = None
@@ -1090,28 +1133,9 @@ if __name__ == "__main__":
       # Load Stage 1 outputs
       scene_constants = load_depth_data(ep_id, args.depth_root)
 
-      # Stage 0: Initialize from dataset extrinsics (if available)
-      init_scene_state = init_camera_states(scene_constants, extrinsics_db)
-      all_extrinsics_exist = all(
-          state["extrinsics"] is not None
-          for state in init_scene_state.values()
-      )
-
-      # Stage 1: VGGT visual anchoring (only if init extrinsics incomplete)
-      if all_extrinsics_exist:
-        print("  ✅ Full pre-calibrated extrinsics found, using Dataset Init as base.")
-        stage1_scene_state = init_scene_state
-        vggt_scene_state = None
-      else:
-        # Lazy-load VGGT on first use (avoids loading 1B model when not needed)
-        if vggt_model is None:
-          print("  📦 First episode needs VGGT — loading model...")
-          vggt_model, load_fn, pose_fn = init_calibration_models()
-        print("  ⚠️ Incomplete extrinsics, running VGGT visual anchoring...")
-        vggt_scene_state = vggt_warmup_extrinsics(
-            scene_constants, vggt_model, load_fn, pose_fn, device,
-        )
-        stage1_scene_state = vggt_scene_state
+      # Stage 0+1: Dataset extrinsics → VGGT fallback
+      stage1_scene_state, vggt_models = init_extrinsics(
+          scene_constants, extrinsics_db, device, vggt_models=vggt_models)
 
       # Save Stage 1 extrinsics
       export_extrinsics(scene_constants, stage1_scene_state,
@@ -1180,8 +1204,6 @@ if __name__ == "__main__":
     finally:
       # Free GPU memory between episodes to prevent OOM from fragmentation
       scene_constants = None
-      init_scene_state = None
-      vggt_scene_state = None
       stage1_scene_state = None
       stage2_state = None
       stage3_state = None

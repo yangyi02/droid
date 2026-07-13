@@ -327,7 +327,7 @@ def run_single(episode_id, cfg, device, metadata, output_root,
   import mediapy as media
   from compute_depth import init_episode
   from compute_extrinsics import (
-      init_calibration_models, init_camera_states, vggt_warmup_extrinsics,
+      init_extrinsics,
       run_stage2_alignment, run_global_joint_alignment, export_extrinsics,
       prepare_track_anchors,
   )
@@ -384,17 +384,10 @@ def run_single(episode_id, cfg, device, metadata, output_root,
       scene_constants["camera"][cam_id]["K_mat"] = c["K_calib_left"]
       scene_constants["camera"][cam_id]["baseline"] = float(c["baseline"])
 
-  # ── Init extrinsics (Stage 0) ──
-  scene_state = init_camera_states(scene_constants, extrinsics_db)
-  all_ext = all(s["extrinsics"] is not None for s in scene_state.values())
-
-  if not all_ext:
-    # Need VGGT — lazy-load once and cache in module-level dict
-    if "vggt" not in _MODEL_CACHE:
-      _MODEL_CACHE["vggt"] = init_calibration_models()
-    vggt_model, load_fn, pose_fn = _MODEL_CACHE["vggt"]
-    scene_state = vggt_warmup_extrinsics(
-        scene_constants, vggt_model, load_fn, pose_fn, device)
+  # ── Init extrinsics (Stage 0 + 1) ──
+  scene_state, _MODEL_CACHE["vggt"] = init_extrinsics(
+      scene_constants, extrinsics_db, device,
+      vggt_models=_MODEL_CACHE.get("vggt"))
 
   # ── Stage 2: Per-camera alignment ──
   use_pybullet = (cfg["backend"] == "pybullet")
