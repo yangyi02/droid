@@ -147,16 +147,15 @@ CONFIGS = {
 def run_single(episode_id, cfg, device, metadata, output_root,
                tracker_cache=None):
   """Run one experiment config on one episode. Returns metrics dict."""
-  import mediapy as media
-  from compute_depth import init_episode
   from compute_extrinsics import (
       init_extrinsics,
       run_stage2_alignment, run_global_joint_alignment, export_extrinsics,
       prepare_track_anchors, evaluate_extrinsics,
   )
+  from core.io import load_depth_data
   from core.physics import PyBulletRenderer, TensorRobotRenderer
 
-  id_to_path, serials_db, keep_ranges, extrinsics_db, raw_data_root, depth_cache_root = metadata
+  extrinsics_db, depth_root = metadata
   config_id = cfg["_id"]
 
   print(f"\n{'='*70}")
@@ -166,79 +165,9 @@ def run_single(episode_id, cfg, device, metadata, output_root,
 
   t0 = time.time()
 
-  # ── Stage 0-1: Init ──
-  scene_constants = init_episode(
-      episode_id, raw_data_root,
-      id_to_path, serials_db, keep_ranges)
-
-  # Load depth from GCS cache (use robot.npz as completeness marker)
-  local_cache = os.path.join(depth_cache_root, episode_id)
-  robot_path = os.path.join(local_cache, "robot.npz")
-  if not os.path.exists(robot_path):
-    gcs_depth = "gs://dm-tapnet/mv-tap/droid/depth"
-    os.makedirs(local_cache, exist_ok=True)
-    print(f"  📥 Downloading depth cache from GCS...")
-    ret = os.system(
-        f"gsutil -m rsync -r '{gcs_depth}/{episode_id}' '{local_cache}/'")
-    if ret != 0:
-      print(f"  ⚠️ gsutil returned {ret}, depth cache may be incomplete")
-
-  # Load robot data from cache
-  robot_path = os.path.join(local_cache, "robot.npz")
-  if os.path.exists(robot_path):
-    robot_data = np.load(robot_path, allow_pickle=True)
-    for k in ["joint_positions", "gripper_positions",
-              "T_cam_ee_init", "T_ee_base_all"]:
-      if k in robot_data:
-        scene_constants["robot"][k] = robot_data[k]
-    if "wrist_serial" in robot_data:
-      scene_constants["meta"]["wrist_serial"] = str(
-          robot_data["wrist_serial"].item())
-
-  # Fallback: if robot.npz is missing or incomplete (old cache format),
-  # compute kinematics from the raw H5 trajectory file
-  if "T_ee_base_all" not in scene_constants["robot"]:
-    ep_path = scene_constants["meta"]["episode_path"]
-    h5_path = os.path.join(ep_path, "trajectory.h5")
-    if os.path.exists(h5_path):
-      from compute_depth import parse_robot_kinematics
-      print(f"  ⚠️ T_ee_base_all missing from cache, "
-            f"computing from H5...")
-      parse_robot_kinematics(scene_constants)
-    else:
-      raise RuntimeError(
-          f"Robot kinematics unavailable: no T_ee_base_all in "
-          f"robot.npz and no trajectory.h5 at {h5_path}")
-
-  # Load per-camera depth + video + calibration
-  for cam_id in scene_constants["camera"]:
-    cam_dir = os.path.join(local_cache, cam_id)
-    vid_path = os.path.join(cam_dir, "video_left.mp4")
-    if os.path.exists(vid_path):
-      scene_constants["camera"][cam_id]["video_rgb"] = media.read_video(vid_path)
-    depth_path = os.path.join(cam_dir, "raw_depth.npz")
-    if os.path.exists(depth_path):
-      scene_constants["camera"][cam_id]["raw_depth"] = (
-          np.load(depth_path)["depth"].astype(np.float32) / 1000.0)
-    calib_path = os.path.join(cam_dir, "calibration.npz")
-    if os.path.exists(calib_path):
-      c = np.load(calib_path)
-      scene_constants["camera"][cam_id]["K_mat"] = c["K_calib_left"]
-      scene_constants["camera"][cam_id]["baseline"] = float(c["baseline"])
-
-  # ── Validate required data ──
-  missing = []
-  for cam_id, cam_data in scene_constants["camera"].items():
-    for key in ["raw_depth", "K_mat", "video_rgb"]:
-      if key not in cam_data:
-        missing.append(f"{cam_id}/{key}")
-  if missing:
-    raise RuntimeError(
-        f"Incomplete depth cache for {episode_id}. Missing: "
-        f"{missing}. Run compute_depth.py first or re-download "
-        f"from GCS: gsutil -m rsync -r "
-        f"'gs://dm-tapnet/mv-tap/droid/depth/{episode_id}' "
-        f"'{local_cache}/'")
+  # ── Load depth data (from GCS mount or local disk) ──
+  scene_constants = load_depth_data(
+      episode_id, depth_root=depth_root, load_video="full")
 
   # ── Init extrinsics (Stage 0 + 1) ──
   scene_state, _MODEL_CACHE["vggt"] = init_extrinsics(
@@ -498,6 +427,9 @@ def main():
   parser.add_argument("--summarize", action="store_true",
                       help="Only aggregate existing results from disk "
                            "(no computation, run after all workers finish)")
+  parser.add_argument("--depth_root", type=str, default=None,
+                      help="Root dir with Stage 1 depth output "
+                           "(default: ~/droid_data/output/mv-tap/droid/depth)")
   args = parser.parse_args()
 
   # Parse config list
@@ -529,80 +461,54 @@ def main():
     print(f"✅ Summary complete ({len(all_results)} results)")
     return
 
-  # Load metadata JSONs (downloaded from HuggingFace on first use)
-  META_FILES = [
-      "camera_serials.json",
-      "episode_id_to_path.json",
-      "keep_ranges_1_0_1.json",
-      "cam2base_extrinsic_superset.json",
-  ]
-  HF_BASE = "https://huggingface.co/KarlP/droid/resolve/main"
-
-  # Search candidate paths; use the first one that has the metadata files
+  # Load metadata — only extrinsics_db is needed (for init_extrinsics);
+  # depth data is loaded directly from disk via load_depth_data().
   meta_root = args.meta_root
   if meta_root is None:
     candidates = [
-        "/content/droid_raw/1.0.1",          # Colab default
-        os.path.expanduser("~/droid_workspace/droid/metadata"),  # GPU server
+        "/content/droid_raw/1.0.1",
+        os.path.expanduser("~/droid_workspace/droid/metadata"),
         os.path.expanduser("~/droid_data/input/robotics/droid_raw/1.0.1"),
+        os.path.expanduser("~/droid_data/meta/1.0.1"),
     ]
     for cand in candidates:
-      if os.path.exists(os.path.join(cand, "episode_id_to_path.json")):
+      if os.path.exists(os.path.join(cand, "cam2base_extrinsic_superset.json")):
         meta_root = cand
         break
 
   if meta_root is None:
-    # Auto-download from HuggingFace into ~/droid_workspace/droid/metadata
     meta_root = os.path.expanduser("~/droid_workspace/droid/metadata")
     os.makedirs(meta_root, exist_ok=True)
-    print(f"📥 Downloading metadata JSONs from HuggingFace → {meta_root}")
-    for fname in META_FILES:
-      dest = os.path.join(meta_root, fname)
-      if not os.path.exists(dest):
-        ret = os.system(f"wget -q -O '{dest}' '{HF_BASE}/{fname}'")
-        if ret != 0:
-          print(f"  ❌ Failed to download {fname}")
-          sys.exit(1)
-        print(f"  ✅ {fname}")
-      else:
-        print(f"  ⏭️  {fname} (cached)")
+    fname = "cam2base_extrinsic_superset.json"
+    dest = os.path.join(meta_root, fname)
+    if not os.path.exists(dest):
+      HF_BASE = "https://huggingface.co/KarlP/droid/resolve/main"
+      print(f"📥 Downloading {fname} from HuggingFace → {meta_root}")
+      ret = os.system(f"wget -q -O '{dest}' '{HF_BASE}/{fname}'")
+      if ret != 0:
+        print(f"  ❌ Failed to download {fname}")
+        sys.exit(1)
 
   print(f"📂 Metadata root: {meta_root}")
 
-  def load_json(name):
-    with open(os.path.join(meta_root, name)) as f:
-      return json.load(f)
+  with open(os.path.join(meta_root, "cam2base_extrinsic_superset.json")) as f:
+    extrinsics_db = json.load(f)
 
-  id_to_path = load_json("episode_id_to_path.json")
-  serials_db = load_json("camera_serials.json")
-  keep_ranges = load_json("keep_ranges_1_0_1.json")
-  extrinsics_db = load_json("cam2base_extrinsic_superset.json")
+  # Depth root (Stage 1 output, typically GCS-mounted)
+  depth_root = args.depth_root
+  if depth_root is None:
+    depth_root_candidates = [
+        os.path.expanduser("~/droid_data/output/mv-tap/droid/depth"),
+        "/content/droid_depth_cache",
+        os.path.expanduser("~/droid_workspace/droid/depth_cache"),
+    ]
+    depth_root = next(
+        (p for p in depth_root_candidates if os.path.isdir(p)),
+        depth_root_candidates[0])
 
-  # Raw episode data root (SVO files, etc.)
-  raw_data_root_candidates = [
-      os.path.expanduser("~/droid_data/input/robotics/droid_raw/1.0.1"),
-      "/content/droid_raw/1.0.1",
-      os.path.expanduser("~/droid_workspace/data/droid_raw/1.0.1"),
-  ]
-  raw_data_root = next(
-      (p for p in raw_data_root_candidates if os.path.isdir(p)),
-      raw_data_root_candidates[0])  # fallback (may not exist — OK for depth-only)
+  print(f"   Depth root: {depth_root}")
 
-  # Depth cache root (pre-computed depth NPZs downloaded from GCS)
-  depth_cache_candidates = [
-      os.path.expanduser("~/droid_data/depth_cache"),
-      "/content/droid_depth_cache",
-      os.path.expanduser("~/droid_workspace/droid/depth_cache"),
-  ]
-  depth_cache_root = next(
-      (p for p in depth_cache_candidates if os.path.isdir(p)),
-      depth_cache_candidates[0])  # fallback (will be created on first use)
-
-  print(f"   Raw data: {raw_data_root}")
-  print(f"   Depth cache: {depth_cache_root}")
-
-  metadata = (id_to_path, serials_db, keep_ranges, extrinsics_db,
-              raw_data_root, depth_cache_root)
+  metadata = (extrinsics_db, depth_root)
 
   # GPU: always use cuda:0 — GPU isolation via CUDA_VISIBLE_DEVICES (same
   # pattern as compute_extrinsics.py / run_parallel.sh)
