@@ -430,9 +430,21 @@ def write_summary(all_results, output_root):
   print(f"\n💾 Results saved to: {csv_path}")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+def collect_results_from_disk(output_root, config_ids, episodes):
+  """Scan output_root for completed metrics.json files and aggregate."""
+  all_results = []
+  for cid in config_ids:
+    for eid in episodes:
+      result_path = os.path.join(output_root, cid, eid, "metrics.json")
+      if os.path.exists(result_path):
+        try:
+          with open(result_path) as f:
+            metrics = json.load(f)
+          all_results.append(metrics)
+        except json.JSONDecodeError:
+          pass  # skip corrupt files
+  return all_results
+
 
 def main():
   parser = argparse.ArgumentParser(description="MV-TAP extrinsics ablation runner")
@@ -453,6 +465,17 @@ def main():
                       help="Path to directory containing camera_serials.json, "
                            "episode_id_to_path.json, etc. "
                            "Auto-detected or downloaded if not specified.")
+
+  # ── Distributed / Multi-GPU ──
+  parser.add_argument("--rank", type=int, default=0,
+                      help="Worker rank for distributed execution (0-indexed)")
+  parser.add_argument("--world_size", type=int, default=1,
+                      help="Total number of parallel workers")
+  parser.add_argument("--gpu", type=int, default=None,
+                      help="GPU device index (default: same as --rank)")
+  parser.add_argument("--summarize", action="store_true",
+                      help="Only aggregate existing results from disk "
+                           "(no computation, run after all workers finish)")
   args = parser.parse_args()
 
   # Parse config list
@@ -472,6 +495,17 @@ def main():
     rng = random.Random(args.seed)
     episodes = rng.sample(DEFAULT_EPISODES,
                           min(args.episodes, len(DEFAULT_EPISODES)))
+
+  os.makedirs(args.output_root, exist_ok=True)
+
+  # ── Summarize-only mode ──
+  if args.summarize:
+    print(f"📊 Collecting results from {args.output_root}...")
+    all_results = collect_results_from_disk(
+        args.output_root, config_ids, episodes)
+    write_summary(all_results, args.output_root)
+    print(f"✅ Summary complete ({len(all_results)} results)")
+    return
 
   # Load metadata JSONs (downloaded from HuggingFace on first use)
   META_FILES = [
@@ -548,46 +582,56 @@ def main():
   metadata = (id_to_path, serials_db, keep_ranges, extrinsics_db,
               raw_data_root, depth_cache_root)
 
-  device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-  os.makedirs(args.output_root, exist_ok=True)
+  # ── GPU selection ──
+  gpu_id = args.gpu if args.gpu is not None else args.rank
+  if torch.cuda.is_available() and gpu_id < torch.cuda.device_count():
+    device = torch.device(f"cuda:{gpu_id}")
+  else:
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
   os.environ["PYOPENGL_PLATFORM"] = "egl"
+
+  # ── Build work matrix and shard ──
+  all_jobs = [(c, e) for c in config_ids for e in episodes]
+  my_jobs = all_jobs[args.rank::args.world_size]
 
   print(f"🔬 Ablation Experiment Runner")
   print(f"   Configs: {config_ids}")
   print(f"   Episodes: {len(episodes)}")
   print(f"   Output: {args.output_root}")
   print(f"   Device: {device}")
-  print(f"   Total runs: {len(config_ids) * len(episodes)}")
+  print(f"   Worker: {args.rank}/{args.world_size} "
+        f"({len(my_jobs)}/{len(all_jobs)} jobs)")
 
-  # Run matrix
-  all_results = []
+  # Run assigned jobs
+  my_results = []
   tracker_cache = {}
-  n_total = len(config_ids) * len(episodes)
 
-  for i, (cid, eid) in enumerate(
-      [(c, e) for c in config_ids for e in episodes]):
+  for i, (cid, eid) in enumerate(my_jobs):
     cfg = copy.deepcopy(CONFIGS[cid])
     cfg["_id"] = cid
 
-    # Skip if already completed
+    # Skip if already completed (enables restarts and deduplication)
     result_path = os.path.join(args.output_root, cid, eid, "metrics.json")
     if os.path.exists(result_path):
-      print(f"\n⏭️  [{i+1}/{n_total}] {cid} | {eid} — already done, loading")
+      print(f"\n⏭️  [{i+1}/{len(my_jobs)}] {cid} | {eid} — already done, "
+            f"loading")
       with open(result_path) as f:
         metrics = json.load(f)
-      all_results.append(metrics)
+      my_results.append(metrics)
       continue
 
-    print(f"\n🚀 [{i+1}/{n_total}] Starting...")
+    print(f"\n🚀 [{i+1}/{len(my_jobs)}] {cid} | {eid} "
+          f"(worker {args.rank})")
     try:
       metrics = run_single(
           eid, cfg, device, metadata, args.output_root,
           tracker_cache=tracker_cache)
-      all_results.append(metrics)
+      my_results.append(metrics)
     except Exception as e:
       print(f"\n❌ FAILED: {cid} | {eid}")
       traceback.print_exc()
-      all_results.append({
+      err_metrics = {
           "config_id": cid, "episode_id": eid,
           "desc": cfg["desc"], "error": str(e),
           "chamfer_total": float("nan"),
@@ -597,14 +641,28 @@ def main():
           "bg_overlap_pct": float("nan"),
           "track_reproj_mean_px": float("nan"),
           "elapsed_s": 0,
-      })
+      }
+      # Write error metrics to disk so summarize can pick it up
+      err_dir = os.path.join(args.output_root, cid, eid)
+      os.makedirs(err_dir, exist_ok=True)
+      with open(os.path.join(err_dir, "metrics.json"), "w") as f:
+        json.dump(err_metrics, f, indent=2, default=str)
+      my_results.append(err_metrics)
 
-    # Write incremental summary after each run
+  # Worker-local summary
+  print(f"\n✅ Worker {args.rank} complete: "
+        f"{len(my_results)}/{len(my_jobs)} jobs")
+
+  # If single-worker mode, write full summary immediately
+  if args.world_size == 1:
+    all_results = collect_results_from_disk(
+        args.output_root, config_ids, episodes)
     write_summary(all_results, args.output_root)
-
-  # Final summary
-  write_summary(all_results, args.output_root)
-  print(f"\n✅ All {n_total} runs complete!")
+  else:
+    print(f"💡 Run with --summarize after all workers finish to aggregate:")
+    print(f"   python run_ablation.py --configs {args.configs} "
+          f"--episodes {args.episodes} --output_root {args.output_root} "
+          f"--summarize")
 
 
 if __name__ == "__main__":
