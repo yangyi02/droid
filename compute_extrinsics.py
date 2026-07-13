@@ -959,7 +959,7 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
     metrics["chamfer_1w"] = l1w.item()
     metrics["chamfer_2w"] = l2w.item()
     metrics["chamfer_total"] = (l12 + l1w + l2w).item()
-    metrics["bg_overlap_pct"] = (o12 + o1w + o2w).item() / 3.0 * 100
+    metrics["bg_overlap_pct"] = (o12 + o1w + o2w) / 3.0 * 100
   except Exception as e:
     metrics["chamfer_total"] = float("nan")
     metrics["bg_overlap_pct"] = float("nan")
