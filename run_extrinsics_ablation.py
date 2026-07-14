@@ -372,7 +372,7 @@ def write_summary(all_results, output_root):
       "track_reproj_tapnext_wrist_bg_median_px",
       "track_reproj_mean_px", "track_reproj_median_px",
       "track_reproj_wrist_bg_mean_px", "track_reproj_wrist_bg_median_px",
-      "track_reproj_static_gripper_mean_px",
+      "track_reproj_static_robot_mean_px", "track_reproj_static_robot_median_px",
       "elapsed_s",
   ]
 

@@ -679,34 +679,59 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
       print(f"    🔒 [{cam_id}] Closed-gripper eval frames: "
             f"{n_closed}/{len(gripper_pos)}  mask: SAM")
     else:
-      # Scheme A: static camera — select GRIPPER-ONLY tracks
-      # IMPORTANT: Only the gripper (ghost body) moves rigidly with T_ee(t).
-      # Arm links 1-6 have different FK chains and would give wrong
-      # reprojection if treated as part of EE.
-      gripper_mask = pb_renderer.render_gripper_mask(ext_t0, K, w_img, h_img)
-      kernel = np.ones((5, 5), np.uint8)
-      gripper_mask_d = cv2.dilate(
-          gripper_mask.astype(np.uint8), kernel, iterations=1) > 0
-      on_gripper = gripper_mask_d[v0i, u0i]
-      selected = on_gripper
-      scheme = "gripper"
+      # Scheme A: static camera — ALL robot points via URDF FK
+      # Use URDFKinematicsTracker to bind surface points to link frames at t=0,
+      # propagate via FK, and get FK-based 2D predictions + visibility.
+      from core.tracking import URDFKinematicsTracker
+      urdf_tracker = URDFKinematicsTracker(pb_renderer)
+      fk_result = urdf_tracker.extract_robot_tracks(
+          cam_id, scene_constants, scene_state)
+      traj_3d, traj_2d_fk, vis_fk, robot_indices = fk_result
 
-    # --- Depth source for 3D anchor initialization ---
-    # Scheme A (gripper): sensor depth on dark/metallic gripper is unreliable.
-    #   Use PyBullet-rendered depth from the CAD model instead.
-    # Scheme B (background): sensor depth is fine for background points.
-    if scheme == "gripper":
-      pb_depth = pb_renderer.render_depth(ext_t0, K, w_img, h_img).astype(np.float32)
-      z0 = pb_depth[v0i, u0i]
-    else:
-      depth_0 = cam_data['raw_depth'][0].astype(np.float32)
-      z0 = depth_0[v0i, u0i]
+      if robot_indices is None or len(robot_indices) < 5:
+        print(f"    ⚠️ [{cam_id}] URDF tracker found <5 robot points, skipping.")
+        continue
+
+      # FK 2D = predicted, tracker 2D = target
+      tracker_2d = tracks[:, robot_indices]  # (T, N_robot, 2)
+      tracker_vis = vis[:, robot_indices]    # (T, N_robot)
+
+      # Combined visibility: both FK visible and tracker visible
+      combined_vis = vis_fk & tracker_vis  # (T, N_robot)
+
+      # L1 pixel error: |FK_pred - tracker_pred|
+      pixel_err = np.abs(traj_2d_fk - tracker_2d).sum(axis=-1)  # (T, N_robot)
+
+      valid = combined_vis & (pixel_err < 500)  # sanity cap
+      if valid.sum() < 10:
+        print(f"    ⚠️ [{cam_id}] Too few valid FK-vs-tracker comparisons, skipping.")
+        continue
+
+      mean_err = float(pixel_err[valid].mean())
+      median_err = float(np.median(pixel_err[valid]))
+      n_pts = len(robot_indices)
+      avg_vis_pct = combined_vis.mean() * 100
+      print(f"    ✅ [{cam_id}] robot FK: {n_pts} points "
+            f"(avg vis: {avg_vis_pct:.0f}%, "
+            f"mean={mean_err:.1f}px, median={median_err:.1f}px)")
+
+      # Store directly as per-camera metric (no anchor needed)
+      anchors[cam_id] = {
+          'scheme': 'robot_fk',
+          'mean_px': mean_err,
+          'median_px': median_err,
+      }
+      continue  # skip the anchor building below
+
+    # --- Below only runs for wrist "background" scheme ---
+    depth_0 = cam_data['raw_depth'][0].astype(np.float32)
+    z0 = depth_0[v0i, u0i]
 
     has_depth = (z0 > 0.05) & (z0 < 3.0)
     selected = selected & vis[0] & has_depth
 
     if selected.sum() < 5:
-      print(f"    ⚠️ [{cam_id}] {scheme}: only {selected.sum()} initial tracks, skipping.")
+      print(f"    ⚠️ [{cam_id}] background: only {selected.sum()} initial tracks, skipping.")
       continue
 
     sel_idx = np.where(selected)[0]
@@ -717,7 +742,7 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
     sel_idx = sel_idx[good]
 
     if len(sel_idx) < 5:
-      print(f"    ⚠️ [{cam_id}] {scheme}: only {len(sel_idx)} well-visible tracks, skipping.")
+      print(f"    ⚠️ [{cam_id}] background: only {len(sel_idx)} well-visible tracks, skipping.")
       continue
 
     # Cap at 500 for memory efficiency
@@ -734,53 +759,9 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
     y_c = (v_s - K[1, 2]) * z_s / K[1, 1]
     P_cam0 = np.stack([x_c, y_c, z_s, np.ones_like(z_s)], axis=-1)
 
-    # Forward-model sanity check: project anchors at a subsequent visible
-    # frame using current extrinsics + FK and compare to the actual 2D track.
-    # A large initial error means the extrinsics/depth are off — no signal.
-    T_ee_all_np = scene_constants['robot']['T_ee_base_all']
-    T_ext0 = scene_state[cam_id]['extrinsics'][0]  # (4,4)
-    check_t = min(5, T_frames - 1)
-    check_vis = vis[check_t, sel_idx]
-    if check_vis.sum() >= 3:
-      P_cam0_h = P_cam0.T  # (4, N)
-      # For both schemes: T_ext0 = extrinsics[0] = T_cam_to_base at t=0.
-      # Static cameras: T_cam_to_base is constant, so extrinsics[t] = extrinsics[0].
-      # Wrist camera: extrinsics[t] already = T_ee_to_base[t] @ T_cam_ee.
-      if scheme == "gripper":
-        # Gripper points rigid in EE frame → project through FK
-        T_base_to_cam = np.linalg.inv(T_ext0)
-        T_ee0_inv = np.linalg.inv(T_ee_all_np[0])
-        P_world0 = T_ext0 @ P_cam0_h            # cam → world
-        P_ee = T_ee0_inv @ P_world0              # world → EE frame (constant)
-        P_world_t = T_ee_all_np[check_t] @ P_ee  # EE → world at t
-        P_cam_t = T_base_to_cam @ P_world_t
-      else:
-        # Background points static in world → use moving wrist extrinsics[t]
-        T_cam_to_base_0 = T_ext0                       # extrinsics[0] = T_cam→base
-        P_world = T_cam_to_base_0 @ P_cam0_h           # cam → world (constant P)
-        T_cam_to_base_t = scene_state[cam_id]['extrinsics'][check_t]
-        P_cam_t = np.linalg.inv(T_cam_to_base_t) @ P_world
-      Zc = np.clip(P_cam_t[2], 1e-4, None)
-      u_pred = K[0, 0] * P_cam_t[0] / Zc + K[0, 2]
-      v_pred = K[1, 1] * P_cam_t[1] / Zc + K[1, 2]
-      u_gt = tracks[check_t, sel_idx, 0]
-      v_gt = tracks[check_t, sel_idx, 1]
-      err_px = np.sqrt((u_pred - u_gt) ** 2 + (v_pred - v_gt) ** 2)
-      model_err = float(err_px[check_vis].mean()) if check_vis.any() else 999.
-    else:
-      model_err = 0.0  # not enough visible points to check
-
-    skip_thresh = 200.0
     avg_vis = vis[:, sel_idx].mean() * 100
-    depth_src = "PyBullet CAD" if scheme == "gripper" else "sensor"
-    print(f"    ✅ [{cam_id}] {scheme}: {len(sel_idx)} tracks "
-          f"(avg vis: {avg_vis:.0f}%, depth: {depth_src}, "
-          f"model err@t{check_t}: {model_err:.1f}px)")
-    if model_err > skip_thresh:
-      print(f"    ⛔ [{cam_id}] Initial model error too large "
-            f"({model_err:.1f}px > {skip_thresh}px), skipping — "
-            f"check Stage 3 extrinsics quality.")
-      continue
+    print(f"    ✅ [{cam_id}] background: {len(sel_idx)} tracks "
+          f"(avg vis: {avg_vis:.0f}%, depth: sensor)")
 
     anchor_data = {
         'P_cam0': torch.tensor(P_cam0, dtype=torch.float32, device=device),
@@ -788,11 +769,10 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
             tracks[:, sel_idx], dtype=torch.float32, device=device),
         'vis': torch.tensor(
             vis[:, sel_idx], dtype=torch.bool, device=device),
-        'scheme': scheme,
+        'scheme': 'background',
     }
-    if scheme == "background":
-      anchor_data['eval_frame_mask'] = torch.tensor(
-          gripper_closed_frames, dtype=torch.bool, device=device)
+    anchor_data['eval_frame_mask'] = torch.tensor(
+        gripper_closed_frames, dtype=torch.bool, device=device)
     anchors[cam_id] = anchor_data
 
   return anchors
@@ -1039,36 +1019,40 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
     T_ee_t = torch.tensor(T_ee_all, dtype=torch.float32, device=device)
     # Per-scheme accumulators
     bg_means, bg_medians = [], []
-    grip_means, grip_medians = [], []
+    robot_fk_means, robot_fk_medians = [], []
     for cam_id in track_anchors:
-      T_opt = torch.tensor(
-          scene_state[cam_id]["base_extrinsic"],
-          dtype=torch.float32, device=device)
-      K_t = torch.tensor(
-          scene_constants["camera"][cam_id]["K_mat"],
-          dtype=torch.float32, device=device)
       scheme = track_anchors[cam_id]["scheme"]
-      l_mean, l_median = compute_track_reproj_loss(
-          track_anchors[cam_id], T_opt, K_t, T_ee_t, scheme, device,
-          return_median=True)
-      if scheme == "background":
+
+      if scheme == "robot_fk":
+        # Pre-computed in prepare_track_anchors via URDFKinematicsTracker
+        robot_fk_means.append(track_anchors[cam_id]["mean_px"])
+        robot_fk_medians.append(track_anchors[cam_id]["median_px"])
+      elif scheme == "background":
+        T_opt = torch.tensor(
+            scene_state[cam_id]["base_extrinsic"],
+            dtype=torch.float32, device=device)
+        K_t = torch.tensor(
+            scene_constants["camera"][cam_id]["K_mat"],
+            dtype=torch.float32, device=device)
+        l_mean, l_median = compute_track_reproj_loss(
+            track_anchors[cam_id], T_opt, K_t, T_ee_t, scheme, device,
+            return_median=True)
         bg_means.append(l_mean.item())
         bg_medians.append(l_median.item())
-      else:
-        grip_means.append(l_mean.item())
-        grip_medians.append(l_median.item())
 
     # Primary metric: wrist background (cleanest test of T_cam_ee)
     metrics["track_reproj_wrist_bg_mean_px"] = (
         float(np.mean(bg_means)) if bg_means else float("nan"))
     metrics["track_reproj_wrist_bg_median_px"] = (
         float(np.mean(bg_medians)) if bg_medians else float("nan"))
-    # Secondary metric: static camera gripper
-    metrics["track_reproj_static_gripper_mean_px"] = (
-        float(np.mean(grip_means)) if grip_means else float("nan"))
+    # Secondary metric: static camera robot FK vs tracker
+    metrics["track_reproj_static_robot_mean_px"] = (
+        float(np.mean(robot_fk_means)) if robot_fk_means else float("nan"))
+    metrics["track_reproj_static_robot_median_px"] = (
+        float(np.mean(robot_fk_medians)) if robot_fk_medians else float("nan"))
     # Overall (all cameras, backward compat)
-    all_means = bg_means + grip_means
-    all_medians = bg_medians + grip_medians
+    all_means = bg_means + robot_fk_means
+    all_medians = bg_medians + robot_fk_medians
     metrics["track_reproj_mean_px"] = (
         float(np.mean(all_means)) if all_means else float("nan"))
     metrics["track_reproj_median_px"] = (
@@ -1078,7 +1062,8 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
     metrics["track_reproj_median_px"] = float("nan")
     metrics["track_reproj_wrist_bg_mean_px"] = float("nan")
     metrics["track_reproj_wrist_bg_median_px"] = float("nan")
-    metrics["track_reproj_static_gripper_mean_px"] = float("nan")
+    metrics["track_reproj_static_robot_mean_px"] = float("nan")
+    metrics["track_reproj_static_robot_median_px"] = float("nan")
 
   # --- Extrinsic magnitude from identity ---
   for cam_id in scene_constants["camera"]:
@@ -1102,7 +1087,8 @@ def print_metrics(metrics, stage_name=""):
   track_med = metrics.get("track_reproj_median_px", float("nan"))
   wrist_bg = metrics.get("track_reproj_wrist_bg_mean_px", float("nan"))
   wrist_bg_med = metrics.get("track_reproj_wrist_bg_median_px", float("nan"))
-  static_grip = metrics.get("track_reproj_static_gripper_mean_px", float("nan"))
+  static_robot = metrics.get("track_reproj_static_robot_mean_px", float("nan"))
+  static_robot_med = metrics.get("track_reproj_static_robot_median_px", float("nan"))
 
   header = f"📊 Metrics after {stage_name}" if stage_name else "📊 Metrics"
   print(f"\n{header}")
@@ -1112,9 +1098,10 @@ def print_metrics(metrics, stage_name=""):
   if not np.isnan(wrist_bg):
     med_s = f"  median={wrist_bg_med:.2f}" if not np.isnan(wrist_bg_med) else ""
     print(f"  Track wristBG: mean={wrist_bg:.2f} px{med_s}  ★ primary")
-  if not np.isnan(static_grip):
-    print(f"  Track gripper: mean={static_grip:.2f} px")
-  if not np.isnan(track) and np.isnan(wrist_bg) and np.isnan(static_grip):
+  if not np.isnan(static_robot):
+    med_s2 = f"  median={static_robot_med:.2f}" if not np.isnan(static_robot_med) else ""
+    print(f"  Track robot:   mean={static_robot:.2f} px{med_s2}")
+  if not np.isnan(track) and np.isnan(wrist_bg) and np.isnan(static_robot):
     print(f"  Track reproj:  mean={track:.2f} px")
 
   shift_keys = [k for k in sorted(metrics.keys()) if k.startswith("shift_mm_")]
