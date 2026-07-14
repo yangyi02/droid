@@ -401,6 +401,26 @@ def batched_chamfer_distance(p1, p2, device):
   return loss, overlap_ratio.item()
 
 
+def batched_chamfer_distance_loop(p1, p2, device):
+  """Memory-efficient Chamfer distance (frame-by-frame loop for evaluation)."""
+  B = p1.shape[0]
+  total_loss = 0.0
+  total_overlap = 0.0
+  for i in range(B):
+    dist_matrix = torch.cdist(p1[i:i+1], p2[i:i+1])
+    min_12 = torch.min(dist_matrix, dim=2)[0]
+    min_21 = torch.min(dist_matrix, dim=1)[0]
+    v12 = min_12 < 0.05
+    v21 = min_21 < 0.05
+    if v12.any():
+      total_loss += min_12[v12].mean().item()
+    if v21.any():
+      total_loss += min_21[v21].mean().item()
+    total_overlap += (v12.sum() + v21.sum()).item()
+  overlap_ratio = total_overlap / (B * (p1.shape[1] + p2.shape[1]) + 1e-6)
+  return total_loss / B, overlap_ratio
+
+
 def get_cam_points_local_t(t, cam_data, device, n_points=2000):
   """Extract downsampled scene point cloud from a single depth frame."""
   depth = cam_data["raw_depth"][t].astype(np.float32)
@@ -517,25 +537,11 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
     T2_opt = T2_init_t @ make_T(d2, device)
     Tee_opt = Tee_init_t @ make_T(dhe, device)
 
-    # Chamfer: project environment points to world frame (stochastic sampling to prevent OOM)
-    B_total = batch_Pc1.shape[0]
-    base_ops = 80 * (2000 ** 2)
-    max_batch = max(8, int(base_ops / (chamfer_n_points ** 2)))
-    sample_size = min(max_batch, B_total)
-
-    if sample_size < B_total:
-      sample_idx = torch.randperm(B_total, device=device)[:sample_size]
-      s_Pc1 = batch_Pc1[sample_idx]
-      s_Pc2 = batch_Pc2[sample_idx]
-      s_Pcw = batch_Pcw[sample_idx]
-      s_Tee = batch_Tee[sample_idx]
-    else:
-      s_Pc1, s_Pc2, s_Pcw, s_Tee = batch_Pc1, batch_Pc2, batch_Pcw, batch_Tee
-
-    bc1 = (T1_opt @ s_Pc1)[:, :3, :].transpose(1, 2)
-    bc2 = (T2_opt @ s_Pc2)[:, :3, :].transpose(1, 2)
-    T_wrist_c2w = s_Tee @ Tee_opt
-    bcw = torch.bmm(T_wrist_c2w, s_Pcw)[:, :3, :].transpose(1, 2)
+    # Chamfer: project environment points to world frame
+    bc1 = (T1_opt @ batch_Pc1)[:, :3, :].transpose(1, 2)
+    bc2 = (T2_opt @ batch_Pc2)[:, :3, :].transpose(1, 2)
+    T_wrist_c2w = batch_Tee @ Tee_opt
+    bcw = torch.bmm(T_wrist_c2w, batch_Pcw)[:, :3, :].transpose(1, 2)
 
     l12, o12 = batched_chamfer_distance(bc1, bc2, device)
     l1w, o1w = batched_chamfer_distance(bc1, bcw, device)
@@ -1000,10 +1006,10 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
   try:
     cache_Pc1, cache_Pc2, cache_Pcw, cache_Tee = [], [], [], []
     for t in range(n_frames):
-      pc1 = get_cam_points_local_t(t, scene_constants["camera"][cam1], device)
-      pc2 = get_cam_points_local_t(t, scene_constants["camera"][cam2], device)
+      pc1 = get_cam_points_local_t(t, scene_constants["camera"][cam1], device, n_points=5000)
+      pc2 = get_cam_points_local_t(t, scene_constants["camera"][cam2], device, n_points=5000)
       pcw = get_cam_points_local_t(
-          t, scene_constants["camera"][wrist_cam], device)
+          t, scene_constants["camera"][wrist_cam], device, n_points=5000)
       if pc1 is not None and pc2 is not None and pcw is not None:
         cache_Pc1.append(pc1)
         cache_Pc2.append(pc2)
@@ -1030,9 +1036,9 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
     bc2 = (T2 @ batch_Pc2)[:, :3, :].transpose(1, 2)
     bcw = torch.bmm(batch_Tee @ Tw, batch_Pcw)[:, :3, :].transpose(1, 2)
 
-    l12, o12 = batched_chamfer_distance(bc1, bc2, device)
-    l1w, o1w = batched_chamfer_distance(bc1, bcw, device)
-    l2w, o2w = batched_chamfer_distance(bc2, bcw, device)
+    l12, o12 = batched_chamfer_distance_loop(bc1, bc2, device)
+    l1w, o1w = batched_chamfer_distance_loop(bc1, bcw, device)
+    l2w, o2w = batched_chamfer_distance_loop(bc2, bcw, device)
 
     metrics["chamfer_12"] = l12.item()
     metrics["chamfer_1w"] = l1w.item()
