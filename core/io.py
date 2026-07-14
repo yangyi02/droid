@@ -194,6 +194,11 @@ def load_depth_data(episode_id, depth_root="~/droid_data/output/mv-tap/droid/dep
       depth_uint16 = np.load(depth_path)["depth"]
       cam_data["raw_depth"] = depth_uint16.astype(np.float32) / 1000.0
 
+    # SAM gripper mask (wrist camera only, bool (T, H, W))
+    mask_path = os.path.join(cam_path, "gripper_mask.npz")
+    if os.path.exists(mask_path):
+      cam_data["sam_real_masks"] = np.load(mask_path)["mask"]
+
     # Video loading
     video_path = os.path.join(cam_path, "video_left.mp4")
     if os.path.exists(video_path):

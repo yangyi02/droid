@@ -292,6 +292,8 @@ def run_single(episode_id, cfg, device, metadata, output_root,
   for trk_method in ("cotracker", "tapnext"):
     key = f"track_reproj_{trk_method}_px"
     key_med = f"track_reproj_{trk_method}_median_px"
+    key_wbg = f"track_reproj_{trk_method}_wrist_bg_px"
+    key_wbg_med = f"track_reproj_{trk_method}_wrist_bg_median_px"
     try:
       if trk_method not in tracker_cache:
         tracker_cache[trk_method] = init_tracker(trk_method, device)
@@ -306,10 +308,14 @@ def run_single(episode_id, cfg, device, metadata, output_root,
           track_anchors=anchors_tmp)
       metrics[key] = m_tmp.get("track_reproj_mean_px", float("nan"))
       metrics[key_med] = m_tmp.get("track_reproj_median_px", float("nan"))
+      metrics[key_wbg] = m_tmp.get("track_reproj_wrist_bg_mean_px", float("nan"))
+      metrics[key_wbg_med] = m_tmp.get("track_reproj_wrist_bg_median_px", float("nan"))
     except Exception as e:
       print(f"  ⚠️ {trk_method} eval skipped: {e}")
       metrics[key] = float("nan")
       metrics[key_med] = float("nan")
+      metrics[key_wbg] = float("nan")
+      metrics[key_wbg_med] = float("nan")
 
   # ── Save extrinsics + metrics ──
   exp_dir = os.path.join(output_root, config_id, episode_id)
@@ -361,7 +367,12 @@ def write_summary(all_results, output_root):
       "bg_overlap_pct",
       "track_reproj_cotracker_px", "track_reproj_tapnext_px",
       "track_reproj_cotracker_median_px", "track_reproj_tapnext_median_px",
+      "track_reproj_cotracker_wrist_bg_px", "track_reproj_tapnext_wrist_bg_px",
+      "track_reproj_cotracker_wrist_bg_median_px",
+      "track_reproj_tapnext_wrist_bg_median_px",
       "track_reproj_mean_px", "track_reproj_median_px",
+      "track_reproj_wrist_bg_mean_px", "track_reproj_wrist_bg_median_px",
+      "track_reproj_static_gripper_mean_px",
       "elapsed_s",
   ]
 
@@ -392,8 +403,7 @@ def write_summary(all_results, output_root):
   print(f"{'='*110}")
   header = (f"{'ID':<5} {'Description':<40} {'Chamfer':>8} "
             f"{'Robot':>8} {'BG%':>6} "
-            f"{'CoTrk':>9} {'CoTrk_md':>9} "
-            f"{'TAP':>9} {'TAP_md':>9} {'N':>3} {'Time':>5}")
+            f"{'CoTrk_wBG':>10} {'TAP_wBG':>10} {'N':>3} {'Time':>5}")
   print(header)
   print("─" * len(header))
 
@@ -411,10 +421,8 @@ def write_summary(all_results, output_root):
           f"{_agg(rows, 'chamfer_total'):>8} "
           f"{rob_s:>8} "
           f"{_agg1(rows, 'bg_overlap_pct') + '%':>6} "
-          f"{_agg1(rows, 'track_reproj_cotracker_px'):>9} "
-          f"{_agg1(rows, 'track_reproj_cotracker_median_px'):>9} "
-          f"{_agg1(rows, 'track_reproj_tapnext_px'):>9} "
-          f"{_agg1(rows, 'track_reproj_tapnext_median_px'):>9} "
+          f"{_agg1(rows, 'track_reproj_cotracker_wrist_bg_px'):>10} "
+          f"{_agg1(rows, 'track_reproj_tapnext_wrist_bg_px'):>10} "
           f"{len(rows):>3} {time_s:>5}")
 
   print(f"\n💾 Full results: {csv_path}")

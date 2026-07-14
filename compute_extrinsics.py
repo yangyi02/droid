@@ -655,14 +655,39 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
 
     if is_wrist:
       # Scheme B: wrist camera — select BACKGROUND tracks
-      # Use full robot mask (dilated) to exclude robot region
-      robot_mask = pb_renderer.render_mask(ext_t0, K, w_img, h_img)
+      # Use SAM consensus gripper mask (from gripper_mask.npz) if available.
+      # NOTE: sam_real_masks is (T, H, W) but only closed-gripper frames
+      # have a non-zero mask (same static consensus mask broadcast).
+      # We extract the consensus mask from any non-empty frame.
+      sam_masks = cam_data.get('sam_real_masks')
+      if sam_masks is not None:
+        consensus = sam_masks.any(axis=0)  # OR across time → static mask
+      else:
+        consensus = None
+
+      if consensus is not None and consensus.any():
+        gripper_mask_t0 = consensus
+        mask_src = "SAM"
+      else:
+        gripper_mask_t0 = pb_renderer.render_mask(ext_t0, K, w_img, h_img)
+        mask_src = "PyBullet"
       kernel = np.ones((15, 15), np.uint8)
       robot_mask_d = cv2.dilate(
-          robot_mask.astype(np.uint8), kernel, iterations=1) > 0
+          gripper_mask_t0.astype(np.uint8), kernel, iterations=1) > 0
       on_robot = robot_mask_d[v0i, u0i]
       selected = ~on_robot
       scheme = "background"
+
+      # Gripper-open frame filter: only evaluate on frames where gripper
+      # is open (>= 0.05, matching compute_depth.py where closed < 0.05).
+      # This ensures:
+      #   - No background occlusion by closing fingers
+      #   - Cleanest metric for T_cam_ee quality
+      gripper_pos = scene_constants['robot']['gripper_positions']
+      gripper_open_frames = gripper_pos >= 0.05
+      n_open = gripper_open_frames.sum()
+      print(f"    🔓 [{cam_id}] Gripper-open frames: {n_open}/{len(gripper_pos)}"
+            f"  mask: {mask_src}")
     else:
       # Scheme A: static camera — select GRIPPER-ONLY tracks
       # IMPORTANT: Only the gripper (ghost body) moves rigidly with T_ee(t).
@@ -767,7 +792,7 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
             f"check Stage 3 extrinsics quality.")
       continue
 
-    anchors[cam_id] = {
+    anchor_data = {
         'P_cam0': torch.tensor(P_cam0, dtype=torch.float32, device=device),
         'tracks_2d': torch.tensor(
             tracks[:, sel_idx], dtype=torch.float32, device=device),
@@ -775,6 +800,10 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
             vis[:, sel_idx], dtype=torch.bool, device=device),
         'scheme': scheme,
     }
+    if scheme == "background":
+      anchor_data['gripper_open_frames'] = torch.tensor(
+          gripper_open_frames, dtype=torch.bool, device=device)
+    anchors[cam_id] = anchor_data
 
   return anchors
 
@@ -856,6 +885,10 @@ def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device,
   # Mean pixel reprojection error (L1: |Δu| + |Δv|)
   pixel_err = (pred - targets).abs().sum(dim=-1)            # (T, N)
   valid = vis & (Z > 0.05)
+
+  # For wrist background: only evaluate on gripper-open frames
+  if 'gripper_open_frames' in anchor:
+    valid = valid & anchor['gripper_open_frames'][:, None]
 
   if valid.any():
     err = pixel_err[valid]
@@ -986,9 +1019,9 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
   # --- Track model error (if anchors provided) ---
   if track_anchors:
     T_ee_t = torch.tensor(T_ee_all, dtype=torch.float32, device=device)
-    total_mean = 0.0
-    total_median = 0.0
-    n_cam = 0
+    # Per-scheme accumulators
+    bg_means, bg_medians = [], []
+    grip_means, grip_medians = [], []
     for cam_id in track_anchors:
       T_opt = torch.tensor(
           scene_state[cam_id]["base_extrinsic"],
@@ -1000,14 +1033,34 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
       l_mean, l_median = compute_track_reproj_loss(
           track_anchors[cam_id], T_opt, K_t, T_ee_t, scheme, device,
           return_median=True)
-      total_mean += l_mean.item()
-      total_median += l_median.item()
-      n_cam += 1
-    metrics["track_reproj_mean_px"] = total_mean / max(n_cam, 1)
-    metrics["track_reproj_median_px"] = total_median / max(n_cam, 1)
+      if scheme == "background":
+        bg_means.append(l_mean.item())
+        bg_medians.append(l_median.item())
+      else:
+        grip_means.append(l_mean.item())
+        grip_medians.append(l_median.item())
+
+    # Primary metric: wrist background (cleanest test of T_cam_ee)
+    metrics["track_reproj_wrist_bg_mean_px"] = (
+        float(np.mean(bg_means)) if bg_means else float("nan"))
+    metrics["track_reproj_wrist_bg_median_px"] = (
+        float(np.mean(bg_medians)) if bg_medians else float("nan"))
+    # Secondary metric: static camera gripper
+    metrics["track_reproj_static_gripper_mean_px"] = (
+        float(np.mean(grip_means)) if grip_means else float("nan"))
+    # Overall (all cameras, backward compat)
+    all_means = bg_means + grip_means
+    all_medians = bg_medians + grip_medians
+    metrics["track_reproj_mean_px"] = (
+        float(np.mean(all_means)) if all_means else float("nan"))
+    metrics["track_reproj_median_px"] = (
+        float(np.mean(all_medians)) if all_medians else float("nan"))
   else:
     metrics["track_reproj_mean_px"] = float("nan")
     metrics["track_reproj_median_px"] = float("nan")
+    metrics["track_reproj_wrist_bg_mean_px"] = float("nan")
+    metrics["track_reproj_wrist_bg_median_px"] = float("nan")
+    metrics["track_reproj_static_gripper_mean_px"] = float("nan")
 
   # --- Extrinsic magnitude from identity ---
   for cam_id in scene_constants["camera"]:
@@ -1029,15 +1082,22 @@ def print_metrics(metrics, stage_name=""):
   overlap = metrics.get("bg_overlap_pct", float("nan"))
   track = metrics.get("track_reproj_mean_px", float("nan"))
   track_med = metrics.get("track_reproj_median_px", float("nan"))
+  wrist_bg = metrics.get("track_reproj_wrist_bg_mean_px", float("nan"))
+  wrist_bg_med = metrics.get("track_reproj_wrist_bg_median_px", float("nan"))
+  static_grip = metrics.get("track_reproj_static_gripper_mean_px", float("nan"))
 
   header = f"📊 Metrics after {stage_name}" if stage_name else "📊 Metrics"
   print(f"\n{header}")
   print(f"  Chamfer total: {chamfer:.4f}")
   print(f"  Robot depth:   cam1={rob1:.4f}  cam2={rob2:.4f}  wrist={robw:.4f}")
   print(f"  BG overlap:    {overlap:.1f}%")
-  if not np.isnan(track):
-    med_str = f"  median={track_med:.2f}" if not np.isnan(track_med) else ""
-    print(f"  Track reproj:  mean={track:.2f} px{med_str}")
+  if not np.isnan(wrist_bg):
+    med_s = f"  median={wrist_bg_med:.2f}" if not np.isnan(wrist_bg_med) else ""
+    print(f"  Track wristBG: mean={wrist_bg:.2f} px{med_s}  ★ primary")
+  if not np.isnan(static_grip):
+    print(f"  Track gripper: mean={static_grip:.2f} px")
+  if not np.isnan(track) and np.isnan(wrist_bg) and np.isnan(static_grip):
+    print(f"  Track reproj:  mean={track:.2f} px")
 
   shift_keys = [k for k in sorted(metrics.keys()) if k.startswith("shift_mm_")]
   if shift_keys:
