@@ -779,7 +779,8 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
   return anchors
 
 
-def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device):
+def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device,
+                              return_median=False):
   """Differentiable 2D track reprojection loss for one camera.
 
   Scheme A (robot tracks on static camera):
@@ -795,7 +796,7 @@ def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device):
       P_cam(t) = inv(T_ee(t) @ T_cam_ee) @ P_world
 
   Both schemes produce predicted 2D positions via standard pinhole projection,
-  compared to tracked positions using Huber loss for robustness.
+  compared to tracked positions using L1 pixel error.
 
   Args:
     anchor: Dict from prepare_track_anchors: P_cam0, tracks_2d, vis, scheme.
@@ -805,9 +806,10 @@ def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device):
     T_ee_all: (T, 4, 4) FK transforms for all timesteps.
     scheme: "robot" or "background".
     device: Torch device.
+    return_median: If True, return (mean, median) tuple for evaluation.
 
   Returns:
-    Scalar loss (Huber-robust mean reprojection error in pixel space).
+    Scalar mean L1 loss, or (mean, median) tuple when return_median=True.
   """
   P_cam0 = anchor['P_cam0']       # (N, 4)
   targets = anchor['tracks_2d']   # (T, N, 2)
@@ -842,7 +844,8 @@ def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device):
     P_cam_all = T_world_to_cam_all @ P_world.unsqueeze(0)  # (T, 4, N)
 
   else:
-    return torch.tensor(0.0, device=device)
+    zero = torch.tensor(0.0, device=device)
+    return (zero, zero) if return_median else zero
 
   # Pinhole projection → predicted 2D
   Z = P_cam_all[:, 2, :].clamp(min=1e-4)                   # (T, N)
@@ -855,9 +858,13 @@ def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device):
   valid = vis & (Z > 0.05)
 
   if valid.any():
-    return pixel_err[valid].mean()
+    err = pixel_err[valid]
+    if return_median:
+      return err.mean(), err.median()
+    return err.mean()
 
-  return torch.tensor(0.0, device=device)
+  zero = torch.tensor(0.0, device=device)
+  return (zero, zero) if return_median else zero
 
 
 # ---------------------------------------------------------------------------
@@ -964,7 +971,8 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
   # --- Track model error (if anchors provided) ---
   if track_anchors:
     T_ee_t = torch.tensor(T_ee_all, dtype=torch.float32, device=device)
-    total_err = 0.0
+    total_mean = 0.0
+    total_median = 0.0
     n_cam = 0
     for cam_id in track_anchors:
       T_opt = torch.tensor(
@@ -974,13 +982,17 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
           scene_constants["camera"][cam_id]["K_mat"],
           dtype=torch.float32, device=device)
       scheme = track_anchors[cam_id]["scheme"]
-      l = compute_track_reproj_loss(
-          track_anchors[cam_id], T_opt, K_t, T_ee_t, scheme, device)
-      total_err += l.item()
+      l_mean, l_median = compute_track_reproj_loss(
+          track_anchors[cam_id], T_opt, K_t, T_ee_t, scheme, device,
+          return_median=True)
+      total_mean += l_mean.item()
+      total_median += l_median.item()
       n_cam += 1
-    metrics["track_reproj_mean_px"] = total_err / max(n_cam, 1)
+    metrics["track_reproj_mean_px"] = total_mean / max(n_cam, 1)
+    metrics["track_reproj_median_px"] = total_median / max(n_cam, 1)
   else:
     metrics["track_reproj_mean_px"] = float("nan")
+    metrics["track_reproj_median_px"] = float("nan")
 
   # --- Extrinsic magnitude from identity ---
   for cam_id in scene_constants["camera"]:
@@ -1002,6 +1014,7 @@ def print_metrics(metrics, stage_name=""):
   robw = metrics.get("robot_loss_wrist", float("nan"))
   overlap = metrics.get("bg_overlap_pct", float("nan"))
   track = metrics.get("track_reproj_mean_px", float("nan"))
+  track_med = metrics.get("track_reproj_median_px", float("nan"))
 
   header = f"📊 Metrics after {stage_name}" if stage_name else "📊 Metrics"
   print(f"\n{header}")
@@ -1009,7 +1022,8 @@ def print_metrics(metrics, stage_name=""):
   print(f"  Robot depth:   cam1={rob1:.4f}  cam2={rob2:.4f}  wrist={robw:.4f}")
   print(f"  BG overlap:    {overlap:.1f}%")
   if not np.isnan(track):
-    print(f"  Track reproj:  {track:.2f} px")
+    med_str = f"  median={track_med:.2f}" if not np.isnan(track_med) else ""
+    print(f"  Track reproj:  mean={track:.2f} px{med_str}")
 
   shift_keys = [k for k in sorted(metrics.keys()) if k.startswith("shift_mm_")]
   if shift_keys:
