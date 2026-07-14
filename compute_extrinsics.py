@@ -727,6 +727,18 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
     depth_0 = cam_data['raw_depth'][0].astype(np.float32)
     z0 = depth_0[v0i, u0i]
 
+    # Diagnostic: show how many points survive each filter
+    n_total = len(u0)
+    n_not_robot = selected.sum()
+    n_vis0 = (selected & vis[0]).sum()
+    n_has_depth = (z0 > 0.01).sum()
+    n_depth_range = ((z0 > 0.05) & (z0 < 3.0)).sum()
+    print(f"    📊 [{cam_id}] Filter chain: total={n_total} "
+          f"→ not_gripper={n_not_robot} "
+          f"→ vis[0]={n_vis0} "
+          f"→ has_depth(>0.01)={n_has_depth} "
+          f"→ depth_range(0.05-3m)={n_depth_range}")
+
     has_depth = (z0 > 0.05) & (z0 < 3.0)
     selected = selected & vis[0] & has_depth
 
