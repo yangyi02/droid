@@ -125,20 +125,17 @@ CONFIGS = {
     # ── Secondary ablations (Phase 3) ──
     "E8":  _cfg("Tracks (CoTracker, grid=15)",
                track_weight=0.001, tracker="cotracker", grid_size=15),
-    "E9":  _cfg("Tracks (CoTracker, grid=50)",
-               track_weight=0.001, tracker="cotracker", grid_size=50),
-    "E10": _cfg("Stage 2 multi-restart", stage2_restarts=True),
+    # E9 removed: Large grid (50) confirmed worse across all metrics. Keep E8 (grid=15) only.
+    # E10 removed: Stage 2 multi-restart confirmed marginal benefit, not worth 2.3x time cost.
     "E12": _cfg("PyBullet + Tracks (CoTracker, w=0.001)",
                backend="pybullet", stage2_restarts=True,
                track_weight=0.001, tracker="cotracker"),
 
     # ── Learning rate sweep (Phase 4) ──
     "E13": _cfg("lr=0.0003 (3x lower)", lr=0.0003),
-    "E14": _cfg("lr=0.003  (3x higher)", lr=0.003),
+    # E14 removed: lr=0.003 (3x higher) confirmed no benefit over baseline.
 
-    # ── Optimization steps sweep (Phase 5) ──
-    "E15": _cfg("n_steps=200 (short)", n_steps=200),
-    "E16": _cfg("n_steps=1000 (long)", n_steps=1000),
+    # E15, E16 removed: n_steps confirmed at 500. 200 and 1000 both unnecessary.
 
     # ── Stage 4 fine-tuning (Phase 6) ──
     "E17": _cfg("Baseline + Stage 4 fine-tune",
@@ -149,10 +146,10 @@ CONFIGS = {
 
     # ── Robot weight sweep (Phase 7) ──
     "E19": _cfg("robot_weight=0.1 (weak robot)", robot_weight=0.1),
-    "E20": _cfg("robot_weight=10.0 (strong robot)", robot_weight=10.0),
+    # E20 removed: robot_weight=10.0 confirmed too strong, Chamfer severely degrades.
 
     # ── Chamfer point count sweep (Phase 8) ──
-    "E21": _cfg("chamfer_n_points=1000 (sparse)", chamfer_n_points=1000),
+    # E21 removed: chamfer_n_points=1000 confirmed no benefit over default 2000.
     "E22": _cfg("chamfer_n_points=4000 (dense)", chamfer_n_points=4000),
 
     # ── Eval grid_size sweep (Phase 9) ──
