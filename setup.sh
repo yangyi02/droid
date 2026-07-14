@@ -22,7 +22,7 @@ hf_get() {
   if need_download "$dest"; then
     log "↓ $file"
     rm -f "$dest"
-    huggingface-cli download "$repo" "$file" --local-dir "$dir" --quiet
+    hf download "$repo" "$file" --local-dir "$dir" --quiet
     log "✓ $file ($(du -h "$dest" | cut -f1))"
   else
     log "· $file (cached)"
@@ -62,7 +62,7 @@ log "✓ installed"
 # ── 3. Model weights ────────────────────────────────────────
 
 step "3/4" "Model weights"
-export HF_HUB_ENABLE_HF_TRANSFER=1
+export HF_XET_HIGH_PERFORMANCE=1
 
 mkdir -p "$TP/s2m2/weights/pretrain_weights" \
          "$TP/co-tracker/weights" \
