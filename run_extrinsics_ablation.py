@@ -109,8 +109,8 @@ CONFIGS = {
     "E0":  _cfg("Baseline: yourdfpy, Chamfer+Robot, no tracks"),
     "E1":  _cfg("PyBullet backend",
                backend="pybullet", stage2_restarts=True),
-    "E2":  _cfg("No Chamfer (robot-only)", chamfer=False),
-    "E3":  _cfg("No Robot depth (Chamfer-only)", robot_weight=0.0),
+    # E2, E3 removed: Loss composition ablation confirmed.
+    # Both Chamfer and Robot losses are essential (see ablation_summary.md).
     "E4":  _cfg("Chamfer+Robot+Tracks (CoTracker, w=0.001)",
                track_weight=0.001, tracker="cotracker"),
     "E5":  _cfg("Chamfer+Robot+Tracks (TAPNext, w=0.001)",
