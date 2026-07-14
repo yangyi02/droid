@@ -655,39 +655,29 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
 
     if is_wrist:
       # Scheme B: wrist camera — select BACKGROUND tracks
-      # Use SAM consensus gripper mask (from gripper_mask.npz) if available.
-      # NOTE: sam_real_masks is (T, H, W) but only closed-gripper frames
-      # have a non-zero mask (same static consensus mask broadcast).
-      # We extract the consensus mask from any non-empty frame.
+      # Use SAM consensus gripper mask (from gripper_mask.npz).
+      # sam_real_masks is (T, H, W) with mask only at closed-gripper frames
+      # (same static consensus mask broadcast). OR across time gives the mask.
       sam_masks = cam_data.get('sam_real_masks')
-      if sam_masks is not None:
-        consensus = sam_masks.any(axis=0)  # OR across time → static mask
-      else:
-        consensus = None
+      if sam_masks is None or not sam_masks.any():
+        print(f"    ⚠️ [{cam_id}] No SAM gripper mask, skipping wrist track eval.")
+        continue
 
-      if consensus is not None and consensus.any():
-        gripper_mask_t0 = consensus
-        mask_src = "SAM"
-      else:
-        gripper_mask_t0 = pb_renderer.render_mask(ext_t0, K, w_img, h_img)
-        mask_src = "PyBullet"
+      consensus = sam_masks.any(axis=0)  # static gripper mask in camera frame
       kernel = np.ones((15, 15), np.uint8)
       robot_mask_d = cv2.dilate(
-          gripper_mask_t0.astype(np.uint8), kernel, iterations=1) > 0
+          consensus.astype(np.uint8), kernel, iterations=1) > 0
       on_robot = robot_mask_d[v0i, u0i]
       selected = ~on_robot
       scheme = "background"
 
-      # Gripper-open frame filter: only evaluate on frames where gripper
-      # is open (>= 0.05, matching compute_depth.py where closed < 0.05).
-      # This ensures:
-      #   - No background occlusion by closing fingers
-      #   - Cleanest metric for T_cam_ee quality
+      # Only evaluate on closed-gripper frames (< 0.05) where the SAM mask
+      # is accurate. No PyBullet rendering needed at all.
       gripper_pos = scene_constants['robot']['gripper_positions']
-      gripper_open_frames = gripper_pos >= 0.05
-      n_open = gripper_open_frames.sum()
-      print(f"    🔓 [{cam_id}] Gripper-open frames: {n_open}/{len(gripper_pos)}"
-            f"  mask: {mask_src}")
+      gripper_closed_frames = gripper_pos < 0.05
+      n_closed = gripper_closed_frames.sum()
+      print(f"    🔒 [{cam_id}] Closed-gripper eval frames: "
+            f"{n_closed}/{len(gripper_pos)}  mask: SAM")
     else:
       # Scheme A: static camera — select GRIPPER-ONLY tracks
       # IMPORTANT: Only the gripper (ghost body) moves rigidly with T_ee(t).
@@ -801,8 +791,8 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
         'scheme': scheme,
     }
     if scheme == "background":
-      anchor_data['gripper_open_frames'] = torch.tensor(
-          gripper_open_frames, dtype=torch.bool, device=device)
+      anchor_data['eval_frame_mask'] = torch.tensor(
+          gripper_closed_frames, dtype=torch.bool, device=device)
     anchors[cam_id] = anchor_data
 
   return anchors
@@ -886,9 +876,10 @@ def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device,
   pixel_err = (pred - targets).abs().sum(dim=-1)            # (T, N)
   valid = vis & (Z > 0.05)
 
-  # For wrist background: only evaluate on gripper-open frames
-  if 'gripper_open_frames' in anchor:
-    valid = valid & anchor['gripper_open_frames'][:, None]
+  # For wrist background: only evaluate on closed-gripper frames
+  # where SAM mask is accurate
+  if 'eval_frame_mask' in anchor:
+    valid = valid & anchor['eval_frame_mask'][:, None]
 
   if valid.any():
     err = pixel_err[valid]
