@@ -73,6 +73,7 @@ _DEFAULTS = {
     "stage2_restarts": False,
     "lr": 0.001,
     "n_steps": 500,
+    "chamfer_n_points": 2000,
     "stage4": False,
     "stage4_lr": 0.0001,
     "stage4_steps": 500,
@@ -134,6 +135,10 @@ CONFIGS = {
     # ── Robot weight sweep (Phase 7) ──
     "E19": _cfg("robot_weight=0.1 (weak robot)", robot_weight=0.1),
     "E20": _cfg("robot_weight=10.0 (strong robot)", robot_weight=10.0),
+
+    # ── Chamfer point count sweep (Phase 8) ──
+    "E21": _cfg("chamfer_n_points=1000 (sparse)", chamfer_n_points=1000),
+    "E22": _cfg("chamfer_n_points=4000 (dense)", chamfer_n_points=4000),
 }
 
 
@@ -209,6 +214,8 @@ def run_single(episode_id, cfg, device, metadata, output_root,
   s3_lr = cfg.get("lr", 0.001)
   s3_steps = cfg.get("n_steps", 500)
 
+  s3_cnp = cfg.get("chamfer_n_points", 2000)
+
   if use_pybullet:
     from core.pybullet_extrinsics import run_global_joint_alignment_pybullet
     scene_state = run_global_joint_alignment_pybullet(
@@ -222,6 +229,7 @@ def run_single(episode_id, cfg, device, metadata, output_root,
           robot_weight=cfg["robot_weight"],
           track_anchors=track_anchors,
           track_weight=cfg["track_weight"],
+          chamfer_n_points=s3_cnp,
           stage_name="Stage 3b (Track refine)")
   else:
     scene_state = run_global_joint_alignment(
@@ -230,7 +238,8 @@ def run_single(episode_id, cfg, device, metadata, output_root,
         chamfer_weight=chamfer_w,
         robot_weight=cfg["robot_weight"],
         track_anchors=track_anchors,
-        track_weight=cfg["track_weight"])
+        track_weight=cfg["track_weight"],
+        chamfer_n_points=s3_cnp)
 
   # ── Stage 4: Optional fine-tuning pass ──
   if cfg.get("stage4", False):
@@ -244,6 +253,7 @@ def run_single(episode_id, cfg, device, metadata, output_root,
         robot_weight=s4_rw,
         track_anchors=track_anchors,
         track_weight=cfg["track_weight"],
+        chamfer_n_points=s3_cnp,
         stage_name="Stage 4 (Fine-Tune)")
 
   # ── Evaluate: base metrics ──

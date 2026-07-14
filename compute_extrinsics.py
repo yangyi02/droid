@@ -401,7 +401,7 @@ def batched_chamfer_distance(p1, p2, device):
   return loss, overlap_ratio.item()
 
 
-def get_cam_points_local_t(t, cam_data, device):
+def get_cam_points_local_t(t, cam_data, device, n_points=2000):
   """Extract downsampled scene point cloud from a single depth frame."""
   depth = cam_data["raw_depth"][t].astype(np.float32)
   K_mat_np = cam_data["K_mat"]
@@ -419,7 +419,7 @@ def get_cam_points_local_t(t, cam_data, device):
   if P_cam.shape[1] < 100:
     return None
 
-  idx = np.random.choice(P_cam.shape[1], 2000, replace=(P_cam.shape[1] <= 2000))
+  idx = np.random.choice(P_cam.shape[1], n_points, replace=(P_cam.shape[1] <= n_points))
   return torch.tensor(P_cam[:, idx], dtype=torch.float32, device=device)
 
 
@@ -427,6 +427,7 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
                                 lr=0.001, n_steps=500,
                                 chamfer_weight=1.0, robot_weight=1.0,
                                 track_anchors=None, track_weight=0.0,
+                                chamfer_n_points=2000,
                                 stage_name="Stage 3"):
   """Global joint optimization: Chamfer + Robot depth + Wrist depth + optional 2D tracks.
 
@@ -469,9 +470,9 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
   cache_Pc1, cache_Pc2, cache_Pcw, cache_Tee = [], [], [], []
 
   for t in range(n_frames):
-    pc1 = get_cam_points_local_t(t, scene_constants['camera'][cam1], device)
-    pc2 = get_cam_points_local_t(t, scene_constants['camera'][cam2], device)
-    pcw = get_cam_points_local_t(t, scene_constants['camera'][wrist_cam], device)
+    pc1 = get_cam_points_local_t(t, scene_constants['camera'][cam1], device, n_points=chamfer_n_points)
+    pc2 = get_cam_points_local_t(t, scene_constants['camera'][cam2], device, n_points=chamfer_n_points)
+    pcw = get_cam_points_local_t(t, scene_constants['camera'][wrist_cam], device, n_points=chamfer_n_points)
 
     if pc1 is not None and pc2 is not None and pcw is not None:
       cache_Pc1.append(pc1)
