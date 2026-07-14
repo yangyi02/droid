@@ -52,7 +52,7 @@ step "2/4" "Python dependencies"
 pip install -q \
     pybullet opencv-python scipy tqdm h5py \
     mediapy yourdfpy plotly pyrender \
-    "huggingface_hub[cli,hf_transfer]"
+    huggingface_hub hf_transfer
 pip install -q git+https://github.com/facebookresearch/segment-anything.git
 pip install -q "$TP/co-tracker"
 pip install -q git+https://github.com/google-deepmind/tapnet.git 2>/dev/null || true
