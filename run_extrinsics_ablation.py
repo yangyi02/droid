@@ -278,7 +278,7 @@ def run_single(episode_id, cfg, device, metadata, output_root,
   # ── Evaluate: base metrics ──
   metrics = evaluate_extrinsics(
       scene_constants, scene_state, device,
-      tensor_renderer=tensor_renderer)
+      pb_renderer=pb_renderer)
   metrics["config_id"] = config_id
   metrics["episode_id"] = episode_id
   metrics["desc"] = cfg["desc"]
@@ -302,7 +302,7 @@ def run_single(episode_id, cfg, device, metadata, output_root,
           sc_tmp, scene_state, pb_renderer, device)
       m_tmp = evaluate_extrinsics(
           sc_tmp, scene_state, device,
-          tensor_renderer=tensor_renderer,
+          pb_renderer=pb_renderer,
           track_anchors=anchors_tmp)
       metrics[key] = m_tmp.get("track_reproj_mean_px", float("nan"))
       metrics[key_med] = m_tmp.get("track_reproj_median_px", float("nan"))

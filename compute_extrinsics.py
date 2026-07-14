@@ -871,7 +871,7 @@ def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device,
 # 11b. Evaluate Extrinsics Quality
 # ---------------------------------------------------------------------------
 def evaluate_extrinsics(scene_constants, scene_state, device,
-                        tensor_renderer=None, track_anchors=None):
+                        pb_renderer=None, track_anchors=None):
   """Compute extrinsics quality metrics without re-running optimization.
 
   Can be called after any stage to monitor calibration quality.
@@ -880,8 +880,8 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
     scene_constants: Scene data dict.
     scene_state: Current extrinsics state.
     device: Torch device.
-    tensor_renderer: Optional TensorRobotRenderer to reuse. If None, one
-        is created temporarily (slower but standalone).
+    pb_renderer: Optional PyBulletRenderer to reuse. If None, one
+        is created temporarily.
     track_anchors: Optional track anchors for 2D reprojection eval.
 
   Returns:
@@ -889,9 +889,9 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
     track_reproj_mean_px, shift_mm_*.
   """
   own_renderer = False
-  if tensor_renderer is None:
-    from core.physics import TensorRobotRenderer
-    tensor_renderer = TensorRobotRenderer(device=device)
+  if pb_renderer is None:
+    from core.physics import PyBulletRenderer
+    pb_renderer = PyBulletRenderer()
     own_renderer = True
 
   wrist_cam = scene_constants["meta"]["wrist_serial"]
@@ -902,22 +902,37 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
 
   metrics = {}
 
-  # --- Robot depth losses ---
+  # --- Robot depth losses (PyBullet rendered depth vs sensor depth) ---
   for cam_id, key_prefix in [(cam1, "cam1"), (cam2, "cam2"),
                               (wrist_cam, "wrist")]:
     try:
-      batch_X, batch_obs = extract_robot_physical_tensors(
-          cam_id, scene_constants, tensor_renderer)
-      T_opt = torch.tensor(
-          scene_state[cam_id]["base_extrinsic"],
-          dtype=torch.float32, device=device)
-      K_t = torch.tensor(
-          scene_constants["camera"][cam_id]["K_mat"],
-          dtype=torch.float32, device=device)
-      tol = float("inf") if cam_id == wrist_cam else 0.15
-      loss = compute_robot_loss(batch_X, T_opt, K_t, batch_obs,
-                                depth_tolerance=tol)
-      metrics[f"robot_loss_{key_prefix}"] = loss.item()
+      is_wrist = (cam_id == wrist_cam)
+      K = scene_constants["camera"][cam_id]["K_mat"]
+      tol = float("inf") if is_wrist else 0.15
+      diffs = []
+
+      for t in range(n_frames):
+        joints = scene_constants["robot"]["joint_positions"][t]
+        gripper = scene_constants["robot"]["gripper_positions"][t]
+        pb_renderer.update_robot_pose(joints, gripper_state=gripper)
+
+        ext_t = scene_state[cam_id]["extrinsics"][t]
+        h_img, w_img = scene_constants["camera"][cam_id]["raw_depth"][t].shape[:2]
+
+        d_render = pb_renderer.render_depth(ext_t, K, w_img, h_img)
+        d_obs = scene_constants["camera"][cam_id]["raw_depth"][t].astype(np.float32)
+
+        robot_px = d_render > 0.01
+        obs_valid = d_obs > 0.01
+        valid = robot_px & obs_valid
+        if valid.any():
+          diff = np.abs(d_render[valid] - d_obs[valid])
+          if tol < float("inf"):
+            diff = diff[diff < tol]
+          if len(diff) > 0:
+            diffs.append(diff.mean())
+
+      metrics[f"robot_loss_{key_prefix}"] = float(np.mean(diffs)) if diffs else float("nan")
     except Exception as e:
       metrics[f"robot_loss_{key_prefix}"] = float("nan")
 
@@ -1000,8 +1015,7 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
     metrics[f"shift_mm_{cam_id}"] = float(np.linalg.norm(T[:3, 3]) * 1000)
 
   if own_renderer:
-    del tensor_renderer
-    torch.cuda.empty_cache()
+    del pb_renderer
 
   return metrics
 
