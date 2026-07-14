@@ -64,7 +64,7 @@ mkdir -p "$S2M2_WEIGHTS"
 S2M2_PTH="$S2M2_WEIGHTS/CH384NTR3.pth"
 if [ ! -f "$S2M2_PTH" ] || [ "$(stat -c%s "$S2M2_PTH" 2>/dev/null || echo 0)" -lt $((100 * 1024 * 1024)) ]; then
     echo "  ⬇️  Downloading S2M2 weights..."
-    wget -q -O "$S2M2_PTH" "https://huggingface.co/minimok/s2m2/resolve/main/CH384NTR3.pth"
+    wget --progress=bar:force -O "$S2M2_PTH" "https://huggingface.co/minimok/s2m2/resolve/main/CH384NTR3.pth"
     echo "  ✅ S2M2 weights downloaded."
 else
     echo "  ⏭️  S2M2 weights already exist, skipping."
@@ -76,7 +76,7 @@ mkdir -p "$COTRACKER_WEIGHTS"
 COTRACKER_PTH="$COTRACKER_WEIGHTS/cotracker3_offline.pth"
 if [ ! -f "$COTRACKER_PTH" ]; then
     echo "  ⬇️  Downloading CoTracker3 weights..."
-    wget -q -O "$COTRACKER_PTH" \
+    wget --progress=bar:force -O "$COTRACKER_PTH" \
         "https://huggingface.co/facebook/cotracker3/resolve/main/scaled_offline.pth"
     echo "  ✅ CoTracker3 weights downloaded."
 else
@@ -89,7 +89,7 @@ mkdir -p "$TAPNEXT_WEIGHTS"
 TAPNEXT_PTH="$TAPNEXT_WEIGHTS/tapnextpp_512.ckpt"
 if [ ! -f "$TAPNEXT_PTH" ]; then
     echo "  ⬇️  Downloading TAPNext++ 512 checkpoint..."
-    wget -q -O "$TAPNEXT_PTH" \
+    wget --progress=bar:force -O "$TAPNEXT_PTH" \
         "https://storage.googleapis.com/gresearch/tapnextpp/tapnextpp_512.ckpt"
     echo "  ✅ TAPNext++ weights downloaded."
 else
@@ -102,7 +102,7 @@ mkdir -p "$SAM_WEIGHTS"
 SAM_PTH="$SAM_WEIGHTS/sam_vit_h_4b8939.pth"
 if [ ! -f "$SAM_PTH" ]; then
     echo "  ⬇️  Downloading SAM ViT-H weights..."
-    wget -q -O "$SAM_PTH" \
+    wget --progress=bar:force -O "$SAM_PTH" \
         "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
     echo "  ✅ SAM weights downloaded."
 else
