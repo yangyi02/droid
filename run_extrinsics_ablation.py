@@ -139,6 +139,10 @@ CONFIGS = {
     # ── Chamfer point count sweep (Phase 8) ──
     "E21": _cfg("chamfer_n_points=1000 (sparse)", chamfer_n_points=1000),
     "E22": _cfg("chamfer_n_points=4000 (dense)", chamfer_n_points=4000),
+
+    # ── Eval grid_size sweep (Phase 9) ──
+    "E23": _cfg("grid_size=15 (sparse eval)", grid_size=15),
+    "E24": _cfg("grid_size=50 (dense eval)", grid_size=50),
 }
 
 
@@ -269,6 +273,7 @@ def run_single(episode_id, cfg, device, metadata, output_root,
   from compute_2d_tracks import init_tracker, run_2d_tracking
   if tracker_cache is None:
     tracker_cache = {}
+  eval_grid = cfg.get("grid_size", 30)
   for trk_method in ("cotracker", "tapnext"):
     key = f"track_reproj_{trk_method}_px"
     try:
@@ -276,7 +281,7 @@ def run_single(episode_id, cfg, device, metadata, output_root,
         tracker_cache[trk_method] = init_tracker(trk_method, device)
       sc_tmp = copy.deepcopy(scene_constants)
       sc_tmp = run_2d_tracking(
-          tracker_cache[trk_method], sc_tmp, device, grid_size=30)
+          tracker_cache[trk_method], sc_tmp, device, grid_size=eval_grid)
       anchors_tmp = prepare_track_anchors(
           sc_tmp, scene_state, pb_renderer, device)
       m_tmp = evaluate_extrinsics(
