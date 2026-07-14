@@ -124,30 +124,21 @@ class TAPNextBackend:
 
     Args:
       device: Torch device.
-      ckpt_path: Path to checkpoint. If None, downloads from GCS
-          to third_party/tapnext_weights/.
+      ckpt_path: Path to checkpoint. If None, defaults to
+          third_party/tapnext_weights/tapnextpp_512.ckpt.
     """
-    # Ensure tapnet is importable
-    try:
-      from tapnet.tapnextpp.votsp2026.model import TAPNextPP
-    except ImportError:
-      print("  ⚠️ tapnet not installed, installing from GitHub...")
-      os.system("pip install -q git+https://github.com/google-deepmind/tapnet.git")
-      os.system("pip install -q git+https://github.com/google-deepmind/recurrentgemma.git@main")
-      from tapnet.tapnextpp.votsp2026.model import TAPNextPP
+    from tapnet.tapnextpp.votsp2026.model import TAPNextPP
 
     if ckpt_path is None:
-      weights_dir = os.path.join(
+      ckpt_path = os.path.join(
           os.path.dirname(os.path.abspath(__file__)),
-          "third_party", "tapnext_weights")
-      os.makedirs(weights_dir, exist_ok=True)
-      ckpt_path = os.path.join(weights_dir, "tapnextpp_512.ckpt")
-      if not os.path.exists(ckpt_path):
-        print(f"  ⬇️  Downloading TAPNext++ 512 checkpoint...")
-        os.system(
-            f"wget -q -O '{ckpt_path}' "
-            "https://storage.googleapis.com/gresearch/tapnextpp/tapnextpp_512.ckpt"
-        )
+          "third_party", "tapnext_weights", "tapnextpp_512.ckpt")
+
+    if not os.path.exists(ckpt_path):
+      raise FileNotFoundError(
+          f"TAPNext++ checkpoint not found at {ckpt_path}. "
+          "Please run setup.sh first."
+      )
 
     self.model_resolution = 512
     self.model = TAPNextPP.from_checkpoint(
@@ -156,8 +147,7 @@ class TAPNextBackend:
     )
     self.device = device
     self.name = "TAPNext++"
-    print(f"  ✅ {self.name} loaded on {device}"
-          f" (resolution={self.model_resolution})")
+    print(f"  ✅ {self.name} loaded on {device} (resolution={self.model_resolution})")
 
   @torch.no_grad()
   def track(self, video_rgb, grid_size=30):
