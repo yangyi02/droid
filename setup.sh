@@ -1,101 +1,139 @@
 #!/bin/bash
-# DROID Pipeline — One-time setup
-# Usage: bash setup.sh
+# DROID Pipeline Setup Script
+# Run once after cloning the repo to set up all dependencies.
+#
+# Usage:
+#   bash setup.sh
+#
+# If you cloned WITHOUT --recurse-submodules, this script will init them for you.
+
 set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+THIRD_PARTY="$SCRIPT_DIR/third_party"
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TP="$REPO/third_party"
+echo "================================================"
+echo "🚀 DROID Pipeline Setup"
+echo "================================================"
 
-# ── Helpers ──────────────────────────────────────────────────
+# ---------------------------------------------------------
+# 1. Git Submodules (s2m2, co-tracker, PointWorld)
+# ---------------------------------------------------------
+echo ""
+echo "📦 [1/4] Initializing git submodules..."
+cd "$SCRIPT_DIR"
+git submodule update --init --recursive
+echo "✅ Submodules ready."
 
-log()  { echo "  $1"; }
-step() { echo ""; echo "[$1] $2"; }
-
-need_download() {
-  local f="$1" min="${2:-1000}"
-  [[ ! -f "$f" ]] || [[ "$(stat -c%s "$f" 2>/dev/null || echo 0)" -lt "$min" ]]
-}
-
-hf_get() {
-  local repo="$1" file="$2" dir="$3"
-  local dest="$dir/$file"
-  if need_download "$dest"; then
-    log "↓ $file"
-    rm -f "$dest"
-    hf download "$repo" "$file" --local-dir "$dir" --quiet
-    log "✓ $file ($(du -h "$dest" | cut -f1))"
-  else
-    log "· $file (cached)"
-  fi
-}
-
-wget_get() {
-  local url="$1" dest="$2"
-  if need_download "$dest"; then
-    log "↓ $(basename "$dest")"
-    wget --progress=bar:force -O "$dest" "$url"
-    log "✓ $(basename "$dest") ($(du -h "$dest" | cut -f1))"
-  else
-    log "· $(basename "$dest") (cached)"
-  fi
-}
-
-# ── 1. Submodules ────────────────────────────────────────────
-
-step "1/4" "Git submodules"
-cd "$REPO" && git submodule update --init --recursive
-log "✓ ready"
-
-# ── 2. Python packages ──────────────────────────────────────
-
-step "2/4" "Python dependencies"
+# ---------------------------------------------------------
+# 2. Python Dependencies
+# ---------------------------------------------------------
+echo ""
+echo "🐍 [2/4] Installing Python dependencies..."
 pip install -q \
-    pybullet opencv-python scipy tqdm h5py \
-    mediapy yourdfpy plotly pyrender \
-    huggingface_hub hf_transfer
+    pybullet \
+    opencv-python \
+    scipy \
+    tqdm \
+    h5py \
+    mediapy \
+    yourdfpy \
+    plotly \
+    pyrender
+
+# SAM is pip-installable directly from GitHub
 pip install -q git+https://github.com/facebookresearch/segment-anything.git
-pip install -q "$TP/co-tracker"
+
+# co-tracker deps (vggt is installed on-demand in compute_extrinsics.py)
+pip install -q "$THIRD_PARTY/co-tracker"
+
+# TAPNext++ deps (optional, for compute_2d_tracks.py --method tapnext)
 pip install -q git+https://github.com/google-deepmind/tapnet.git 2>/dev/null || true
 pip install -q git+https://github.com/google-deepmind/recurrentgemma.git@main 2>/dev/null || true
-log "✓ installed"
 
-# ── 3. Model weights ────────────────────────────────────────
+echo "✅ Python dependencies installed."
 
-step "3/4" "Model weights"
-export HF_XET_HIGH_PERFORMANCE=1
+# ---------------------------------------------------------
+# 3. Model Weights
+# ---------------------------------------------------------
+echo ""
+echo "⬇️  [3/4] Downloading model weights..."
 
-mkdir -p "$TP/s2m2/weights/pretrain_weights" \
-         "$TP/co-tracker/weights" \
-         "$TP/tapnext_weights" \
-         "$TP/sam_weights"
+# S2M2 weights
+S2M2_WEIGHTS="$THIRD_PARTY/s2m2/weights/pretrain_weights"
+mkdir -p "$S2M2_WEIGHTS"
+S2M2_PTH="$S2M2_WEIGHTS/CH384NTR3.pth"
+if [ ! -f "$S2M2_PTH" ] || [ "$(stat -c%s "$S2M2_PTH" 2>/dev/null || echo 0)" -lt $((100 * 1024 * 1024)) ]; then
+    echo "  ⬇️  Downloading S2M2 weights..."
+    wget -q -O "$S2M2_PTH" "https://huggingface.co/minimok/s2m2/resolve/main/CH384NTR3.pth"
+    echo "  ✅ S2M2 weights downloaded."
+else
+    echo "  ⏭️  S2M2 weights already exist, skipping."
+fi
 
-# HuggingFace models (via huggingface-cli, the only method that handles xet CDN)
-hf_get  minimok/s2m2         CH384NTR3.pth       "$TP/s2m2/weights/pretrain_weights"
-hf_get  facebook/cotracker3  scaled_offline.pth   "$TP/co-tracker/weights"
+# CoTracker weights
+COTRACKER_WEIGHTS="$THIRD_PARTY/co-tracker/weights"
+mkdir -p "$COTRACKER_WEIGHTS"
+COTRACKER_PTH="$COTRACKER_WEIGHTS/cotracker3_offline.pth"
+if [ ! -f "$COTRACKER_PTH" ]; then
+    echo "  ⬇️  Downloading CoTracker3 weights..."
+    wget -q -O "$COTRACKER_PTH" \
+        "https://huggingface.co/facebook/cotracker3/resolve/main/scaled_offline.pth"
+    echo "  ✅ CoTracker3 weights downloaded."
+else
+    echo "  ⏭️  CoTracker3 weights already exist, skipping."
+fi
 
-# CoTracker expects a specific filename
-CT_SRC="$TP/co-tracker/weights/scaled_offline.pth"
-CT_DST="$TP/co-tracker/weights/cotracker3_offline.pth"
-[[ -f "$CT_SRC" && ! -f "$CT_DST" ]] && cp "$CT_SRC" "$CT_DST"
+# TAPNext++ weights (512×512 model)
+TAPNEXT_WEIGHTS="$THIRD_PARTY/tapnext_weights"
+mkdir -p "$TAPNEXT_WEIGHTS"
+TAPNEXT_PTH="$TAPNEXT_WEIGHTS/tapnextpp_512.ckpt"
+if [ ! -f "$TAPNEXT_PTH" ]; then
+    echo "  ⬇️  Downloading TAPNext++ 512 checkpoint..."
+    wget -q -O "$TAPNEXT_PTH" \
+        "https://storage.googleapis.com/gresearch/tapnextpp/tapnextpp_512.ckpt"
+    echo "  ✅ TAPNext++ weights downloaded."
+else
+    echo "  ⏭️  TAPNext++ weights already exist, skipping."
+fi
 
-# Direct downloads (wget works fine for non-HF hosts)
-wget_get "https://storage.googleapis.com/gresearch/tapnextpp/tapnextpp_512.ckpt" \
-         "$TP/tapnext_weights/tapnextpp_512.ckpt"
-wget_get "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth" \
-         "$TP/sam_weights/sam_vit_h_4b8939.pth"
+# SAM weights
+SAM_WEIGHTS="$THIRD_PARTY/sam_weights"
+mkdir -p "$SAM_WEIGHTS"
+SAM_PTH="$SAM_WEIGHTS/sam_vit_h_4b8939.pth"
+if [ ! -f "$SAM_PTH" ]; then
+    echo "  ⬇️  Downloading SAM ViT-H weights..."
+    wget -q -O "$SAM_PTH" \
+        "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
+    echo "  ✅ SAM weights downloaded."
+else
+    echo "  ⏭️  SAM weights already exist, skipping."
+fi
 
-log "· VGGT: downloaded on first use"
-log "✓ all weights ready"
+# VGGT: both package and weights are installed/downloaded on-demand in compute_extrinsics.py
+echo "  ℹ️  VGGT: installed on-demand from GitHub + weights from HuggingFace Hub at first use."
 
-# ── 4. Done ──────────────────────────────────────────────────
+echo "✅ All model weights ready."
 
-step "4/4" "Ready"
-cat <<'EOF'
-  droid/
-  ├── pipeline.ipynb          ← start here
-  ├── compute_depth.py        Stage 1: stereo depth
-  ├── compute_extrinsics.py   Stage 2: camera calibration
-  ├── compute_tracks.py       Stage 3: 3D tracking
-  ├── run_parallel.sh         multi-GPU runner
-  └── run_extrinsics_ablation.py  ablation experiments
-EOF
+# ---------------------------------------------------------
+# 4. Summary
+# ---------------------------------------------------------
+echo ""
+echo "================================================"
+echo "🎉 Setup complete! Directory structure:"
+echo ""
+echo "  droid/"
+echo "  ├── compute_depth.py       (Stage 1: stereo depth)"
+echo "  ├── compute_extrinsics.py  (Stage 2: camera calibration)"
+echo "  ├── compute_tracks.py      (Stage 3: 3D point tracking)"
+echo "  ├── core/                  (shared modules)"
+echo "  │   ├── geometry.py, io.py, depth.py, physics.py, tracking.py"
+echo "  ├── utils/visualization.py"
+echo "  ├── pipeline.ipynb         (Colab notebook)"
+echo "  ├── run_parallel.sh"
+echo "  └── third_party/           (submodules + weights)"
+echo ""
+echo "Run pipeline:"
+echo "  bash run_parallel.sh                    # Stage 1: depth"
+echo "  bash run_parallel.sh --mode extrinsics  # Stage 2: extrinsics"
+echo "  bash run_parallel.sh --mode tracks      # Stage 3: tracks"
+echo "================================================"
