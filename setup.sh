@@ -1,139 +1,33 @@
 #!/bin/bash
-# DROID Pipeline Setup Script
-# Run once after cloning the repo to set up all dependencies.
-#
-# Usage:
-#   bash setup.sh
-#
-# If you cloned WITHOUT --recurse-submodules, this script will init them for you.
-
+# DROID Pipeline — one-time setup. Usage: bash setup.sh
 set -e
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-THIRD_PARTY="$SCRIPT_DIR/third_party"
+cd "$(dirname "${BASH_SOURCE[0]}")"
+TP=third_party
 
-echo "================================================"
-echo "🚀 DROID Pipeline Setup"
-echo "================================================"
-
-# ---------------------------------------------------------
-# 1. Git Submodules (s2m2, co-tracker, PointWorld)
-# ---------------------------------------------------------
-echo ""
-echo "📦 [1/4] Initializing git submodules..."
-cd "$SCRIPT_DIR"
+# 1. Submodules
+echo "📦 [1/4] Submodules"
 git submodule update --init --recursive
-echo "✅ Submodules ready."
 
-# ---------------------------------------------------------
-# 2. Python Dependencies
-# ---------------------------------------------------------
-echo ""
-echo "🐍 [2/4] Installing Python dependencies..."
-pip install -q \
-    pybullet \
-    opencv-python \
-    scipy \
-    tqdm \
-    h5py \
-    mediapy \
-    yourdfpy \
-    plotly \
-    pyrender
-
-# SAM is pip-installable directly from GitHub
+# 2. Python packages
+echo "🐍 [2/4] Python packages"
+pip install -q pybullet opencv-python scipy tqdm h5py mediapy yourdfpy plotly pyrender
 pip install -q git+https://github.com/facebookresearch/segment-anything.git
-
-# co-tracker deps (vggt is installed on-demand in compute_extrinsics.py)
-pip install -q "$THIRD_PARTY/co-tracker"
-
-# TAPNext++ deps (optional, for compute_2d_tracks.py --method tapnext)
+pip install -q "$TP/co-tracker"
 pip install -q git+https://github.com/google-deepmind/tapnet.git 2>/dev/null || true
 pip install -q git+https://github.com/google-deepmind/recurrentgemma.git@main 2>/dev/null || true
 
-echo "✅ Python dependencies installed."
+# 3. Model weights
+echo "⬇️  [3/4] Model weights"
+mkdir -p $TP/s2m2/weights/pretrain_weights $TP/co-tracker/weights $TP/tapnext_weights $TP/sam_weights
 
-# ---------------------------------------------------------
-# 3. Model Weights
-# ---------------------------------------------------------
-echo ""
-echo "⬇️  [3/4] Downloading model weights..."
+download() { [ -f "$2" ] && echo "  ⏭️  $(basename $2)" || { echo "  ⬇️  $(basename $2)"; wget -q -O "$2" "$1"; } }
 
-# S2M2 weights
-S2M2_WEIGHTS="$THIRD_PARTY/s2m2/weights/pretrain_weights"
-mkdir -p "$S2M2_WEIGHTS"
-S2M2_PTH="$S2M2_WEIGHTS/CH384NTR3.pth"
-if [ ! -f "$S2M2_PTH" ] || [ "$(stat -c%s "$S2M2_PTH" 2>/dev/null || echo 0)" -lt $((100 * 1024 * 1024)) ]; then
-    echo "  ⬇️  Downloading S2M2 weights..."
-    wget -q -O "$S2M2_PTH" "https://huggingface.co/minimok/s2m2/resolve/main/CH384NTR3.pth"
-    echo "  ✅ S2M2 weights downloaded."
-else
-    echo "  ⏭️  S2M2 weights already exist, skipping."
-fi
+download "https://huggingface.co/minimok/s2m2/resolve/main/CH384NTR3.pth"            "$TP/s2m2/weights/pretrain_weights/CH384NTR3.pth"
+download "https://huggingface.co/facebook/cotracker3/resolve/main/scaled_offline.pth" "$TP/co-tracker/weights/cotracker3_offline.pth"
+download "https://storage.googleapis.com/gresearch/tapnextpp/tapnextpp_512.ckpt"      "$TP/tapnext_weights/tapnextpp_512.ckpt"
+download "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"        "$TP/sam_weights/sam_vit_h_4b8939.pth"
 
-# CoTracker weights
-COTRACKER_WEIGHTS="$THIRD_PARTY/co-tracker/weights"
-mkdir -p "$COTRACKER_WEIGHTS"
-COTRACKER_PTH="$COTRACKER_WEIGHTS/cotracker3_offline.pth"
-if [ ! -f "$COTRACKER_PTH" ]; then
-    echo "  ⬇️  Downloading CoTracker3 weights..."
-    wget -q -O "$COTRACKER_PTH" \
-        "https://huggingface.co/facebook/cotracker3/resolve/main/scaled_offline.pth"
-    echo "  ✅ CoTracker3 weights downloaded."
-else
-    echo "  ⏭️  CoTracker3 weights already exist, skipping."
-fi
+echo "  ℹ️  VGGT: downloaded on first use"
 
-# TAPNext++ weights (512×512 model)
-TAPNEXT_WEIGHTS="$THIRD_PARTY/tapnext_weights"
-mkdir -p "$TAPNEXT_WEIGHTS"
-TAPNEXT_PTH="$TAPNEXT_WEIGHTS/tapnextpp_512.ckpt"
-if [ ! -f "$TAPNEXT_PTH" ]; then
-    echo "  ⬇️  Downloading TAPNext++ 512 checkpoint..."
-    wget -q -O "$TAPNEXT_PTH" \
-        "https://storage.googleapis.com/gresearch/tapnextpp/tapnextpp_512.ckpt"
-    echo "  ✅ TAPNext++ weights downloaded."
-else
-    echo "  ⏭️  TAPNext++ weights already exist, skipping."
-fi
-
-# SAM weights
-SAM_WEIGHTS="$THIRD_PARTY/sam_weights"
-mkdir -p "$SAM_WEIGHTS"
-SAM_PTH="$SAM_WEIGHTS/sam_vit_h_4b8939.pth"
-if [ ! -f "$SAM_PTH" ]; then
-    echo "  ⬇️  Downloading SAM ViT-H weights..."
-    wget -q -O "$SAM_PTH" \
-        "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
-    echo "  ✅ SAM weights downloaded."
-else
-    echo "  ⏭️  SAM weights already exist, skipping."
-fi
-
-# VGGT: both package and weights are installed/downloaded on-demand in compute_extrinsics.py
-echo "  ℹ️  VGGT: installed on-demand from GitHub + weights from HuggingFace Hub at first use."
-
-echo "✅ All model weights ready."
-
-# ---------------------------------------------------------
-# 4. Summary
-# ---------------------------------------------------------
-echo ""
-echo "================================================"
-echo "🎉 Setup complete! Directory structure:"
-echo ""
-echo "  droid/"
-echo "  ├── compute_depth.py       (Stage 1: stereo depth)"
-echo "  ├── compute_extrinsics.py  (Stage 2: camera calibration)"
-echo "  ├── compute_tracks.py      (Stage 3: 3D point tracking)"
-echo "  ├── core/                  (shared modules)"
-echo "  │   ├── geometry.py, io.py, depth.py, physics.py, tracking.py"
-echo "  ├── utils/visualization.py"
-echo "  ├── pipeline.ipynb         (Colab notebook)"
-echo "  ├── run_parallel.sh"
-echo "  └── third_party/           (submodules + weights)"
-echo ""
-echo "Run pipeline:"
-echo "  bash run_parallel.sh                    # Stage 1: depth"
-echo "  bash run_parallel.sh --mode extrinsics  # Stage 2: extrinsics"
-echo "  bash run_parallel.sh --mode tracks      # Stage 3: tracks"
-echo "================================================"
+# 4. Done
+echo "🎉 [4/4] Setup complete"
