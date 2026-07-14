@@ -850,16 +850,12 @@ def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device):
   v_pred = K[1, 1] * P_cam_all[:, 1, :] / Z + K[1, 2]     # (T, N)
   pred = torch.stack([u_pred, v_pred], dim=-1)              # (T, N, 2)
 
-  # Huber loss with δ=5 pixels for robustness to outlier tracks
-  pixel_err = (pred - targets).norm(dim=-1)                 # (T, N)
+  # Mean pixel reprojection error (L1: |Δu| + |Δv|)
+  pixel_err = (pred - targets).abs().sum(dim=-1)            # (T, N)
   valid = vis & (Z > 0.05)
 
   if valid.any():
-    err = pixel_err[valid]
-    delta = 5.0
-    huber = torch.where(
-        err < delta, 0.5 * err ** 2, delta * (err - 0.5 * delta))
-    return huber.mean()
+    return pixel_err[valid].mean()
 
   return torch.tensor(0.0, device=device)
 
