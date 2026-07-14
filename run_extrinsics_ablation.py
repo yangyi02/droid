@@ -151,6 +151,9 @@ CONFIGS = {
     # ── Chamfer point count sweep (Phase 8) ──
     # E21 removed: chamfer_n_points=1000 confirmed no benefit over default 2000.
     "E22": _cfg("chamfer_n_points=4000 (dense)", chamfer_n_points=4000),
+    "E25": _cfg("chamfer_n_points=2500", chamfer_n_points=2500),
+    "E26": _cfg("chamfer_n_points=3000", chamfer_n_points=3000),
+    "E27": _cfg("chamfer_n_points=3500", chamfer_n_points=3500),
 
     # ── Eval grid_size sweep (Phase 9) ──
     "E23": _cfg("grid_size=15 (sparse eval)", grid_size=15),
