@@ -58,22 +58,18 @@ echo "✅ Python dependencies installed."
 echo ""
 echo "⬇️  [3/4] Downloading model weights..."
 
-# Install huggingface_hub for reliable HF downloads (handles xet CDN redirects)
-pip install -q huggingface_hub
-
-# Helper: download from HuggingFace using huggingface-cli (handles 403/redirect issues)
+# Helper: download with curl (handles HuggingFace xet CDN redirects properly)
 hf_download() {
-    local repo="$1"
-    local filename="$2"
-    local dest="$3"
+    local url="$1"
+    local dest="$2"
     if [ -f "$dest" ]; then
         echo "  ⏭️  $(basename "$dest") already exists, skipping."
         return 0
     fi
-    echo "  ⬇️  Downloading $(basename "$dest") from $repo..."
-    local tmpfile
-    tmpfile=$(python3 -c "from huggingface_hub import hf_hub_download; print(hf_hub_download('$repo', '$filename'))")
-    cp "$tmpfile" "$dest"
+    echo "  ⬇️  Downloading $(basename "$dest")..."
+    curl -L --progress-bar --retry 3 --retry-delay 5 \
+        -H "User-Agent: Mozilla/5.0" \
+        -o "$dest" "$url"
     echo "  ✅ $(basename "$dest") downloaded."
 }
 
@@ -84,14 +80,14 @@ S2M2_PTH="$S2M2_WEIGHTS/CH384NTR3.pth"
 if [ -f "$S2M2_PTH" ] && [ "$(stat -c%s "$S2M2_PTH" 2>/dev/null || echo 0)" -ge $((100 * 1024 * 1024)) ]; then
     echo "  ⏭️  S2M2 weights already exist, skipping."
 else
-    hf_download "minimok/s2m2" "CH384NTR3.pth" "$S2M2_PTH"
+    hf_download "https://huggingface.co/minimok/s2m2/resolve/main/CH384NTR3.pth" "$S2M2_PTH"
 fi
 
 # CoTracker weights
 COTRACKER_WEIGHTS="$THIRD_PARTY/co-tracker/weights"
 mkdir -p "$COTRACKER_WEIGHTS"
 COTRACKER_PTH="$COTRACKER_WEIGHTS/cotracker3_offline.pth"
-hf_download "facebook/cotracker3" "scaled_offline.pth" "$COTRACKER_PTH"
+hf_download "https://huggingface.co/facebook/cotracker3/resolve/main/scaled_offline.pth" "$COTRACKER_PTH"
 
 # TAPNext++ weights (512×512 model) — from Google Cloud Storage, wget works fine
 TAPNEXT_WEIGHTS="$THIRD_PARTY/tapnext_weights"
