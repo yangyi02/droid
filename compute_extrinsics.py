@@ -517,11 +517,25 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
     T2_opt = T2_init_t @ make_T(d2, device)
     Tee_opt = Tee_init_t @ make_T(dhe, device)
 
-    # Chamfer: project environment points to world frame
-    bc1 = (T1_opt @ batch_Pc1)[:, :3, :].transpose(1, 2)
-    bc2 = (T2_opt @ batch_Pc2)[:, :3, :].transpose(1, 2)
-    T_wrist_c2w = batch_Tee @ Tee_opt
-    bcw = torch.bmm(T_wrist_c2w, batch_Pcw)[:, :3, :].transpose(1, 2)
+    # Chamfer: project environment points to world frame (stochastic sampling to prevent OOM)
+    B_total = batch_Pc1.shape[0]
+    base_ops = 80 * (2000 ** 2)
+    max_batch = max(8, int(base_ops / (chamfer_n_points ** 2)))
+    sample_size = min(max_batch, B_total)
+
+    if sample_size < B_total:
+      sample_idx = torch.randperm(B_total, device=device)[:sample_size]
+      s_Pc1 = batch_Pc1[sample_idx]
+      s_Pc2 = batch_Pc2[sample_idx]
+      s_Pcw = batch_Pcw[sample_idx]
+      s_Tee = batch_Tee[sample_idx]
+    else:
+      s_Pc1, s_Pc2, s_Pcw, s_Tee = batch_Pc1, batch_Pc2, batch_Pcw, batch_Tee
+
+    bc1 = (T1_opt @ s_Pc1)[:, :3, :].transpose(1, 2)
+    bc2 = (T2_opt @ s_Pc2)[:, :3, :].transpose(1, 2)
+    T_wrist_c2w = s_Tee @ Tee_opt
+    bcw = torch.bmm(T_wrist_c2w, s_Pcw)[:, :3, :].transpose(1, 2)
 
     l12, o12 = batched_chamfer_distance(bc1, bc2, device)
     l1w, o1w = batched_chamfer_distance(bc1, bcw, device)
@@ -888,6 +902,7 @@ def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device,
 # ---------------------------------------------------------------------------
 # 11b. Evaluate Extrinsics Quality
 # ---------------------------------------------------------------------------
+@torch.no_grad()
 def evaluate_extrinsics(scene_constants, scene_state, device,
                         pb_renderer=None, track_anchors=None):
   """Compute extrinsics quality metrics without re-running optimization.
