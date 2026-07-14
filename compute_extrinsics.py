@@ -926,37 +926,64 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
 
   metrics = {}
 
-  # --- Robot depth losses (PyBullet rendered depth vs sensor depth) ---
+  # --- Robot depth losses (via pybullet_extrinsics) ---
+  from core.pybullet_extrinsics import (
+      get_foreground_robot_points, get_foreground_gripper_points,
+      compute_robot_loss_batched, compute_wrist_loss_batched,
+  )
   for cam_id, key_prefix in [(cam1, "cam1"), (cam2, "cam2"),
                               (wrist_cam, "wrist")]:
     try:
       is_wrist = (cam_id == wrist_cam)
-      K = scene_constants["camera"][cam_id]["K_mat"]
-      tol = float("inf") if is_wrist else 0.15
-      diffs = []
+      K_np = scene_constants["camera"][cam_id]["K_mat"]
+      K_t = torch.tensor(K_np, dtype=torch.float32, device=device)
 
+      cache_X, cache_obs = [], []
       for t in range(n_frames):
         joints = scene_constants["robot"]["joint_positions"][t]
         gripper = scene_constants["robot"]["gripper_positions"][t]
         pb_renderer.update_robot_pose(joints, gripper_state=gripper)
 
-        ext_t = scene_state[cam_id]["extrinsics"][t]
-        h_img, w_img = scene_constants["camera"][cam_id]["raw_depth"][t].shape[:2]
-
-        d_render = pb_renderer.render_depth(ext_t, K, w_img, h_img)
         d_obs = scene_constants["camera"][cam_id]["raw_depth"][t].astype(np.float32)
+        ext_t = scene_state[cam_id]["extrinsics"][t]
 
-        robot_px = d_render > 0.01
-        obs_valid = d_obs > 0.01
-        valid = robot_px & obs_valid
-        if valid.any():
-          diff = np.abs(d_render[valid] - d_obs[valid])
-          if tol < float("inf"):
-            diff = diff[diff < tol]
-          if len(diff) > 0:
-            diffs.append(diff.mean())
+        if is_wrist:
+          pts = get_foreground_gripper_points(
+              ext_t, K_np, d_obs, pb_renderer, device)
+          if pts is None:
+            continue
+          T_world_to_ee = np.linalg.inv(T_ee_all[t])
+          pts_world = (ext_t @ pts)[:3, :].T
+          pts_ee = (T_world_to_ee[:3, :3] @ pts_world.T +
+                    T_world_to_ee[:3, 3:4]).T
+          cache_X.append(
+              torch.tensor(pts_ee, dtype=torch.float32, device=device))
+        else:
+          pts = get_foreground_robot_points(
+              ext_t, K_np, d_obs, pb_renderer, device)
+          if pts is None:
+            continue
+          cache_X.append(pts)
 
-      metrics[f"robot_loss_{key_prefix}"] = float(np.mean(diffs)) if diffs else float("nan")
+        cache_obs.append(
+            torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
+
+      if not cache_X:
+        metrics[f"robot_loss_{key_prefix}"] = float("nan")
+        continue
+
+      batch_X = torch.stack(cache_X)
+      batch_obs = torch.stack(cache_obs)
+      T_opt = torch.tensor(
+          scene_state[cam_id]["base_extrinsic"],
+          dtype=torch.float32, device=device)
+
+      with torch.no_grad():
+        if is_wrist:
+          loss = compute_wrist_loss_batched(batch_X, T_opt, K_t, batch_obs)
+        else:
+          loss = compute_robot_loss_batched(batch_X, T_opt, K_t, batch_obs)
+      metrics[f"robot_loss_{key_prefix}"] = loss.item()
     except Exception as e:
       metrics[f"robot_loss_{key_prefix}"] = float("nan")
 
