@@ -58,36 +58,40 @@ echo "✅ Python dependencies installed."
 echo ""
 echo "⬇️  [3/4] Downloading model weights..."
 
-# Helper: download with curl (handles HuggingFace xet CDN redirects properly)
+# Install huggingface-cli for reliable HF downloads (xet CDN rejects wget/curl)
+pip install -q "huggingface_hub[cli,hf_transfer]"
+export HF_HUB_ENABLE_HF_TRANSFER=1  # fast Rust-based transfer
+
+# Helper: download from HuggingFace via huggingface-cli (the only reliable method)
+# Usage: hf_download <repo_id> <filename> <dest_dir>
 hf_download() {
-    local url="$1"
-    local dest="$2"
-    if [ -f "$dest" ]; then
-        echo "  ⏭️  $(basename "$dest") already exists, skipping."
+    local repo="$1"
+    local filename="$2"
+    local dest_dir="$3"
+    local dest="$dest_dir/$filename"
+    if [ -f "$dest" ] && [ "$(stat -c%s "$dest" 2>/dev/null || echo 0)" -gt 1000 ]; then
+        echo "  ⏭️  $filename already exists ($(du -h "$dest" | cut -f1)), skipping."
         return 0
     fi
-    echo "  ⬇️  Downloading $(basename "$dest")..."
-    curl -L --progress-bar --retry 3 --retry-delay 5 \
-        -H "User-Agent: Mozilla/5.0" \
-        -o "$dest" "$url"
-    echo "  ✅ $(basename "$dest") downloaded."
+    rm -f "$dest"  # remove any corrupt/incomplete file
+    echo "  ⬇️  Downloading $filename from $repo..."
+    huggingface-cli download "$repo" "$filename" --local-dir "$dest_dir"
+    echo "  ✅ $filename downloaded ($(du -h "$dest" | cut -f1))."
 }
 
 # S2M2 weights
 S2M2_WEIGHTS="$THIRD_PARTY/s2m2/weights/pretrain_weights"
 mkdir -p "$S2M2_WEIGHTS"
-S2M2_PTH="$S2M2_WEIGHTS/CH384NTR3.pth"
-if [ -f "$S2M2_PTH" ] && [ "$(stat -c%s "$S2M2_PTH" 2>/dev/null || echo 0)" -ge $((100 * 1024 * 1024)) ]; then
-    echo "  ⏭️  S2M2 weights already exist, skipping."
-else
-    hf_download "https://huggingface.co/minimok/s2m2/resolve/main/CH384NTR3.pth" "$S2M2_PTH"
-fi
+hf_download "minimok/s2m2" "CH384NTR3.pth" "$S2M2_WEIGHTS"
 
 # CoTracker weights
 COTRACKER_WEIGHTS="$THIRD_PARTY/co-tracker/weights"
 mkdir -p "$COTRACKER_WEIGHTS"
-COTRACKER_PTH="$COTRACKER_WEIGHTS/cotracker3_offline.pth"
-hf_download "https://huggingface.co/facebook/cotracker3/resolve/main/scaled_offline.pth" "$COTRACKER_PTH"
+hf_download "facebook/cotracker3" "scaled_offline.pth" "$COTRACKER_WEIGHTS"
+# Rename to match expected filename
+if [ -f "$COTRACKER_WEIGHTS/scaled_offline.pth" ] && [ ! -f "$COTRACKER_WEIGHTS/cotracker3_offline.pth" ]; then
+    cp "$COTRACKER_WEIGHTS/scaled_offline.pth" "$COTRACKER_WEIGHTS/cotracker3_offline.pth"
+fi
 
 # TAPNext++ weights (512×512 model) — from Google Cloud Storage, wget works fine
 TAPNEXT_WEIGHTS="$THIRD_PARTY/tapnext_weights"
