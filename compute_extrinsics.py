@@ -544,6 +544,8 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
         d_cam, T_init_cam, K_cam = cam_opt_map[cam_id]
         T_opt_cam = T_init_cam @ make_T(d_cam, device)
         scheme = track_anchors[cam_id]['scheme']
+        if scheme == 'robot_fk':
+          continue  # robot_fk anchors are eval-only, no P_cam0 for optimization
         l_trk = compute_track_reproj_loss(
             track_anchors[cam_id], T_opt_cam, K_cam, T_ee_all_t,
             scheme, device)
