@@ -217,11 +217,28 @@ class AllTrackerBackend:
     if alltracker_path not in sys.path:
       sys.path.insert(0, alltracker_path)
 
-    from nets.alltracker import Net
-    import utils.saveload as saveload
+    # AllTracker's internal code does `import utils.misc`, `import utils.basic`
+    # etc.  Our project also has a top-level `utils/` package already loaded in
+    # sys.modules, which shadows AllTracker's.  Fix: temporarily evict our
+    # `utils` and all its sub-modules so that AllTracker can load its own.
+    saved_utils = {k: sys.modules.pop(k) for k in list(sys.modules)
+                   if k == "utils" or k.startswith("utils.")}
+    try:
+      from nets.alltracker import Net
+    finally:
+      # Keep AllTracker's utils loaded (they are now in sys.modules under
+      # their own keys) and restore ours under a private alias so both
+      # coexist.  In practice the AllTracker Net is already constructed and
+      # won't re-import, so restoring ours is safe for the rest of the
+      # pipeline.
+      alltracker_utils = {k: sys.modules.pop(k) for k in list(sys.modules)
+                          if k == "utils" or k.startswith("utils.")}
+      sys.modules.update(saved_utils)
+      # Stash AllTracker utils so they remain importable if needed later
+      for k, v in alltracker_utils.items():
+        sys.modules[f"_alltracker_{k}"] = v
 
     if ckpt_path is None:
-      # Auto-download weights from HuggingFace if not present
       weights_dir = os.path.join(alltracker_path, "weights")
       os.makedirs(weights_dir, exist_ok=True)
       ckpt_path = os.path.join(weights_dir, "alltracker.pth")

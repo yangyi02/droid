@@ -15,8 +15,18 @@ pip install git+https://github.com/google-deepmind/tapnet.git
 pip install git+https://github.com/google-deepmind/recurrentgemma.git@main
 pip install pytorch_lightning==2.4.0 einops moviepy prettytable           # AllTracker
 pip install timm transformers accelerate av einshape dm-tree              # Track-On-R
-pip install mmcv==2.2.0 -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.4/index.html 2>/dev/null \
-  || echo "  ⚠️  mmcv prebuilt wheel failed — build from source (see Track-On-R README)"
+# mmcv requires matching PyTorch + CUDA — auto-detect versions
+TORCH_V=$(python3 -c "import torch; v=torch.__version__.split('+')[0].split('.')[:2]; print(f'{v[0]}.{v[1]}')" 2>/dev/null)
+CUDA_V=$(python3 -c "import torch; print(torch.version.cuda.replace('.','')[:3])" 2>/dev/null)
+if [ -n "$TORCH_V" ] && [ -n "$CUDA_V" ]; then
+  echo "  🔧 mmcv for PyTorch ${TORCH_V} + CUDA ${CUDA_V}"
+  pip install mmcv==2.2.0 -f "https://download.openmmlab.com/mmcv/dist/cu${CUDA_V}/torch${TORCH_V}/index.html" 2>/dev/null \
+    || pip install mmcv 2>/dev/null \
+    || echo "  ⚠️  mmcv install failed — build from source (see Track-On-R README)"
+else
+  pip install mmcv 2>/dev/null \
+    || echo "  ⚠️  mmcv install failed — build from source (see Track-On-R README)"
+fi
 
 # 3. Model weights
 echo "⬇️  [3/5] Model weights"
