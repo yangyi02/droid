@@ -354,8 +354,8 @@ class AllTrackerBackend:
     # traj_maps = flow + identity_grid
     # identity_grid has shape (1, 1, 2, H_model, W_model) or broadcastable
     grid_y, grid_x = torch.meshgrid(
-        torch.arange(H_model, device=self.device, dtype=torch.float32),
-        torch.arange(W_model, device=self.device, dtype=torch.float32),
+        torch.arange(H_model, device=full_flows.device, dtype=torch.float32),
+        torch.arange(W_model, device=full_flows.device, dtype=torch.float32),
         indexing='ij'
     )
     grid_xy = torch.stack([grid_x, grid_y], dim=0)[None, None] # (1, 1, 2, H_model, W_model)
