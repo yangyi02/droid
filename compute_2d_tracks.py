@@ -207,7 +207,7 @@ def _import_from_vendor(vendor_path, import_fn, shadow_packages=("utils",)):
 
   Temporarily evicts ``shadow_packages`` (e.g. ``utils``, ``model``) from
   ``sys.modules`` so that vendor code can load *its own* versions, then
-  restores ours afterwards.
+  restores ours afterwards. Supports namespace packages (no __init__.py).
 
   Args:
     vendor_path: Absolute path to the vendor repo root (added to sys.path).
@@ -217,6 +217,8 @@ def _import_from_vendor(vendor_path, import_fn, shadow_packages=("utils",)):
   Returns:
     Whatever ``import_fn`` returns.
   """
+  import types
+
   if vendor_path not in sys.path:
     sys.path.insert(0, vendor_path)
 
@@ -226,6 +228,17 @@ def _import_from_vendor(vendor_path, import_fn, shadow_packages=("utils",)):
     for pkg in shadow_packages:
       if k == pkg or k.startswith(pkg + "."):
         saved[k] = sys.modules.pop(k)
+
+  # Inject placeholders for namespace packages (no __init__.py)
+  # This forces python to resolve imports within the vendor path directory
+  # instead of falling back to our regular packages (which have __init__.py
+  # and would otherwise take precedence during sys.path search).
+  for pkg in shadow_packages:
+    pkg_dir = os.path.join(vendor_path, pkg)
+    if os.path.isdir(pkg_dir) and not os.path.exists(os.path.join(pkg_dir, "__init__.py")):
+      mod = types.ModuleType(pkg)
+      mod.__path__ = [pkg_dir]
+      sys.modules[pkg] = mod
 
   try:
     result = import_fn()
