@@ -314,35 +314,79 @@ class AllTrackerBackend:
       grid_size: Grid density per axis.
 
     Returns:
-      tracks: np.float32 (T, N, 2) pixel coordinates (x, y).
+      tracks: np.float32 (T, N, 2) pixel coordinates (x, y) at original resolution.
       vis:    np.bool_   (T, N)    visibility mask.
     """
-    T, H, W, _ = video_rgb.shape
-    queries_xy = generate_grid_queries(H, W, grid_size)  # (N, 2)
-    N = queries_xy.shape[0]
+    import torch.nn.functional as F
+    T, H_orig, W_orig, _ = video_rgb.shape
 
-    # AllTracker expects (B, T, C, H, W) float32 [0-255]
-    video_t = (
-        torch.from_numpy(video_rgb).float()
-        .permute(0, 3, 1, 2)[None]  # (1, T, 3, H, W)
-        .to(self.device)
+    # AllTracker is heavy. We resize to its default training resolution [384, 512]
+    H_model, W_model = 384, 512
+
+    # Scale queries to model resolution
+    queries_orig = generate_grid_queries(H_orig, W_orig, grid_size)  # (N, 2) in (x, y)
+    N = queries_orig.shape[0]
+
+    scale_x = W_model / W_orig
+    scale_y = H_model / H_orig
+
+    queries_model = queries_orig.copy()
+    queries_model[:, 0] *= scale_x
+    queries_model[:, 1] *= scale_y
+
+    # Round queries to integer pixels for nearest-neighbor sampling in flow map
+    # Clip to ensure they are within bounds [0, W_model-1] and [0, H_model-1]
+    queries_model_px = np.clip(np.round(queries_model).astype(int), 0, [W_model - 1, H_model - 1]) # (N, 2)
+
+    # Resize video to (1, T, 3, H_model, W_model)
+    # F.interpolate expects (B*T, C, H, W)
+    video_t = torch.from_numpy(video_rgb).float().permute(0, 3, 1, 2) # (T, 3, H_orig, W_orig)
+    video_resized = F.interpolate(video_t, size=(H_model, W_model), mode='bilinear', align_corners=False) # (T, 3, H_model, W_model)
+    video_resized = video_resized[None].to(self.device) # (1, T, 3, H_model, W_model)
+
+    # Forward pass: outputs full_flows (1, T, 2, H_model, W_model) and full_visconfs (1, T, 2, H_model, W_model)
+    if T > 128:
+      full_flows, full_visconfs, _, _ = self.model.forward_sliding(video_resized, is_training=False)
+    else:
+      full_flows, full_visconfs, _, _ = self.model(video_resized, is_training=False)
+
+    # Convert flow maps to absolute trajectory maps in model resolution:
+    # traj_maps = flow + identity_grid
+    # identity_grid has shape (1, 1, 2, H_model, W_model) or broadcastable
+    grid_y, grid_x = torch.meshgrid(
+        torch.arange(H_model, device=self.device, dtype=torch.float32),
+        torch.arange(W_model, device=self.device, dtype=torch.float32),
+        indexing='ij'
     )
+    grid_xy = torch.stack([grid_x, grid_y], dim=0)[None, None] # (1, 1, 2, H_model, W_model)
 
-    # Model forward: outputs trajs (1, T, N_dense, 2) and vis (1, T, N_dense)
-    # For grid queries, we pass query_points
-    query_xy_t = torch.from_numpy(queries_xy).float().to(self.device)  # (N, 2)
+    traj_maps_model = full_flows + grid_xy # (1, T, 2, H_model, W_model)
 
-    # AllTracker can take queries or run dense; use forward with query frame 0
-    trajs, visibs = self.model(
-        video_t, queries=query_xy_t[None], query_frame=0,
-    )
+    # Sample trajectories at our query points (nearest neighbor)
+    # queries_model_px is (N, 2) containing (x, y)
+    qx = queries_model_px[:, 0]
+    qy = queries_model_px[:, 1]
 
-    tracks = trajs[0].cpu().numpy()   # (T, N, 2)
-    vis = visibs[0].cpu().numpy() > 0.5  # (T, N)
+    # traj_maps_model shape: (1, T, 2, H_model, W_model)
+    # We index at [0, :, :, qy, qx] -> (T, 2, N)
+    trajs_model_sampled = traj_maps_model[0, :, :, qy, qx] # (T, 2, N)
+    trajs_model_sampled = trajs_model_sampled.permute(0, 2, 1) # (T, N, 2)
 
-    del video_t, trajs, visibs
+    # Scale trajectories back to original resolution
+    tracks_out = trajs_model_sampled.cpu().numpy() # (T, N, 2)
+    tracks_out[..., 0] /= scale_x
+    tracks_out[..., 1] /= scale_y
+
+    # Same for visibility/confidence
+    visconfs_sampled = full_visconfs[0, :, :, qy, qx] # (T, 2, N)
+    visconfs_sampled = visconfs_sampled.permute(0, 2, 1) # (T, N, 2)
+    vis_prob = visconfs_sampled[..., 0] * visconfs_sampled[..., 1] # (T, N)
+    vis_out = (vis_prob.cpu().numpy() > 0.6) # (T, N) bool
+
+    del video_t, video_resized, full_flows, full_visconfs, traj_maps_model
     torch.cuda.empty_cache()
-    return tracks, vis
+
+    return tracks_out, vis_out
 
 
 
