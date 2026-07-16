@@ -401,24 +401,6 @@ def batched_chamfer_distance(p1, p2, device):
   return loss, overlap_ratio.item()
 
 
-def batched_chamfer_distance_loop(p1, p2, device):
-  """Memory-efficient Chamfer distance (frame-by-frame loop for evaluation)."""
-  B = p1.shape[0]
-  total_loss = 0.0
-  total_overlap = 0.0
-  for i in range(B):
-    dist_matrix = torch.cdist(p1[i:i+1], p2[i:i+1])
-    min_12 = torch.min(dist_matrix, dim=2)[0]
-    min_21 = torch.min(dist_matrix, dim=1)[0]
-    v12 = min_12 < 0.05
-    v21 = min_21 < 0.05
-    if v12.any():
-      total_loss += min_12[v12].mean().item()
-    if v21.any():
-      total_loss += min_21[v21].mean().item()
-    total_overlap += (v12.sum() + v21.sum()).item()
-  overlap_ratio = total_overlap / (B * (p1.shape[1] + p2.shape[1]) + 1e-6)
-  return total_loss / B, overlap_ratio
 
 
 def get_cam_points_local_t(t, cam_data, device, n_points=2000):
@@ -1036,9 +1018,9 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
     bc2 = (T2 @ batch_Pc2)[:, :3, :].transpose(1, 2)
     bcw = torch.bmm(batch_Tee @ Tw, batch_Pcw)[:, :3, :].transpose(1, 2)
 
-    l12, o12 = batched_chamfer_distance_loop(bc1, bc2, device)
-    l1w, o1w = batched_chamfer_distance_loop(bc1, bcw, device)
-    l2w, o2w = batched_chamfer_distance_loop(bc2, bcw, device)
+    l12, o12 = batched_chamfer_distance(bc1, bc2, device)
+    l1w, o1w = batched_chamfer_distance(bc1, bcw, device)
+    l2w, o2w = batched_chamfer_distance(bc2, bcw, device)
 
     metrics["chamfer_12"] = l12.item()
     metrics["chamfer_1w"] = l1w.item()
