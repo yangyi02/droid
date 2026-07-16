@@ -39,31 +39,7 @@ from core.physics import PyBulletRenderer
 from core.tracking import URDFKinematicsTracker
 
 
-# ---------------------------------------------------------------------------
-# 1. Model Loading (CoTracker3 only for Stage 3)
-# ---------------------------------------------------------------------------
-def init_tracking_models():
-  """Load CoTracker3 model for dense 2D tracking."""
-  device = get_accelerator()
-  print(f"🚀 Launching CoTracker3 onto {device} | CUDA_VISIBLE_DEVICES: "
-        f"{os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}")
-  if not torch.cuda.is_available():
-    print("⚠️ WARNING: PyTorch cannot find a valid CUDA device.")
-
-  vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "third_party")
-  cotracker_path = os.path.join(vendor_dir, "co-tracker")
-  if cotracker_path not in sys.path:
-    sys.path.append(cotracker_path)
-
-  from cotracker.predictor import CoTrackerPredictor
-
-  cotracker_model = CoTrackerPredictor(
-      checkpoint=os.path.join(cotracker_path,
-                              "weights/cotracker3_offline.pth")
-  ).to(device)
-  print("  ✅ CoTracker3 loaded.")
-  return cotracker_model
+from compute_2d_tracks import init_tracker
 
 
 # PyBulletRenderer → core.physics
@@ -72,13 +48,10 @@ def init_tracking_models():
 # [Dead code removed — 340 lines of inline PyBulletRenderer + URDFKinematicsTracker
 #  are now in core/physics.py and core/tracking.py respectively.]
 
-# ---------------------------------------------------------------------------
-# 6. Phase 1: Per-view Independent CoTracker
-# ---------------------------------------------------------------------------
-def phase1_extract_2d_tracks(cotracker_model, scene_constants, device):
-  """Run CoTracker3 dense 2D tracking on every camera view."""
+def phase1_extract_2d_tracks(tracker, scene_constants, grid_size=30):
+  """Run 2D tracking on every camera view."""
   print("\n" + "=" * 60)
-  print("🎯 Phase 1: Per-view Independent CoTracker Dense 2D Tracking")
+  print(f"🎯 Phase 1: Per-view Independent 2D Tracking [{tracker.name}] (grid={grid_size})")
   print("=" * 60)
 
   for cam_id in scene_constants["camera"]:
@@ -87,24 +60,12 @@ def phase1_extract_2d_tracks(cotracker_model, scene_constants, device):
       print(f"  ⚠️ [{cam_id}] No video_rgb, skipping.")
       continue
 
-    video_tensor = (
-        torch.from_numpy(cam_data["video_rgb"])
-        .permute(0, 3, 1, 2)[None].float().to(device)
-    )
-    with torch.no_grad():
-      pred_tracks, pred_vis = cotracker_model(
-          video_tensor, grid_size=30, grid_query_frame=0,
-          backward_tracking=False)
+    tracks, vis = tracker.track(cam_data["video_rgb"], grid_size=grid_size)
+    cam_data["tracks_2d"] = tracks
+    cam_data["vis_2d"] = vis
 
-    cam_data["tracks_2d"] = pred_tracks[0].cpu().numpy()
-    cam_data["vis_2d"] = pred_vis[0].cpu().numpy() > 0.5
-
-    T, N, _ = cam_data["tracks_2d"].shape
+    T, N, _ = tracks.shape
     print(f"  ✅ [{cam_id}] {N} tracks × {T} frames")
-
-    # Explicit GPU cleanup
-    del video_tensor, pred_tracks, pred_vis
-    torch.cuda.empty_cache()
 
   return scene_constants
 
@@ -262,12 +223,12 @@ def phase3_3d_dedup(per_cam_env, camera_ids, match_radius=0.015):
 # ---------------------------------------------------------------------------
 # 8. Phase 4: Multi-Keyframe CoTracker Query + 2D Median Fusion
 # ---------------------------------------------------------------------------
-def phase4_cross_view_completion(cotracker_model, scene_constants, scene_state,
+def phase4_cross_view_completion(tracker, scene_constants, scene_state,
                                  per_cam_env, unified_pts_3d, unified_to_cam,
-                                 N_unified, device):
-  """Complete missing tracks via multi-keyframe CoTracker query mode."""
+                                 N_unified):
+  """Complete missing tracks via multi-keyframe tracker query mode."""
   print("\n" + "=" * 60)
-  print("🔄 Phase 4: Multi-Keyframe CoTracker Query + 2D Median Completion")
+  print(f"🔄 Phase 4: Multi-Keyframe Query + 2D Median Completion [{tracker.name}]")
   print("=" * 60)
 
   camera_ids = list(scene_constants["camera"].keys())
@@ -316,10 +277,7 @@ def phase4_cross_view_completion(cotracker_model, scene_constants, scene_state,
     M = len(missing_uids)
     pts_3d_missing = unified_pts_3d[missing_uids]
 
-    video_tensor = (
-        torch.from_numpy(cam_data["video_rgb"])
-        .permute(0, 3, 1, 2)[None].float().to(device)
-    )
+    tracker.set_video(cam_data["video_rgb"])
 
     vote_tracks = []
     vote_vis = []
@@ -348,24 +306,17 @@ def phase4_cross_view_completion(cotracker_model, scene_constants, scene_state,
           np.full(len(valid_indices), t_k, dtype=np.float32),
           u_seed[valid_indices],
           v_seed[valid_indices]], axis=-1)
-      queries_t = torch.tensor(
-          queries_np, dtype=torch.float32, device=device)[None]
 
-      with torch.no_grad():
-        pred_tracks, pred_vis = cotracker_model(
-            video_tensor, queries=queries_t, backward_tracking=True)
+      pred_tracks, pred_vis = tracker.track_queries(queries_np)
 
       kf_tracks = np.full((T_frames, M, 2), np.nan, np.float32)
       kf_vis = np.zeros((T_frames, M), bool)
-      kf_tracks[:, valid_indices, :] = pred_tracks[0].cpu().numpy()
-      kf_vis[:, valid_indices] = pred_vis[0].cpu().numpy() > 0.5
+      kf_tracks[:, valid_indices, :] = pred_tracks
+      kf_vis[:, valid_indices] = pred_vis
       kf_tracks[~kf_vis] = np.nan
 
       vote_tracks.append(kf_tracks)
       vote_vis.append(kf_vis)
-
-      del pred_tracks, pred_vis
-      torch.cuda.empty_cache()
 
     # 2D Median fusion across keyframes
     stacked_tracks = np.stack(vote_tracks, axis=0)  # (K, T, M, 2)
@@ -389,8 +340,7 @@ def phase4_cross_view_completion(cotracker_model, scene_constants, scene_state,
     print(f"  ✅ [{cam_id}] Filled {n_any_vis}/{M} missing points "
           f"({len(keyframes)} keyframes)")
 
-    del video_tensor
-    torch.cuda.empty_cache()
+    tracker.clear_video()
 
   # Final coverage stats
   print("\n📊 Post-completion coverage:")
@@ -634,12 +584,12 @@ def export_tracks(scene_constants, scene_state, final_traj_3d,
 # ---------------------------------------------------------------------------
 # 11. Main Pipeline
 # ---------------------------------------------------------------------------
-def process_episode(episode_id, cotracker_model, pb_renderer, device,
-                    depth_root, extrinsics_root, export_root):
+def process_episode(episode_id, tracker, pb_renderer, device,
+                    depth_root, extrinsics_root, export_root, grid_size=30):
   """Full dual-track pipeline for a single episode.
 
   Track B (Robot): URDF forward kinematics (no learning)
-  Track A (Environment): CoTracker multi-view fusion
+  Track A (Environment): Generic Multi-View Fusion (CoTracker / TAPNext)
   """
   print(f"\n{'=' * 60}")
   print(f"🎬 Processing Episode: {episode_id}")
@@ -661,10 +611,10 @@ def process_episode(episode_id, cotracker_model, pb_renderer, device,
     raise ValueError("Missing video_rgb or raw_depth for some cameras")
 
   # ================================================================
-  # Phase 1: Per-view CoTracker (needed for both robot seed + env)
+  # Phase 1: Per-view 2D Tracking (needed for both robot seed + env)
   # ================================================================
   scene_constants = phase1_extract_2d_tracks(
-      cotracker_model, scene_constants, device)
+      tracker, scene_constants, grid_size=grid_size)
 
   # ================================================================
   # Track B: Robot points via URDF forward kinematics
@@ -723,7 +673,7 @@ def process_episode(episode_id, cotracker_model, pb_renderer, device,
     print("  ⚠️ No robot points extracted.")
 
   # ================================================================
-  # Track A: Environment points via CoTracker multi-view fusion
+  # Track A: Environment points via multi-view fusion
   # ================================================================
 
   # Phase 2: Lift to 3D + robot mask
@@ -737,9 +687,9 @@ def process_episode(episode_id, cotracker_model, pb_renderer, device,
   if unified_pts_3d is not None and N_unified > 0:
     # Phase 4: Cross-view completion
     per_cam_tracks, per_cam_vis = phase4_cross_view_completion(
-        cotracker_model, scene_constants, scene_state,
+        tracker, scene_constants, scene_state,
         per_cam_env, unified_pts_3d, unified_to_cam,
-        N_unified, device)
+        N_unified)
 
     # Phase 5: Median 3D fusion
     (env_traj_3d, env_vis_global, env_per_cam_tracks,
@@ -833,11 +783,16 @@ if __name__ == "__main__":
   parser.add_argument("--export_root", type=str,
                       default="~/droid_data/output/mv-tap/droid/tracks",
                       help="Root directory for Stage 3 track outputs")
+  parser.add_argument("--method", type=str, default="cotracker",
+                      choices=["cotracker", "tapnext", "alltracker"],
+                      help="2D tracking backend method")
+  parser.add_argument("--grid_size", type=int, default=30,
+                      help="2D grid density per axis")
   args = parser.parse_args()
 
   print("🚀 DROID Stage 3: Multi-View Tracking + 3D Fusion Pipeline")
   device = get_accelerator()
-  cotracker_model = init_tracking_models()
+  tracker = init_tracker(args.method, device)
   pb_renderer = PyBulletRenderer()
 
   # Discover available episodes from extrinsics output
@@ -859,8 +814,9 @@ if __name__ == "__main__":
   for idx, ep_id in enumerate(target_eps):
     try:
       n_tracks = process_episode(
-          ep_id, cotracker_model, pb_renderer, device,
-          args.depth_root, args.extrinsics_root, args.export_root)
+          ep_id, tracker, pb_renderer, device,
+          args.depth_root, args.extrinsics_root, args.export_root,
+          grid_size=args.grid_size)
       succeeded_eps.append(ep_id)
     except Exception as e:
       print(f"  ❌ Episode {ep_id} failed: {e}")

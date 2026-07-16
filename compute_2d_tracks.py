@@ -55,10 +55,41 @@ def generate_grid_queries(h, w, grid_size=30):
 
 
 # ===========================================================================
+# Tracking Backend Interface
+# ===========================================================================
+
+class TrackingBackend:
+  """Base class for all tracking backends."""
+
+  def set_video(self, video_rgb):
+    """Set the video to track on. Preprocesses and uploads to device."""
+    raise NotImplementedError
+
+  def track_grid(self, grid_size=30):
+    """Run dense grid tracking starting at t=0 on the current video."""
+    raise NotImplementedError
+
+  def track_queries(self, queries):
+    """Track arbitrary query points (t, x, y) on the current video."""
+    raise NotImplementedError
+
+  def clear_video(self):
+    """Free video-related resources."""
+    pass
+
+  def track(self, video_rgb, grid_size=30):
+    """Backward-compatible convenience wrapper."""
+    self.set_video(video_rgb)
+    tracks, vis = self.track_grid(grid_size)
+    self.clear_video()
+    return tracks, vis
+
+
+# ===========================================================================
 # CoTracker3 backend
 # ===========================================================================
 
-class CoTrackerBackend:
+class CoTrackerBackend(TrackingBackend):
   """CoTracker3 offline dense tracking at native resolution."""
 
   def __init__(self, device):
@@ -77,42 +108,46 @@ class CoTrackerBackend:
     self.device = device
     self.name = "CoTracker3"
     print(f"  ✅ {self.name} loaded on {device}")
+    self.video_tensor = None
 
-  @torch.no_grad()
-  def track(self, video_rgb, grid_size=30):
-    """Run dense grid tracking on a full video.
-
-    Args:
-      video_rgb: np.uint8 (T, H, W, 3) RGB video.
-      grid_size: Grid density per axis.
-
-    Returns:
-      tracks: np.float32 (T, N, 2) pixel coordinates (x, y).
-      vis:    np.bool_   (T, N)    visibility mask.
-    """
-    video_tensor = (
+  def set_video(self, video_rgb):
+    self.video_tensor = (
         torch.from_numpy(video_rgb)
         .permute(0, 3, 1, 2)[None].float().to(self.device)
     )
-    pred_tracks, pred_vis = self.model(
-        video_tensor, grid_size=grid_size, grid_query_frame=0,
-        backward_tracking=False,
-    )
 
-    tracks = pred_tracks[0].cpu().numpy()        # (T, N, 2)
-    vis = pred_vis[0].cpu().numpy() > 0.5         # (T, N)
+  def track_grid(self, grid_size=30):
+    if self.video_tensor is None:
+      raise ValueError("Must call set_video first")
+    with torch.no_grad():
+      pred_tracks, pred_vis = self.model(
+          self.video_tensor, grid_size=grid_size, grid_query_frame=0,
+          backward_tracking=False,
+      )
+    return pred_tracks[0].cpu().numpy(), pred_vis[0].cpu().numpy() > 0.5
 
-    del video_tensor, pred_tracks, pred_vis
-    torch.cuda.empty_cache()
+  def track_queries(self, queries):
+    if self.video_tensor is None:
+      raise ValueError("Must call set_video first")
+    queries_t = torch.tensor(
+        queries, dtype=torch.float32, device=self.device)[None]
+    with torch.no_grad():
+      pred_tracks, pred_vis = self.model(
+          self.video_tensor, queries=queries_t, backward_tracking=True)
+    return pred_tracks[0].cpu().numpy(), pred_vis[0].cpu().numpy() > 0.5
 
-    return tracks, vis
+  def clear_video(self):
+    if self.video_tensor is not None:
+      del self.video_tensor
+      self.video_tensor = None
+      torch.cuda.empty_cache()
 
 
 # ===========================================================================
 # TAPNext++ backend
 # ===========================================================================
 
-class TAPNextBackend:
+class TAPNextBackend(TrackingBackend):
   """TAPNext++ online frame-by-frame tracking at 512×512.
 
   Uses the high-level ``TAPNextPP.track_frame()`` API which handles all
@@ -149,53 +184,86 @@ class TAPNextBackend:
     self.device = device
     self.name = "TAPNext++"
     print(f"  ✅ {self.name} loaded on {device} (resolution={self.model_resolution})")
+    self.video_rgb = None
 
-  @torch.no_grad()
-  def track(self, video_rgb, grid_size=30):
-    """Run online frame-by-frame tracking on a full video.
+  def set_video(self, video_rgb):
+    self.video_rgb = video_rgb
+    self.T, self.H, self.W, _ = video_rgb.shape
 
-    Uses ``TAPNextPP.track_frame()`` which expects BGR uint8 frames and
-    returns (x, y) positions in display pixel coordinates.
-
-    Args:
-      video_rgb: np.uint8 (T, H, W, 3) RGB video.
-      grid_size: Grid density per axis.
-
-    Returns:
-      tracks: np.float32 (T, N, 2) pixel coordinates (x, y) at
-          **original** resolution.
-      vis:    np.bool_   (T, N)    visibility mask.
-    """
-    T, H, W, _ = video_rgb.shape
+  def track_grid(self, grid_size=30):
+    if self.video_rgb is None:
+      raise ValueError("Must call set_video first")
     N = grid_size * grid_size
+    queries_xy = generate_grid_queries(self.H, self.W, grid_size)  # (N, 2)
 
-    # Generate query points in original pixel coordinates (x, y)
-    queries_xy = generate_grid_queries(H, W, grid_size)  # (N, 2)
-
-    tracks_out = np.zeros((T, N, 2), dtype=np.float32)
-    vis_out = np.zeros((T, N), dtype=bool)
+    tracks_out = np.zeros((self.T, N, 2), dtype=np.float32)
+    vis_out = np.zeros((self.T, N), dtype=bool)
     state = None
 
-    for t in range(T):
-      # track_frame() expects BGR uint8 frames — convert from RGB
-      frame_bgr = video_rgb[t, :, :, ::-1].copy()
+    for t in range(self.T):
+      frame_bgr = self.video_rgb[t, :, :, ::-1].copy()
 
       if t == 0:
-        # First frame: initialize tracking with query points
         positions_xy, visible, state = self.model.track_frame(
             frame_bgr, query_points_xy=queries_xy,
         )
       else:
-        # Subsequent frames: pass recurrent state
         positions_xy, visible, state = self.model.track_frame(
             frame_bgr, state=state,
         )
 
-      tracks_out[t] = positions_xy  # (N, 2) in display (x, y) pixels
-      vis_out[t] = visible           # (N,) bool
+      tracks_out[t] = positions_xy
+      vis_out[t] = visible
 
-    torch.cuda.empty_cache()
     return tracks_out, vis_out
+
+  def track_queries(self, queries):
+    if self.video_rgb is None:
+      raise ValueError("Must call set_video first")
+    N = len(queries)
+    if N == 0:
+      return np.zeros((self.T, 0, 2), dtype=np.float32), np.zeros((self.T, 0), dtype=bool)
+
+    t_k = int(queries[0, 0])
+    assert np.all(queries[:, 0] == t_k), "All queries in batch must have same start frame"
+    queries_xy = queries[:, 1:3]
+
+    tracks_out = np.full((self.T, N, 2), np.nan, dtype=np.float32)
+    vis_out = np.zeros((self.T, N), dtype=bool)
+
+    # 1. Forward tracking (t_k -> T-1)
+    if t_k < self.T:
+      state_f = None
+      for t in range(t_k, self.T):
+        frame_bgr = self.video_rgb[t, :, :, ::-1].copy()
+        if t == t_k:
+          pos, vis, state_f = self.model.track_frame(
+              frame_bgr, query_points_xy=queries_xy)
+        else:
+          pos, vis, state_f = self.model.track_frame(frame_bgr, state=state_f)
+        tracks_out[t] = pos
+        vis_out[t] = vis
+
+    # 2. Backward tracking (t_k-1 -> 0) - running the recurrent state backward
+    if t_k > 0:
+      state_b = None
+      for t in range(t_k, -1, -1):
+        frame_bgr = self.video_rgb[t, :, :, ::-1].copy()
+        if t == t_k:
+          pos, vis, state_b = self.model.track_frame(
+              frame_bgr, query_points_xy=queries_xy)
+        else:
+          pos, vis, state_b = self.model.track_frame(frame_bgr, state=state_b)
+        tracks_out[t] = pos
+        vis_out[t] = vis
+
+    return tracks_out, vis_out
+
+  def clear_video(self):
+    if self.video_rgb is not None:
+      del self.video_rgb
+      self.video_rgb = None
+      torch.cuda.empty_cache()
 
 
 # ===========================================================================
@@ -263,7 +331,7 @@ def _import_from_vendor(vendor_path, import_fn, shadow_packages=("utils",)):
 # AllTracker backend
 # ===========================================================================
 
-class AllTrackerBackend:
+class AllTrackerBackend(TrackingBackend):
   """AllTracker dense flow-based tracking.
 
   Computes all-pixel flow fields from a query frame to every other frame,
@@ -304,89 +372,142 @@ class AllTrackerBackend:
     self.device = device
     self.name = "AllTracker"
     print(f"  ✅ {self.name} loaded on {device}")
+    self.video_resized = None
 
-  @torch.no_grad()
-  def track(self, video_rgb, grid_size=30):
-    """Run dense flow tracking, sampling at grid query points.
-
-    Args:
-      video_rgb: np.uint8 (T, H, W, 3) RGB video.
-      grid_size: Grid density per axis.
-
-    Returns:
-      tracks: np.float32 (T, N, 2) pixel coordinates (x, y) at original resolution.
-      vis:    np.bool_   (T, N)    visibility mask.
-    """
+  def set_video(self, video_rgb):
     import torch.nn.functional as F
-    T, H_orig, W_orig, _ = video_rgb.shape
-
-    # AllTracker is heavy. We resize to its default training resolution [384, 512]
+    self.T, self.H_orig, self.W_orig, _ = video_rgb.shape
     H_model, W_model = 384, 512
 
-    # Scale queries to model resolution
-    queries_orig = generate_grid_queries(H_orig, W_orig, grid_size)  # (N, 2) in (x, y)
+    self.scale_x = W_model / self.W_orig
+    self.scale_y = H_model / self.H_orig
+
+    video_t = torch.from_numpy(video_rgb).float().permute(0, 3, 1, 2)
+    self.video_resized = F.interpolate(
+        video_t, size=(H_model, W_model), mode='bilinear', align_corners=False)
+    self.video_resized = self.video_resized[None].to(self.device)
+
+  def track_grid(self, grid_size=30):
+    if self.video_resized is None:
+      raise ValueError("Must call set_video first")
+    
+    H_model, W_model = 384, 512
+    queries_orig = generate_grid_queries(self.H_orig, self.W_orig, grid_size)
     N = queries_orig.shape[0]
 
-    scale_x = W_model / W_orig
-    scale_y = H_model / H_orig
-
     queries_model = queries_orig.copy()
-    queries_model[:, 0] *= scale_x
-    queries_model[:, 1] *= scale_y
+    queries_model[:, 0] *= self.scale_x
+    queries_model[:, 1] *= self.scale_y
+    queries_model_px = np.clip(np.round(queries_model).astype(int), 0, [W_model - 1, H_model - 1])
 
-    # Round queries to integer pixels for nearest-neighbor sampling in flow map
-    # Clip to ensure they are within bounds [0, W_model-1] and [0, H_model-1]
-    queries_model_px = np.clip(np.round(queries_model).astype(int), 0, [W_model - 1, H_model - 1]) # (N, 2)
-
-    # Resize video to (1, T, 3, H_model, W_model)
-    # F.interpolate expects (B*T, C, H, W)
-    video_t = torch.from_numpy(video_rgb).float().permute(0, 3, 1, 2) # (T, 3, H_orig, W_orig)
-    video_resized = F.interpolate(video_t, size=(H_model, W_model), mode='bilinear', align_corners=False) # (T, 3, H_model, W_model)
-    video_resized = video_resized[None].to(self.device) # (1, T, 3, H_model, W_model)
-
-    # Forward pass: outputs full_flows (1, T, 2, H_model, W_model) and full_visconfs (1, T, 2, H_model, W_model)
-    if T > 128:
-      full_flows, full_visconfs, _, _ = self.model.forward_sliding(video_resized, is_training=False)
+    if self.T > 128:
+      full_flows, full_visconfs, _, _ = self.model.forward_sliding(self.video_resized, is_training=False)
     else:
-      full_flows, full_visconfs, _, _ = self.model(video_resized, is_training=False)
+      full_flows, full_visconfs, _, _ = self.model(self.video_resized, is_training=False)
 
-    # Convert flow maps to absolute trajectory maps in model resolution:
-    # traj_maps = flow + identity_grid
-    # identity_grid has shape (1, 1, 2, H_model, W_model) or broadcastable
     grid_y, grid_x = torch.meshgrid(
         torch.arange(H_model, device=full_flows.device, dtype=torch.float32),
         torch.arange(W_model, device=full_flows.device, dtype=torch.float32),
         indexing='ij'
     )
-    grid_xy = torch.stack([grid_x, grid_y], dim=0)[None, None] # (1, 1, 2, H_model, W_model)
+    grid_xy = torch.stack([grid_x, grid_y], dim=0)[None, None]
+    traj_maps_model = full_flows + grid_xy
 
-    traj_maps_model = full_flows + grid_xy # (1, T, 2, H_model, W_model)
+    qx = queries_model_px[:, 0]
+    qy = queries_model_px[:, 1]
+    trajs_model_sampled = traj_maps_model[0, :, :, qy, qx].permute(0, 2, 1)
 
-    # Sample trajectories at our query points (nearest neighbor)
-    # queries_model_px is (N, 2) containing (x, y)
+    tracks_out = trajs_model_sampled.cpu().numpy()
+    tracks_out[..., 0] /= self.scale_x
+    tracks_out[..., 1] /= self.scale_y
+
+    visconfs_sampled = full_visconfs[0, :, :, qy, qx].permute(0, 2, 1)
+    vis_prob = visconfs_sampled[..., 0] * visconfs_sampled[..., 1]
+    vis_out = (vis_prob.cpu().numpy() > 0.6)
+
+    return tracks_out, vis_out
+
+  def track_queries(self, queries):
+    if self.video_resized is None:
+      raise ValueError("Must call set_video first")
+    
+    N = len(queries)
+    if N == 0:
+      return np.zeros((self.T, 0, 2), dtype=np.float32), np.zeros((self.T, 0), dtype=bool)
+
+    t_k = int(queries[0, 0])
+    assert np.all(queries[:, 0] == t_k), "All queries in batch must have same start frame"
+    queries_orig = queries[:, 1:3]
+
+    queries_model = queries_orig.copy()
+    queries_model[:, 0] *= self.scale_x
+    queries_model[:, 1] *= self.scale_y
+    queries_model_px = np.clip(np.round(queries_model).astype(int), 0, [512 - 1, 384 - 1])
     qx = queries_model_px[:, 0]
     qy = queries_model_px[:, 1]
 
-    # traj_maps_model shape: (1, T, 2, H_model, W_model)
-    # We index at [0, :, :, qy, qx] -> (T, 2, N)
-    trajs_model_sampled = traj_maps_model[0, :, :, qy, qx] # (T, 2, N)
-    trajs_model_sampled = trajs_model_sampled.permute(0, 2, 1) # (T, N, 2)
+    tracks_out = np.full((self.T, N, 2), np.nan, dtype=np.float32)
+    vis_out = np.zeros((self.T, N), dtype=bool)
 
-    # Scale trajectories back to original resolution
-    tracks_out = trajs_model_sampled.cpu().numpy() # (T, N, 2)
-    tracks_out[..., 0] /= scale_x
-    tracks_out[..., 1] /= scale_y
+    H_model, W_model = 384, 512
 
-    # Same for visibility/confidence
-    visconfs_sampled = full_visconfs[0, :, :, qy, qx] # (T, 2, N)
-    visconfs_sampled = visconfs_sampled.permute(0, 2, 1) # (T, N, 2)
-    vis_prob = visconfs_sampled[..., 0] * visconfs_sampled[..., 1] # (T, N)
-    vis_out = (vis_prob.cpu().numpy() > 0.6) # (T, N) bool
+    def _run_slice_and_sample(video_slice, start_t, step):
+      T_slice = video_slice.shape[1]
+      if T_slice <= 1:
+        t_indices = [start_t]
+        tracks_slice = np.repeat(queries_orig[None], T_slice, axis=0)
+        vis_slice = np.ones((T_slice, N), dtype=bool)
+        return t_indices, tracks_slice, vis_slice
 
-    del video_t, video_resized, full_flows, full_visconfs, traj_maps_model
-    torch.cuda.empty_cache()
+      with torch.no_grad():
+        if T_slice > 128:
+          flows, visconfs, _, _ = self.model.forward_sliding(video_slice, is_training=False)
+        else:
+          flows, visconfs, _, _ = self.model(video_slice, is_training=False)
+
+      grid_y, grid_x = torch.meshgrid(
+          torch.arange(H_model, device=flows.device, dtype=torch.float32),
+          torch.arange(W_model, device=flows.device, dtype=torch.float32),
+          indexing='ij'
+      )
+      grid_xy = torch.stack([grid_x, grid_y], dim=0)[None, None]
+      traj_maps = flows + grid_xy
+
+      trajs_sampled = traj_maps[0, :, :, qy, qx].permute(0, 2, 1)
+      tracks_slice = trajs_sampled.cpu().numpy()
+      tracks_slice[..., 0] /= self.scale_x
+      tracks_slice[..., 1] /= self.scale_y
+
+      visconfs_sampled = visconfs[0, :, :, qy, qx].permute(0, 2, 1)
+      vis_prob = visconfs_sampled[..., 0] * visconfs_sampled[..., 1]
+      vis_slice = (vis_prob.cpu().numpy() > 0.6)
+
+      t_indices = list(range(start_t, start_t + step * T_slice, step))
+      return t_indices, tracks_slice, vis_slice
+
+    # 1. Forward tracking (t_k -> T-1)
+    if t_k < self.T:
+      video_forward = self.video_resized[:, t_k:]
+      t_inds, tr_f, vis_f = _run_slice_and_sample(video_forward, t_k, 1)
+      for idx, t in enumerate(t_inds):
+        tracks_out[t] = tr_f[idx]
+        vis_out[t] = vis_f[idx]
+
+    # 2. Backward tracking (t_k-1 -> 0)
+    if t_k > 0:
+      video_backward = self.video_resized[:, t_k::-1]
+      t_inds, tr_b, vis_b = _run_slice_and_sample(video_backward, t_k, -1)
+      for idx, t in enumerate(t_inds):
+        tracks_out[t] = tr_b[idx]
+        vis_out[t] = vis_b[idx]
 
     return tracks_out, vis_out
+
+  def clear_video(self):
+    if self.video_resized is not None:
+      del self.video_resized
+      self.video_resized = None
+      torch.cuda.empty_cache()
 
 
 
