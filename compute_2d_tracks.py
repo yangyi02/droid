@@ -200,6 +200,54 @@ class TAPNextBackend:
 
 
 # ===========================================================================
+# Namespace isolation helper
+# ===========================================================================
+
+def _import_from_vendor(vendor_path, import_fn, shadow_packages=("utils",)):
+  """Import third-party modules whose package names collide with ours.
+
+  Temporarily evicts ``shadow_packages`` (e.g. ``utils``, ``model``) from
+  ``sys.modules`` so that vendor code can load *its own* versions, then
+  restores ours afterwards.
+
+  Args:
+    vendor_path: Absolute path to the vendor repo root (added to sys.path).
+    import_fn:   Callable that performs the actual imports and returns results.
+    shadow_packages: Package names that collide.
+
+  Returns:
+    Whatever ``import_fn`` returns.
+  """
+  if vendor_path not in sys.path:
+    sys.path.insert(0, vendor_path)
+
+  # Save & remove our versions of the conflicting packages
+  saved = {}
+  for k in list(sys.modules):
+    for pkg in shadow_packages:
+      if k == pkg or k.startswith(pkg + "."):
+        saved[k] = sys.modules.pop(k)
+
+  try:
+    result = import_fn()
+  finally:
+    # Remove the vendor's versions that were just loaded
+    vendor_mods = {}
+    for k in list(sys.modules):
+      for pkg in shadow_packages:
+        if k == pkg or k.startswith(pkg + "."):
+          vendor_mods[k] = sys.modules.pop(k)
+    # Restore ours
+    sys.modules.update(saved)
+    # Stash vendor's under a private prefix so they stay importable
+    tag = os.path.basename(vendor_path)
+    for k, v in vendor_mods.items():
+      sys.modules[f"_{tag}_{k}"] = v
+
+  return result
+
+
+# ===========================================================================
 # AllTracker backend
 # ===========================================================================
 
@@ -214,29 +262,13 @@ class AllTrackerBackend:
     vendor_dir = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "third_party")
     alltracker_path = os.path.join(vendor_dir, "alltracker")
-    if alltracker_path not in sys.path:
-      sys.path.insert(0, alltracker_path)
 
-    # AllTracker's internal code does `import utils.misc`, `import utils.basic`
-    # etc.  Our project also has a top-level `utils/` package already loaded in
-    # sys.modules, which shadows AllTracker's.  Fix: temporarily evict our
-    # `utils` and all its sub-modules so that AllTracker can load its own.
-    saved_utils = {k: sys.modules.pop(k) for k in list(sys.modules)
-                   if k == "utils" or k.startswith("utils.")}
-    try:
-      from nets.alltracker import Net
-    finally:
-      # Keep AllTracker's utils loaded (they are now in sys.modules under
-      # their own keys) and restore ours under a private alias so both
-      # coexist.  In practice the AllTracker Net is already constructed and
-      # won't re-import, so restoring ours is safe for the rest of the
-      # pipeline.
-      alltracker_utils = {k: sys.modules.pop(k) for k in list(sys.modules)
-                          if k == "utils" or k.startswith("utils.")}
-      sys.modules.update(saved_utils)
-      # Stash AllTracker utils so they remain importable if needed later
-      for k, v in alltracker_utils.items():
-        sys.modules[f"_alltracker_{k}"] = v
+    # AllTracker has its own utils.misc / utils.basic that collide with ours
+    Net = _import_from_vendor(
+        alltracker_path,
+        lambda: __import__("nets.alltracker", fromlist=["Net"]).Net,
+        shadow_packages=("utils",),
+    )
 
     if ckpt_path is None:
       weights_dir = os.path.join(alltracker_path, "weights")
@@ -318,10 +350,15 @@ class TrackOnBackend:
     vendor_dir = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "third_party")
     trackon_path = os.path.join(vendor_dir, "track_on")
-    if trackon_path not in sys.path:
-      sys.path.insert(0, trackon_path)
 
-    from model.trackon_predictor import Predictor
+    # Track-On-R has its own utils.coord_utils / utils.train_utils AND its
+    # own model.trackon / model.trackon_predictor — both collide with ours
+    Predictor = _import_from_vendor(
+        trackon_path,
+        lambda: __import__(
+            "model.trackon_predictor", fromlist=["Predictor"]).Predictor,
+        shadow_packages=("utils", "model"),
+    )
 
     if ckpt_path is None:
       weights_dir = os.path.join(trackon_path, "weights")
