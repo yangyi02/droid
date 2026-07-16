@@ -407,7 +407,7 @@ def phase4_cross_view_completion(cotracker_model, scene_constants, scene_state,
 # ---------------------------------------------------------------------------
 def phase5_median_3d_fusion(scene_constants, scene_state, per_cam_tracks,
                             per_cam_vis, N_unified, min_views=2,
-                            min_visible_frames=5):
+                            min_visible_frames=5, max_reproj_error=15.0):
   """Fuse 3D positions across views and frames using nanmedian."""
   print("\n" + "=" * 60)
   print("📐 Phase 5: Multi-View Multi-Frame Median 3D Fusion")
@@ -445,10 +445,90 @@ def phase5_median_3d_fusion(scene_constants, scene_state, per_cam_tracks,
             cam_data["K_mat"], cam_state["extrinsics"][t])
         per_view_3d[v_idx, t, valid, :] = pts_3d
 
-  # Median fusion
+  # Initial Median fusion
   with warnings.catch_warnings():
     warnings.simplefilter("ignore", category=RuntimeWarning)
     fused_traj_3d = np.nanmedian(per_view_3d, axis=0)
+
+  # Iterative Reprojection Filtering
+  if max_reproj_error is not None and max_reproj_error > 0:
+    print(f"  🎯 Filtering tracks with reprojection error > {max_reproj_error} px...")
+    filtered_count = 0
+    total_valid_obs = 0
+    per_cam_vis_clean = {cam: vis.copy() for cam, vis in per_cam_vis.items()}
+
+    for cam_idx, cam_id in enumerate(camera_ids):
+      cam_data = scene_constants["camera"][cam_id]
+      K = cam_data["K_mat"]
+      h_img, w_img = cam_data["video_rgb"][0].shape[:2]
+
+      for t in range(T_frames):
+        vis_t = per_cam_vis_clean[cam_id][t]
+        if not vis_t.any():
+          continue
+
+        pts_3d = fused_traj_3d[t, vis_t]
+        valid_3d = ~np.isnan(pts_3d[:, 0])
+        if not valid_3d.any():
+          continue
+
+        pts_3d_valid = pts_3d[valid_3d]
+        u_proj, v_proj, z_proj = project_points_np(
+            pts_3d_valid, K, scene_state[cam_id]["extrinsics"][t])
+
+        u_stored = per_cam_tracks[cam_id][t, vis_t][valid_3d, 0]
+        v_stored = per_cam_tracks[cam_id][t, vis_t][valid_3d, 1]
+
+        err = np.sqrt((u_proj - u_stored)**2 + (v_proj - v_stored)**2)
+        bad_mask = (err > max_reproj_error) | (z_proj <= 0.01) | \
+                   (u_proj < 0) | (u_proj >= w_img) | \
+                   (v_proj < 0) | (v_proj >= h_img)
+
+        if bad_mask.any():
+          vis_indices = np.where(vis_t)[0]
+          valid_indices = vis_indices[valid_3d]
+          bad_indices = valid_indices[bad_mask]
+          per_cam_vis_clean[cam_id][t, bad_indices] = False
+          filtered_count += len(bad_indices)
+
+        total_valid_obs += len(pts_3d_valid)
+
+    print(f"  🧹 Filtered {filtered_count} bad 2D observations out of {total_valid_obs} ({(filtered_count/max(total_valid_obs, 1))*100:.1f}%)")
+
+    # Re-calculate 3D observations and Re-fuse
+    per_view_3d = np.full(
+        (len(camera_ids), T_frames, N_unified, 3), np.nan, dtype=np.float32)
+
+    for v_idx, cam_id in enumerate(camera_ids):
+      cam_data = scene_constants["camera"][cam_id]
+      cam_state = scene_state[cam_id]
+      h_img, w_img = cam_data["video_rgb"][0].shape[:2]
+
+      for t in range(T_frames):
+        tracks_t = per_cam_tracks[cam_id][t]
+        vis_t = per_cam_vis_clean[cam_id][t]
+
+        u = tracks_t[:, 0]
+        v = tracks_t[:, 1]
+        ui = np.clip(np.round(u).astype(int), 0, w_img - 1)
+        vi = np.clip(np.round(v).astype(int), 0, h_img - 1)
+        z = cam_data["raw_depth"][t, vi, ui]
+
+        valid = (vis_t & (z > 0.05) & (z < 5.0) &
+                 (u >= 0) & (u < w_img) &
+                 (v >= 0) & (v < h_img))
+
+        if valid.any():
+          pts_3d = unproject_points_np(
+              u[valid], v[valid], z[valid],
+              cam_data["K_mat"], cam_state["extrinsics"][t])
+          per_view_3d[v_idx, t, valid, :] = pts_3d
+
+    with warnings.catch_warnings():
+      warnings.simplefilter("ignore", category=RuntimeWarning)
+      fused_traj_3d = np.nanmedian(per_view_3d, axis=0)
+
+    per_cam_vis = per_cam_vis_clean
 
   observation_counts = np.sum(
       ~np.isnan(per_view_3d[:, :, :, 0]), axis=0)
