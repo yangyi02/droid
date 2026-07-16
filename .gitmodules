@@ -11,3 +11,9 @@
 	path = third_party/PointWorld
 	url = https://github.com/NVlabs/PointWorld.git
 	branch = data
+[submodule "third_party/alltracker"]
+	path = third_party/alltracker
+	url = https://github.com/aharley/alltracker.git
+[submodule "third_party/track_on"]
+	path = third_party/track_on
+	url = https://github.com/gorkaydemir/track_on.git
