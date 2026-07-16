@@ -1,12 +1,11 @@
 """Per-view 2D point tracking with selectable tracker model.
 
 Extracts grid-based query points at frame 0 and tracks them independently
-per camera view.  Supports four tracker backends:
+per camera view.  Supports three tracker backends:
 
   - **CoTracker3** (offline, Meta): dense grid tracking at native resolution.
   - **TAPNext++** (online, DeepMind): frame-by-frame tracking at 512×512.
   - **AllTracker** (offline, Harley et al.): dense flow-based tracking.
-  - **Track-On-R** (online, Demir et al.): transformer memory-based tracking.
 
 Output format (per camera, stored in scene_constants):
   tracks_2d : np.float32 (T, N, 2)   pixel coordinates (x, y)
@@ -331,90 +330,6 @@ class AllTrackerBackend:
     return tracks, vis
 
 
-# ===========================================================================
-# Track-On-R backend
-# ===========================================================================
-
-class TrackOnBackend:
-  """Track-On-R (or Track-On2) online point tracking via Predictor API.
-
-  Uses the Predictor class which takes:
-    video:   (1, T, 3, H, W) float tensor [0-255]
-    queries: (1, N, 3) with (t, x, y) in pixel coords
-  Returns:
-    traj: (1, T, N, 2)  per-point (x, y)
-    vis:  (1, T, N)     visibility {0, 1}
-  """
-
-  def __init__(self, device, ckpt_path=None):
-    vendor_dir = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "third_party")
-    trackon_path = os.path.join(vendor_dir, "track_on")
-
-    # Track-On-R has its own utils.coord_utils / utils.train_utils AND its
-    # own model.trackon / model.trackon_predictor — both collide with ours
-    Predictor = _import_from_vendor(
-        trackon_path,
-        lambda: __import__(
-            "model.trackon_predictor", fromlist=["Predictor"]).Predictor,
-        shadow_packages=("utils", "model"),
-    )
-
-    if ckpt_path is None:
-      weights_dir = os.path.join(trackon_path, "weights")
-      os.makedirs(weights_dir, exist_ok=True)
-      ckpt_path = os.path.join(weights_dir, "track_on_r.pt")
-      if not os.path.exists(ckpt_path):
-        print("  📥 Downloading Track-On-R weights from HuggingFace...")
-        hf_url = ("https://huggingface.co/gorkaydemir/track_on_r/resolve/"
-                  "main/track_on_r.pt")
-        torch.hub.download_url_to_file(hf_url, ckpt_path)
-
-    model = Predictor(checkpoint_path=ckpt_path).to(device).eval()
-    self.model = model
-    self.device = device
-    self.name = "Track-On-R"
-    print(f"  ✅ {self.name} loaded on {device}")
-
-  @torch.no_grad()
-  def track(self, video_rgb, grid_size=30):
-    """Run online tracking on full video.
-
-    Args:
-      video_rgb: np.uint8 (T, H, W, 3) RGB video.
-      grid_size: Grid density per axis.
-
-    Returns:
-      tracks: np.float32 (T, N, 2) pixel coordinates (x, y).
-      vis:    np.bool_   (T, N)    visibility mask.
-    """
-    T, H, W, _ = video_rgb.shape
-    queries_xy = generate_grid_queries(H, W, grid_size)  # (N, 2)
-    N = queries_xy.shape[0]
-
-    # Predictor expects (1, T, 3, H, W) float [0-255]
-    video_t = (
-        torch.from_numpy(video_rgb).float()
-        .permute(0, 3, 1, 2)[None]  # (1, T, 3, H, W)
-        .to(self.device)
-    )
-
-    # queries: (1, N, 3) with (t, x, y)
-    t_col = torch.zeros(N, 1, dtype=torch.float32)
-    xy_col = torch.from_numpy(queries_xy).float()  # (N, 2)
-    queries_t = torch.cat([t_col, xy_col], dim=1)[None].to(self.device)
-
-    # Reset state for fresh tracking
-    self.model.reset()
-
-    traj, vis = self.model(video_t, queries_t)  # (1,T,N,2), (1,T,N)
-
-    tracks = traj[0].cpu().numpy()    # (T, N, 2)
-    vis_out = vis[0].cpu().numpy() > 0.5  # (T, N)
-
-    del video_t, queries_t, traj, vis
-    torch.cuda.empty_cache()
-    return tracks, vis_out
 
 
 # ===========================================================================
@@ -425,7 +340,7 @@ def init_tracker(method, device, ckpt_path=None):
   """Initialize a tracker backend.
 
   Args:
-    method: "cotracker", "tapnext", "alltracker", or "trackon".
+    method: "cotracker", "tapnext", or "alltracker".
     device: Torch device.
     ckpt_path: Optional checkpoint path.
 
@@ -439,8 +354,6 @@ def init_tracker(method, device, ckpt_path=None):
     return TAPNextBackend(device, ckpt_path=ckpt_path)
   elif method == "alltracker":
     return AllTrackerBackend(device, ckpt_path=ckpt_path)
-  elif method == "trackon":
-    return TrackOnBackend(device, ckpt_path=ckpt_path)
   else:
     raise ValueError(f"Unknown tracker method: {method}")
 
@@ -527,7 +440,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(
       description="DROID: Per-view 2D Point Tracking")
   parser.add_argument("--method", type=str,
-                       choices=["cotracker", "tapnext", "alltracker", "trackon"],
+                       choices=["cotracker", "tapnext", "alltracker"],
                        default="cotracker",
                        help="Tracker model to use")
   parser.add_argument("--grid_size", type=int, default=30,
