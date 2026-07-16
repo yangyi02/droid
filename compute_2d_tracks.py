@@ -292,7 +292,9 @@ class AllTrackerBackend:
                   "alltracker.pth")
         torch.hub.download_url_to_file(hf_url, ckpt_path)
 
-    model = Net(seqlen=128)
+    # Pretrained checkpoint uses seqlen=16 for time embeddings.
+    # The model processes longer videos using sliding window / padding of size seqlen.
+    model = Net(seqlen=16)
     ckpt = torch.load(ckpt_path, map_location="cpu")
     state = ckpt["model"] if "model" in ckpt else ckpt
     model.load_state_dict(state, strict=False)
