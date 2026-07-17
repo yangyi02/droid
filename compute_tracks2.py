@@ -30,7 +30,6 @@ from collections import defaultdict
 
 import cv2
 import numpy as np
-from scipy.spatial import cKDTree
 
 from core.geometry import project_points_np, unproject_points_np
 from core.io import get_accelerator, load_depth_data, load_extrinsics
@@ -143,53 +142,66 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     print(f"    [{cam_id}] {len(valid_indices)} env / {n_robot_grid} robot / "
           f"{np.sum(~has_depth & is_env)} no-depth  (grid={grid_size}²)")
 
-  # Pairwise cross-view matching at t=0
-  all_consensus_pts = []
-  all_consensus_rgb = []
+  # Cross-view depth reprojection consensus at t=0
+  # For each camera's grid points, project into every OTHER camera and
+  # check depth agreement. A point is verified if at least one other
+  # camera's depth map agrees with its predicted depth.
+  all_verified_pts = []
+  all_verified_rgb = []
 
-  for i, cam_a in enumerate(camera_ids):
-    for cam_b in camera_ids[i + 1:]:
-      pts_a = per_cam_pts.get(cam_a)
-      pts_b = per_cam_pts.get(cam_b)
-      if pts_a is None or pts_b is None:
+  for src_cam in camera_ids:
+    pts = per_cam_pts.get(src_cam)
+    rgb = per_cam_rgb.get(src_cam)
+    if pts is None or len(pts) == 0:
+      continue
+
+    # Check each point against all other cameras
+    n_agree = np.zeros(len(pts), dtype=int)
+
+    for dst_cam in camera_ids:
+      if dst_cam == src_cam:
         continue
-      if len(pts_a) == 0 or len(pts_b) == 0:
-        continue
+      dst_data = scene_constants["camera"][dst_cam]
+      dst_ext = scene_state[dst_cam]["extrinsics"][0]
+      dst_K = dst_data["K_mat"]
+      dst_h, dst_w = dst_data["video_rgb"][0].shape[:2]
 
-      # KD-tree matching
-      tree_a = cKDTree(pts_a)
-      dists, indices = tree_a.query(pts_b, k=1)
-      matched = dists < match_radius
+      # Project 3D points from src into dst view
+      u_d, v_d, z_pred = project_points_np(pts, dst_K, dst_ext)
+      ui_d = np.clip(np.round(u_d).astype(int), 0, dst_w - 1)
+      vi_d = np.clip(np.round(v_d).astype(int), 0, dst_h - 1)
 
-      if np.sum(matched) == 0:
-        print(f"    [{cam_a[:8]}↔{cam_b[:8]}] 0 matches")
-        continue
+      in_bounds = ((u_d >= 0) & (u_d < dst_w) &
+                   (v_d >= 0) & (v_d < dst_h) & (z_pred > 0))
 
-      # Average matched 3D positions for better precision
-      avg_pts = (pts_a[indices[matched]] + pts_b[matched]) / 2.0
-      avg_rgb = per_cam_rgb[cam_a][indices[matched]]
+      # Read dst depth and check consistency
+      z_obs = dst_data["raw_depth"][0, vi_d, ui_d]
+      depth_ok = (z_obs > 0.05) & (np.abs(z_pred - z_obs) < match_radius)
 
-      all_consensus_pts.append(avg_pts)
-      all_consensus_rgb.append(avg_rgb)
-      print(f"    [{cam_a[:8]}↔{cam_b[:8]}] {len(avg_pts)} consensus matches")
+      n_agree += (in_bounds & depth_ok).astype(int)
 
-  if not all_consensus_pts:
-    print("  ⚠️ No consensus points found.")
+    # Keep points verified by at least 1 other camera
+    verified = n_agree >= 1
+    n_verified = np.sum(verified)
+    print(f"    [{src_cam[:8]}] {n_verified}/{len(pts)} verified by cross-view depth")
+
+    if n_verified > 0:
+      all_verified_pts.append(pts[verified])
+      all_verified_rgb.append(rgb[verified])
+
+  if not all_verified_pts:
+    print("  ⚠️ No cross-view verified points found.")
     return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
 
-  # Concatenate and dedup
-  all_pts = np.concatenate(all_consensus_pts, axis=0)
-  all_rgb = np.concatenate(all_consensus_rgb, axis=0)
-  print(f"\n  📊 Total consensus points: {len(all_pts)}")
+  # Concatenate and dedup (same 3D point may be verified from multiple cameras)
+  all_pts = np.concatenate(all_verified_pts, axis=0)
+  all_rgb = np.concatenate(all_verified_rgb, axis=0)
+  print(f"\n  📊 Total verified points (pre-dedup): {len(all_pts)}")
 
-  # Dedup via voxel grid (only relevant if >2 static cams produce overlaps)
-  if len(all_pts) > 0:
-    dedup_pts, dedup_rgb = _voxel_dedup(all_pts, all_rgb,
-                                         voxel_size=match_radius * 2)
-    if len(dedup_pts) < len(all_pts):
-      print(f"  📊 After dedup: {len(dedup_pts)}")
-  else:
-    dedup_pts, dedup_rgb = all_pts, all_rgb
+  dedup_pts, dedup_rgb = _voxel_dedup(all_pts, all_rgb,
+                                       voxel_size=match_radius * 2)
+  if len(dedup_pts) < len(all_pts):
+    print(f"  📊 After dedup: {len(dedup_pts)}")
 
   # Multi-frame static verification (query is still only t=0, but we
   # verify that each candidate 3D point has consistent depth across
