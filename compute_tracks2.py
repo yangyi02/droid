@@ -34,7 +34,7 @@ import numpy as np
 from core.geometry import project_points_np, unproject_points_np
 from core.io import get_accelerator, load_depth_data, load_extrinsics
 from core.physics import PyBulletRenderer
-from core.tracking import URDFKinematicsTracker, generate_grid_queries
+from core.tracking import URDFKinematicsTracker
 
 
 # ===========================================================================
@@ -42,20 +42,19 @@ from core.tracking import URDFKinematicsTracker, generate_grid_queries
 # ===========================================================================
 
 def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
-                                  grid_size=32,
                                   match_radius=0.005,
                                   num_verify_keyframes=5,
                                   safe_margin=15):
   """Find reliable static background 3D points via cross-view depth consensus.
 
-  All queries happen at frame 0 only. For each static (non-wrist) camera:
-    1. Generate a uniform grid (grid_size × grid_size) at frame 0.
-    2. Filter out robot-occupied grid points.
-    3. Unproject remaining grid points to 3D using depth at t=0.
+  All queries happen at frame 0 only. For each camera (including wrist):
+    1. Use ALL pixels at frame 0 (dense sampling).
+    2. Filter out robot-occupied pixels.
+    3. Unproject remaining pixels to 3D using depth at t=0.
 
-  Then cross-view nearest-neighbor matching between camera pairs verifies
-  which 3D points are consistent across views. Matched points are averaged
-  for better precision.
+  Then cross-view depth reprojection verifies which 3D points are consistent
+  across views. A point is verified if at least one other camera's depth map
+  agrees with its predicted depth.
 
   Finally, candidate points are verified across multiple keyframes: a point
   is kept only if its projected depth matches the observed depth in at least
@@ -65,9 +64,7 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     scene_constants: Scene data dict.
     scene_state: Extrinsics dict.
     pb_renderer: PyBulletRenderer instance.
-    grid_size: Grid density per axis (total = grid_size²). Same grid used
-        by robot tracking.
-    match_radius: Max 3D distance (m) to consider two points the same.
+    match_radius: Max depth discrepancy (m) for cross-view agreement.
     num_verify_keyframes: Number of keyframes for multi-frame static
         verification (not for querying new points).
     safe_margin: Dilation kernel size for robot mask.
@@ -85,14 +82,14 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     print("  ⚠️ Need at least 2 cameras for consensus.")
     return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
 
-  print(f"  📸 Querying at frame 0 on all {len(camera_ids)} cameras (grid_size={grid_size})")
+  print(f"  📸 Querying at frame 0 on all {len(camera_ids)} cameras (dense)")
 
   # Build robot mask at t=0
   pb_renderer.update_robot_pose(
       scene_constants["robot"]["joint_positions"][0],
       gripper_state=scene_constants["robot"]["gripper_positions"][0])
 
-  # Unproject grid points from ALL cameras at t=0 (including wrist)
+  # Unproject ALL pixels from each camera at t=0 (dense sampling)
   per_cam_pts = {}
   per_cam_rgb = {}
 
@@ -102,45 +99,39 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     K = cam_data["K_mat"]
     h_img, w_img = cam_data["video_rgb"][0].shape[:2]
 
-    # Same grid that robot tracking uses
-    grid_xy = generate_grid_queries(h_img, w_img, grid_size)  # (N, 2)
-
     # Robot mask (dilated)
     robot_mask = pb_renderer.render_mask(ext, K, w_img, h_img)
     kernel = np.ones((safe_margin, safe_margin), np.uint8)
     robot_mask_dilated = cv2.dilate(
         robot_mask.astype(np.uint8), kernel, iterations=1) > 0
 
-    # Classify grid points
-    ui = np.clip(np.round(grid_xy[:, 0]).astype(int), 0, w_img - 1)
-    vi = np.clip(np.round(grid_xy[:, 1]).astype(int), 0, h_img - 1)
-    is_env = ~robot_mask_dilated[vi, ui]
+    # Dense pixel grid (all pixels)
+    depth = cam_data["raw_depth"][0]
+    is_env = ~robot_mask_dilated
+    has_depth = (depth > 0.05) & (depth < 5.0)
+    valid_mask = is_env & has_depth
+    vs, us = np.where(valid_mask)  # row, col indices
 
-    # Get depth at grid points
-    z = cam_data["raw_depth"][0, vi, ui]
-    has_depth = (z > 0.05) & (z < 5.0)
-    valid = is_env & has_depth
-    valid_indices = np.where(valid)[0]
-
-    if len(valid_indices) == 0:
-      print(f"    [{cam_id}] 0 env grid points with depth")
+    if len(us) == 0:
+      print(f"    [{cam_id}] 0 env pixels with depth")
       continue
 
-    # Unproject valid grid points to 3D
-    pts_3d = unproject_points_np(
-        grid_xy[valid_indices, 0],
-        grid_xy[valid_indices, 1],
-        z[valid_indices],
-        K, ext)
+    z = depth[vs, us]
+    u_f = us.astype(np.float32)
+    v_f = vs.astype(np.float32)
+
+    # Unproject to 3D
+    pts_3d = unproject_points_np(u_f, v_f, z, K, ext)
 
     # RGB colors
-    rgb = cam_data["video_rgb"][0][vi[valid_indices], ui[valid_indices]]
+    rgb = cam_data["video_rgb"][0][vs, us]
 
     per_cam_pts[cam_id] = pts_3d
     per_cam_rgb[cam_id] = rgb
-    n_robot_grid = np.sum(robot_mask_dilated[vi, ui])
-    print(f"    [{cam_id}] {len(valid_indices)} env / {n_robot_grid} robot / "
-          f"{np.sum(~has_depth & is_env)} no-depth  (grid={grid_size}²)")
+    n_robot = np.sum(robot_mask_dilated & has_depth)
+    n_no_depth = np.sum(is_env & ~has_depth)
+    print(f"    [{cam_id}] {len(us)} env / {n_robot} robot / "
+          f"{n_no_depth} no-depth  (dense {w_img}×{h_img})")
 
   # Cross-view depth reprojection consensus at t=0
   # For each camera's grid points, project into every OTHER camera and
@@ -402,21 +393,19 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
 
 
 # ===========================================================================
-# Phase 3: Robot tracks via URDF FK (same grid at t=0)
+# Phase 3: Robot tracks via URDF FK (dense at t=0)
 # ===========================================================================
 
-def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
-                        grid_size=32):
+def phase3_robot_tracks(scene_constants, scene_state, pb_renderer):
   """Extract robot surface tracks via URDF forward kinematics.
 
-  Uses the same grid_size as the background point extraction so that
-  robot and background points together form a complete grid at t=0.
+  Uses ALL pixels at frame 0 to find robot surface points (dense sampling),
+  then propagates via FK across all frames.
 
   Args:
     scene_constants: Scene data dict.
     scene_state: Extrinsics dict.
     pb_renderer: PyBulletRenderer instance.
-    grid_size: Grid density per axis (must match phase1's grid_size).
 
   Returns:
     robot_traj_3d:        (T, N_robot, 3)
@@ -428,7 +417,7 @@ def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
 
   print(f"\n{'=' * 60}")
-  print(f"🦾 Phase 3: URDF Forward Kinematics Robot Tracking (grid={grid_size})")
+  print("🦾 Phase 3: URDF Forward Kinematics Robot Tracking (dense)")
   print(f"{'=' * 60}")
 
   urdf_tracker = URDFKinematicsTracker(pb_renderer)
@@ -439,8 +428,7 @@ def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
   for src_cam in camera_ids:
     traj_3d_rob, traj_2d_rob, vis_rob, robot_indices = \
         urdf_tracker.extract_robot_tracks(
-            src_cam, scene_constants, scene_state,
-            grid_size=grid_size)
+            src_cam, scene_constants, scene_state)
 
     if traj_3d_rob is None or len(robot_indices) == 0:
       continue
@@ -619,12 +607,11 @@ def export_tracks(scene_constants, scene_state, final_traj_3d,
 # ===========================================================================
 
 def process_episode(episode_id, pb_renderer, device,
-                    depth_root, extrinsics_root, export_root,
-                    grid_size=32):
+                    depth_root, extrinsics_root, export_root):
   """Full static+robot pipeline for a single episode.
 
   No tracker model needed — background points use static prior only.
-  Both robot and background use the same grid at frame 0.
+  Dense pixel sampling at frame 0 for both robot and background.
   """
   print(f"\n{'=' * 60}")
   print(f"🎬 Processing Episode: {episode_id}")
@@ -638,13 +625,12 @@ def process_episode(episode_id, pb_renderer, device,
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
   print(f"  📊 {len(camera_ids)} cameras × {T_frames} frames (full video)")
 
-  # Phase 1: Find static background points (t=0 only)
+  # Phase 1: Find static background points (t=0 only, dense)
   print(f"\n{'=' * 60}")
-  print(f"🏔️ Phase 1: Grid at t=0 → Cross-View Consensus → Static Points")
+  print(f"🏔️ Phase 1: Dense at t=0 → Cross-View Consensus → Static Points")
   print(f"{'=' * 60}")
   static_pts_3d, static_rgb = phase1_find_static_candidates(
-      scene_constants, scene_state, pb_renderer,
-      grid_size=grid_size)
+      scene_constants, scene_state, pb_renderer)
 
   # Phase 2: Project static points to all views
   if len(static_pts_3d) > 0:
@@ -658,10 +644,9 @@ def process_episode(episode_id, pb_renderer, device,
         cam: np.zeros((T_frames, 0), dtype=bool)
         for cam in camera_ids}
 
-  # Phase 3: Robot tracks (same grid_size)
+  # Phase 3: Robot tracks (dense at t=0)
   robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis, n_robot = \
-      phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
-                          grid_size=grid_size)
+      phase3_robot_tracks(scene_constants, scene_state, pb_renderer)
 
   # Phase 4: Merge
   (final_traj_3d, final_vis_global, final_per_cam_tracks,
@@ -694,8 +679,6 @@ if __name__ == "__main__":
                       default="~/droid_data/output/mv-tap/droid/extrinsics")
   parser.add_argument("--export_root", type=str,
                       default="~/droid_data/output/mv-tap/droid/tracks2")
-  parser.add_argument("--grid_size", type=int, default=32,
-                      help="Grid density per axis (total = grid_size²)")
   parser.add_argument("--limit", type=int, default=-1,
                       help="Limit total number of episodes to process")
   args = parser.parse_args()
@@ -720,8 +703,7 @@ if __name__ == "__main__":
     try:
       process_episode(
           ep_id, pb_renderer, device,
-          args.depth_root, args.extrinsics_root, args.export_root,
-          grid_size=args.grid_size)
+          args.depth_root, args.extrinsics_root, args.export_root)
     except Exception as e:
       print(f"  ❌ Episode {ep_id} failed: {e}")
       import traceback

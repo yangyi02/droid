@@ -56,25 +56,24 @@ class URDFKinematicsTracker:
     return T
 
   def extract_robot_tracks(self, src_cam, scene_constants, scene_state,
-                           safe_margin=7, grid_size=30):
+                           safe_margin=7):
     """Extract 3D robot surface trajectories via URDF forward kinematics.
 
-    Generates a uniform grid of seed points at frame 0, identifies which
-    fall on the robot surface, and propagates them via FK. No dependency
-    on any external tracker or pre-computed tracks_2d.
+    Uses ALL pixels at frame 0 as seed candidates, identifies which fall
+    on the robot surface (via eroded robot mask), and propagates them via
+    FK. No grid subsampling — dense coverage.
 
     Args:
       src_cam: Source camera serial number.
       scene_constants: Scene data dict.
       scene_state: Extrinsics dict.
       safe_margin: Robot mask erosion kernel size.
-      grid_size: Grid density per axis for seed point generation.
 
     Returns:
       traj_3d: (T, N_robot, 3) world coordinates
       traj_2d: (T, N_robot, 2) pixel coordinates in src_cam
       vis_2d:  (T, N_robot) visibility mask in src_cam
-      robot_indices: indices into the seed grid
+      robot_indices: indices into the dense pixel array
     """
     print(f"    🦾 URDF tracking [{src_cam}]")
     src_data = scene_constants["camera"][src_cam]
@@ -84,8 +83,11 @@ class URDFKinematicsTracker:
     h_img, w_img = src_data["video_rgb"][0].shape[:2]
     n_frames = len(src_data["video_rgb"])
 
-    # Generate grid seed points at frame 0 (no tracker dependency)
-    seed_pts_2d = generate_grid_queries(h_img, w_img, grid_size)
+    # Dense pixel grid at frame 0 (all pixels)
+    ys = np.arange(h_img, dtype=np.float32)
+    xs = np.arange(w_img, dtype=np.float32)
+    xx, yy = np.meshgrid(xs, ys)
+    seed_pts_2d = np.stack([xx.ravel(), yy.ravel()], axis=-1)  # (H*W, 2)
 
     # Frame 0: find seed points on robot
     self.pb.update_robot_pose(
