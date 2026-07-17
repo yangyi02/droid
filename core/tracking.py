@@ -1,7 +1,8 @@
 """URDF-based robot tracking via forward kinematics.
 
-URDFKinematicsTracker binds 2D CoTracker seed points to URDF link frames
-at t=0, then propagates them across all frames using PyBullet FK.
+URDFKinematicsTracker generates grid seed points on the robot surface,
+binds them to URDF link frames at t=0, then propagates across all frames
+using PyBullet FK. No external tracker model is required.
 """
 
 import cv2
@@ -12,11 +13,30 @@ from scipy.spatial.transform import Rotation as R
 from core.geometry import project_points_np, unproject_points_np
 
 
+def generate_grid_queries(h, w, grid_size=30):
+  """Generate a uniform grid of (x, y) query points at native resolution.
+
+  Args:
+    h: Image height.
+    w: Image width.
+    grid_size: Number of points per axis (total = grid_size²).
+
+  Returns:
+    queries: np.float32 (N, 2) with (x, y) pixel coordinates.
+  """
+  xs = np.linspace(0, w - 1, grid_size, dtype=np.float32)
+  ys = np.linspace(0, h - 1, grid_size, dtype=np.float32)
+  xx, yy = np.meshgrid(xs, ys)
+  queries = np.stack([xx.ravel(), yy.ravel()], axis=-1)
+  return queries
+
+
 class URDFKinematicsTracker:
   """Forward kinematics-based robot 3D trajectory generator.
 
-  Binds seed 2D tracking points to URDF link frames at t=0,
-  then propagates them via forward kinematics across all frames.
+  Generates grid seed points at t=0, identifies which fall on the robot
+  surface, binds them to URDF link frames, then propagates via forward
+  kinematics across all frames. No external tracker model is needed.
   """
 
   def __init__(self, pb_renderer):
@@ -36,14 +56,25 @@ class URDFKinematicsTracker:
     return T
 
   def extract_robot_tracks(self, src_cam, scene_constants, scene_state,
-                           safe_margin=7):
+                           safe_margin=7, grid_size=30):
     """Extract 3D robot surface trajectories via URDF forward kinematics.
+
+    Generates a uniform grid of seed points at frame 0, identifies which
+    fall on the robot surface, and propagates them via FK. No dependency
+    on any external tracker or pre-computed tracks_2d.
+
+    Args:
+      src_cam: Source camera serial number.
+      scene_constants: Scene data dict.
+      scene_state: Extrinsics dict.
+      safe_margin: Robot mask erosion kernel size.
+      grid_size: Grid density per axis for seed point generation.
 
     Returns:
       traj_3d: (T, N_robot, 3) world coordinates
       traj_2d: (T, N_robot, 2) pixel coordinates in src_cam
       vis_2d:  (T, N_robot) visibility mask in src_cam
-      robot_indices: indices into the original tracks_2d
+      robot_indices: indices into the seed grid
     """
     print(f"    🦾 URDF tracking [{src_cam}]")
     src_data = scene_constants["camera"][src_cam]
@@ -52,7 +83,9 @@ class URDFKinematicsTracker:
     extrinsics = src_state["extrinsics"]
     h_img, w_img = src_data["video_rgb"][0].shape[:2]
     n_frames = len(src_data["video_rgb"])
-    tracks_2d_t0 = src_data["tracks_2d"][0]
+
+    # Generate grid seed points at frame 0 (no tracker dependency)
+    seed_pts_2d = generate_grid_queries(h_img, w_img, grid_size)
 
     # Frame 0: find seed points on robot
     self.pb.update_robot_pose(
@@ -69,8 +102,8 @@ class URDFKinematicsTracker:
     is_robot_safe = cv2.erode(
         is_robot.astype(np.uint8), kernel, iterations=1) > 0
 
-    u0 = np.clip(np.round(tracks_2d_t0[:, 0]).astype(int), 0, w_img - 1)
-    v0 = np.clip(np.round(tracks_2d_t0[:, 1]).astype(int), 0, h_img - 1)
+    u0 = np.clip(np.round(seed_pts_2d[:, 0]).astype(int), 0, w_img - 1)
+    v0 = np.clip(np.round(seed_pts_2d[:, 1]).astype(int), 0, h_img - 1)
     robot_indices = np.where(is_robot_safe[v0, u0])[0]
 
     if len(robot_indices) == 0:
@@ -85,8 +118,8 @@ class URDFKinematicsTracker:
     z0 = urdf_depth[v0[robot_indices], u0[robot_indices]]
 
     pts_world_t0 = unproject_points_np(
-        tracks_2d_t0[robot_indices, 0],
-        tracks_2d_t0[robot_indices, 1],
+        seed_pts_2d[robot_indices, 0],
+        seed_pts_2d[robot_indices, 1],
         z0, K_mat, extrinsics[0])
 
     unique_parts = set(zip(robot_objs, robot_links))
