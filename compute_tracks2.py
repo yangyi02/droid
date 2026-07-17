@@ -45,6 +45,7 @@ from core.tracking import URDFKinematicsTracker, generate_grid_queries
 def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
                                   grid_size=32,
                                   match_radius=0.005,
+                                  num_verify_keyframes=5,
                                   safe_margin=15):
   """Find reliable static background 3D points via cross-view depth consensus.
 
@@ -57,6 +58,10 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
   which 3D points are consistent across views. Matched points are averaged
   for better precision.
 
+  Finally, candidate points are verified across multiple keyframes: a point
+  is kept only if its projected depth matches the observed depth in at least
+  one static camera for enough keyframes (proving it is truly static).
+
   Args:
     scene_constants: Scene data dict.
     scene_state: Extrinsics dict.
@@ -64,6 +69,8 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     grid_size: Grid density per axis (total = grid_size²). Same grid used
         by robot tracking.
     match_radius: Max 3D distance (m) to consider two points the same.
+    num_verify_keyframes: Number of keyframes for multi-frame static
+        verification (not for querying new points).
     safe_margin: Dilation kernel size for robot mask.
 
   Returns:
@@ -184,6 +191,24 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
   else:
     dedup_pts, dedup_rgb = all_pts, all_rgb
 
+  # Multi-frame static verification (query is still only t=0, but we
+  # verify that each candidate 3D point has consistent depth across
+  # multiple keyframes to filter out non-static objects)
+  T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
+  if num_verify_keyframes > 1 and T_frames > 1:
+    keyframe_indices = np.linspace(0, T_frames - 1, num_verify_keyframes,
+                                   dtype=int).tolist()
+    keyframe_indices = sorted(set(keyframe_indices))
+    n_before = len(dedup_pts)
+    dedup_pts, dedup_rgb = _verify_static_across_frames(
+        dedup_pts, dedup_rgb, scene_constants, scene_state,
+        static_cams, keyframe_indices, pb_renderer,
+        depth_tolerance=0.03,
+        min_consistent_frames=max(1, len(keyframe_indices) // 2),
+        safe_margin=safe_margin)
+    print(f"  📊 Multi-frame verification ({len(keyframe_indices)} keyframes): "
+          f"{n_before} → {len(dedup_pts)} points")
+
   print(f"  ✅ Found {len(dedup_pts)} static background points")
   return dedup_pts, dedup_rgb
 
@@ -212,6 +237,68 @@ def _voxel_dedup(pts, rgb, voxel_size=0.01):
     out_rgb[i] = np.median(rgb[mask].astype(np.float32), axis=0).astype(np.uint8)
 
   return out_pts, out_rgb
+
+
+def _verify_static_across_frames(pts, rgb, scene_constants, scene_state,
+                                  static_cams, keyframe_indices, pb_renderer,
+                                  depth_tolerance=0.03,
+                                  min_consistent_frames=2,
+                                  safe_margin=15):
+  """Verify that candidate static points are depth-consistent across frames.
+
+  For each candidate 3D point (discovered at t=0), project it into every
+  static camera at every keyframe and check whether the observed depth matches
+  the predicted depth. A point is kept only if it passes this check in at
+  least one camera for at least min_consistent_frames keyframes.
+
+  This filters out objects that appeared static at t=0 but later moved.
+  No new query points are generated — this is purely a verification step.
+  """
+  N = len(pts)
+  if N == 0:
+    return pts, rgb
+
+  consistent_count = np.zeros(N, dtype=int)
+
+  for t_k in keyframe_indices:
+    # Any-cam depth consistency at this frame
+    any_cam_ok = np.zeros(N, dtype=bool)
+
+    pb_renderer.update_robot_pose(
+        scene_constants["robot"]["joint_positions"][t_k],
+        gripper_state=scene_constants["robot"]["gripper_positions"][t_k])
+
+    for cam_id in static_cams:
+      cam_data = scene_constants["camera"][cam_id]
+      ext = scene_state[cam_id]["extrinsics"][t_k]
+      K = cam_data["K_mat"]
+      h_img, w_img = cam_data["video_rgb"][0].shape[:2]
+
+      # Robot mask
+      robot_mask = pb_renderer.render_mask(ext, K, w_img, h_img)
+      kernel = np.ones((safe_margin, safe_margin), np.uint8)
+      robot_mask_dilated = cv2.dilate(
+          robot_mask.astype(np.uint8), kernel, iterations=1) > 0
+
+      # Project points
+      u, v, z_pred = project_points_np(pts, K, ext)
+      ui = np.clip(np.round(u).astype(int), 0, w_img - 1)
+      vi = np.clip(np.round(v).astype(int), 0, h_img - 1)
+
+      in_bounds = ((u >= 0) & (u < w_img) &
+                   (v >= 0) & (v < h_img) & (z_pred > 0))
+      not_robot = ~robot_mask_dilated[vi, ui]
+
+      z_obs = cam_data["raw_depth"][t_k, vi, ui]
+      depth_ok = (z_obs > 0.05) & (np.abs(z_pred - z_obs) < depth_tolerance)
+
+      cam_ok = in_bounds & not_robot & depth_ok
+      any_cam_ok |= cam_ok
+
+    consistent_count += any_cam_ok.astype(int)
+
+  keep = consistent_count >= min_consistent_frames
+  return pts[keep], rgb[keep]
 
 
 # ===========================================================================
