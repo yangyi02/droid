@@ -80,24 +80,24 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
   camera_ids = list(scene_constants["camera"].keys())
   wrist_serial = scene_constants["meta"].get("wrist_serial")
 
-  # Identify static (non-wrist) cameras
+  # Static cameras used for multi-frame verification only
   static_cams = [c for c in camera_ids if c != wrist_serial]
-  if len(static_cams) < 2:
-    print("  ⚠️ Need at least 2 static cameras for consensus.")
+  if len(camera_ids) < 2:
+    print("  ⚠️ Need at least 2 cameras for consensus.")
     return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
 
-  print(f"  📸 Querying at frame 0 only (grid_size={grid_size})")
+  print(f"  📸 Querying at frame 0 on all {len(camera_ids)} cameras (grid_size={grid_size})")
 
   # Build robot mask at t=0
   pb_renderer.update_robot_pose(
       scene_constants["robot"]["joint_positions"][0],
       gripper_state=scene_constants["robot"]["gripper_positions"][0])
 
-  # Unproject grid points from each static camera at t=0
+  # Unproject grid points from ALL cameras at t=0 (including wrist)
   per_cam_pts = {}
   per_cam_rgb = {}
 
-  for cam_id in static_cams:
+  for cam_id in camera_ids:
     cam_data = scene_constants["camera"][cam_id]
     ext = scene_state[cam_id]["extrinsics"][0]
     K = cam_data["K_mat"]
@@ -147,8 +147,8 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
   all_consensus_pts = []
   all_consensus_rgb = []
 
-  for i, cam_a in enumerate(static_cams):
-    for cam_b in static_cams[i + 1:]:
+  for i, cam_a in enumerate(camera_ids):
+    for cam_b in camera_ids[i + 1:]:
       pts_a = per_cam_pts.get(cam_a)
       pts_b = per_cam_pts.get(cam_b)
       if pts_a is None or pts_b is None:
