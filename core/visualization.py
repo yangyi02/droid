@@ -922,7 +922,7 @@ def render_4d_orbit_with_tracks(
             np.full(N * n_f, 255)]).astype(np.uint8)
         mesh = trimesh.Trimesh(vertices=all_verts, faces=all_faces)
         mesh.visual.face_colors = face_rgba
-        tk_node = scene.add(pyrender.Mesh.from_trimesh(mesh))
+        tk_node = scene.add(pyrender.Mesh.from_trimesh(mesh, smooth=False))
         nodes_to_remove.append(tk_node)
 
       # --- 3. Track trails (GL_LINES) ---
