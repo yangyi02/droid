@@ -44,6 +44,7 @@ from core.tracking import URDFKinematicsTracker
 def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
                                   match_radius=0.005,
                                   num_verify_keyframes=5,
+                                  num_points=None,
                                   safe_margin=15):
   """Find reliable static background 3D points via cross-view depth consensus.
 
@@ -211,6 +212,14 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
         safe_margin=safe_margin)
     print(f"  📊 Multi-frame verification ({len(keyframe_indices)} keyframes): "
           f"{n_before} → {len(dedup_pts)} points")
+
+  # Subsample to target number of points
+  if num_points is not None and len(dedup_pts) > num_points:
+    rng = np.random.default_rng(42)
+    idx = rng.choice(len(dedup_pts), num_points, replace=False)
+    dedup_pts = dedup_pts[idx]
+    dedup_rgb = dedup_rgb[idx]
+    print(f"  📊 Subsampled to {num_points} points")
 
   print(f"  ✅ Found {len(dedup_pts)} static background points")
   return dedup_pts, dedup_rgb
@@ -396,16 +405,19 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
 # Phase 3: Robot tracks via URDF FK (dense at t=0)
 # ===========================================================================
 
-def phase3_robot_tracks(scene_constants, scene_state, pb_renderer):
+def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
+                        max_robot_pts_per_cam=None):
   """Extract robot surface tracks via URDF forward kinematics.
 
   Uses ALL pixels at frame 0 to find robot surface points (dense sampling),
-  then propagates via FK across all frames.
+  subsamples to max_robot_pts_per_cam per source camera, then propagates
+  via FK across all frames.
 
   Args:
     scene_constants: Scene data dict.
     scene_state: Extrinsics dict.
     pb_renderer: PyBulletRenderer instance.
+    max_robot_pts_per_cam: Max robot points per source camera (None=no limit).
 
   Returns:
     robot_traj_3d:        (T, N_robot, 3)
@@ -417,7 +429,7 @@ def phase3_robot_tracks(scene_constants, scene_state, pb_renderer):
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
 
   print(f"\n{'=' * 60}")
-  print("🦾 Phase 3: URDF Forward Kinematics Robot Tracking (dense)")
+  print(f"🦾 Phase 3: URDF FK Robot Tracking (max {max_robot_pts_per_cam} pts/cam)")
   print(f"{'=' * 60}")
 
   urdf_tracker = URDFKinematicsTracker(pb_renderer)
@@ -428,7 +440,8 @@ def phase3_robot_tracks(scene_constants, scene_state, pb_renderer):
   for src_cam in camera_ids:
     traj_3d_rob, traj_2d_rob, vis_rob, robot_indices = \
         urdf_tracker.extract_robot_tracks(
-            src_cam, scene_constants, scene_state)
+            src_cam, scene_constants, scene_state,
+            max_robot_pts=max_robot_pts_per_cam)
 
     if traj_3d_rob is None or len(robot_indices) == 0:
       continue

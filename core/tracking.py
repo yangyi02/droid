@@ -56,7 +56,7 @@ class URDFKinematicsTracker:
     return T
 
   def extract_robot_tracks(self, src_cam, scene_constants, scene_state,
-                           safe_margin=7):
+                           safe_margin=7, max_robot_pts=None):
     """Extract 3D robot surface trajectories via URDF forward kinematics.
 
     Uses ALL pixels at frame 0 as seed candidates, identifies which fall
@@ -112,7 +112,13 @@ class URDFKinematicsTracker:
       print("      ⚠️ No robot points found at t=0.")
       return None, None, None, None
 
-    print(f"      Found {len(robot_indices)} safe robot surface points.")
+    # Subsample if too many robot points
+    if max_robot_pts is not None and len(robot_indices) > max_robot_pts:
+      rng = np.random.default_rng(42)
+      robot_indices = rng.choice(robot_indices, max_robot_pts, replace=False)
+      robot_indices = np.sort(robot_indices)
+
+    print(f"      Found {len(robot_indices)} robot surface points.")
 
     # Bind to local link frames
     robot_objs = obj_ids[v0[robot_indices], u0[robot_indices]]
