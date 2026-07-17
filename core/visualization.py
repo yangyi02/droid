@@ -759,6 +759,234 @@ def render_cinematic_4d_orbit(scene_constants, scene_state,
   return video_frames
 
 
+def render_4d_orbit_with_tracks(
+    scene_constants, scene_state,
+    tracks_3d=None, track_colors=None, track_vis=None,
+    track_history=5, track_sphere_radius=0.008,
+    frustum_depth=0.15, frustum_fov_y=60.0, frustum_aspect=4.0 / 3.0,
+    max_render_points=400000, max_render_tracks=500,
+    width=640, height=360,
+    orbit_center=(0.4, 0.0, 0.0),
+    orbit_radius=1.2, camera_height=0.5,
+    angle_start=None, max_frames=None):
+  """Render a 4D orbit video with point cloud, 3D tracks, and camera frustums.
+
+  Extends ``render_cinematic_4d_orbit`` to also render:
+  - 3D track positions as colored spheres
+  - Track history trails as colored line segments
+  - Per-camera frustum wireframes
+
+  All rendering is done headless via pyrender, producing video frames that
+  can be displayed directly in Colab with ``media.show_video()``.
+
+  Args:
+    scene_constants: pipeline scene_constants dict.
+    scene_state: pipeline scene_state dict.
+    tracks_3d: (T, N, 3) 3D track positions, or None.
+    track_colors: (N, 3) uint8 RGB, or None for auto-rainbow by y.
+    track_vis: (T, N) bool visibility, or None for all-visible.
+    track_history: number of trailing frames to show per track.
+    track_sphere_radius: radius of each track sphere.
+    frustum_depth: depth of camera frustum wireframe.
+    frustum_fov_y: vertical FOV (degrees) for frustum shape.
+    frustum_aspect: aspect ratio for frustum shape.
+    max_render_points: max background point cloud points per frame.
+    max_render_tracks: subsample tracks to this count if more.
+    width: output frame width.
+    height: output frame height.
+    orbit_center: (3,) orbit look-at center.
+    orbit_radius: radius of the orbit path.
+    camera_height: z-height of the orbiting camera.
+    angle_start: starting angle (radians); default pi/2.
+    max_frames: max frames to render; None = all.
+
+  Returns:
+    List of (H, W, 3) uint8 RGB frames.
+  """
+  import pyrender  # lazy import
+  import trimesh   # lazy import
+  if angle_start is None:
+    angle_start = np.pi / 2
+
+  camera_ids = sorted(scene_constants['camera'].keys())
+  n_frames = len(scene_state[camera_ids[0]]['extrinsics'])
+  if max_frames is not None:
+    n_frames = min(n_frames, max_frames)
+
+  # --- Prepare tracks ---
+  if tracks_3d is not None:
+    n_total_tracks = tracks_3d.shape[1]
+    if n_total_tracks > max_render_tracks:
+      idx = np.random.permutation(n_total_tracks)[:max_render_tracks]
+      tracks_3d = tracks_3d[:, idx]
+      if track_colors is not None:
+        track_colors = track_colors[idx]
+      if track_vis is not None:
+        track_vis = track_vis[:, idx]
+    if track_colors is None:
+      y0 = tracks_3d[0, :, 1]
+      norm = plt.Normalize(y0.min(), y0.max())
+      track_colors = (plt.cm.hsv(norm(y0))[:, :3] * 255).astype(np.uint8)
+    n_tracks = tracks_3d.shape[1]
+
+  # --- Precompute frustum corners in camera space ---
+  half_h = frustum_depth * np.tan(np.radians(frustum_fov_y / 2))
+  half_w = half_h * frustum_aspect
+  corners_cam = np.array([
+      [0, 0, 0],
+      [-half_w, -half_h, frustum_depth],
+      [ half_w, -half_h, frustum_depth],
+      [ half_w,  half_h, frustum_depth],
+      [-half_w,  half_h, frustum_depth]])
+  frustum_edges = [(0,1),(0,2),(0,3),(0,4),(1,2),(2,3),(3,4),(4,1)]
+  cam_colors_rgb = np.array([
+      [1.0, 0.4, 0.2, 1.0],   # orange
+      [0.2, 0.8, 0.2, 1.0],   # green
+      [0.2, 0.4, 1.0, 1.0],   # blue
+      [1.0, 1.0, 0.2, 1.0],   # yellow
+  ], dtype=np.float32)
+
+  # --- Precompute track sphere template ---
+  if tracks_3d is not None:
+    sphere_template = trimesh.creation.icosphere(
+        subdivisions=1, radius=track_sphere_radius)
+    tpl_v = sphere_template.vertices  # (42, 3)
+    tpl_f = sphere_template.faces     # (80, 3)
+    n_v, n_f = len(tpl_v), len(tpl_f)
+
+  # --- Setup pyrender scene ---
+  scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 1.0])
+  cam_node = scene.add(
+      pyrender.PerspectiveCamera(
+          yfov=np.pi / 3.0, aspectRatio=width / height),
+      pose=np.eye(4))
+  light_node = scene.add(
+      pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=4.0),
+      pose=np.eye(4))
+  renderer = pyrender.OffscreenRenderer(width, height)
+
+  video_frames = []
+  for frame_idx in tqdm(range(n_frames),
+                        desc="🎥 Rendering 4D orbit + tracks"):
+    nodes_to_remove = []
+
+    # --- 1. Background point cloud ---
+    points, colors = [], []
+    for cam_id in camera_ids:
+      cam_data = scene_constants['camera'][cam_id]
+      cam_state = scene_state[cam_id]
+      pts_3d, cols_rgb = unproject_to_3d(
+          cam_data['raw_depth'][frame_idx],
+          cam_data['video_rgb'][frame_idx],
+          cam_data['K_mat'],
+          T_cam2world=cam_state['extrinsics'][frame_idx])
+      points.append(pts_3d)
+      colors.append(cols_rgb)
+    points = np.vstack(points)
+    colors = np.vstack(colors)
+    sample_idx = np.random.permutation(len(points))[:max_render_points]
+    points, colors = points[sample_idx], colors[sample_idx]
+
+    # Orbiting camera
+    angle = angle_start + (frame_idx * np.pi / n_frames)
+    eye_pos = [orbit_center[0] + orbit_radius * np.cos(angle),
+               orbit_center[1] + orbit_radius * np.sin(angle),
+               camera_height]
+    viz_pose = get_look_at_matrix(eye_pos, orbit_center)
+    scene.set_pose(cam_node, pose=viz_pose)
+    scene.set_pose(light_node, pose=viz_pose)
+
+    pcl_node = scene.add(
+        pyrender.Mesh.from_points(points, colors=colors))
+    nodes_to_remove.append(pcl_node)
+
+    # --- 2. Track spheres (batch icospheres) ---
+    if tracks_3d is not None:
+      vis = track_vis[frame_idx] if track_vis is not None \
+          else np.ones(n_tracks, dtype=bool)
+      vis_pts = tracks_3d[frame_idx][vis]
+      vis_cols = track_colors[vis]
+
+      if len(vis_pts) > 0:
+        N = len(vis_pts)
+        all_verts = np.tile(tpl_v, (N, 1, 1))       # (N, 42, 3)
+        all_verts += vis_pts[:, np.newaxis, :]
+        all_verts = all_verts.reshape(-1, 3)
+
+        offsets = np.arange(N) * n_v
+        all_faces = np.tile(tpl_f, (N, 1))            # (N*80, 3)
+        all_faces += np.repeat(offsets, n_f)[:, np.newaxis]
+
+        face_rgba = np.column_stack([
+            np.repeat(vis_cols, n_f, axis=0),
+            np.full(N * n_f, 255)]).astype(np.uint8)
+        mesh = trimesh.Trimesh(vertices=all_verts, faces=all_faces)
+        mesh.visual.face_colors = face_rgba
+        tk_node = scene.add(pyrender.Mesh.from_trimesh(mesh))
+        nodes_to_remove.append(tk_node)
+
+      # --- 3. Track trails (GL_LINES) ---
+      trail_pos, trail_col = [], []
+      for j in range(max(0, frame_idx - track_history), frame_idx):
+        starts = tracks_3d[j]
+        ends = tracks_3d[j + 1]
+        mask = np.ones(n_tracks, dtype=bool)
+        if track_vis is not None:
+          mask &= track_vis[j] & track_vis[j + 1]
+        lengths = np.linalg.norm(ends - starts, axis=1)
+        mask &= lengths > 1e-6
+        if mask.any():
+          # Interleave start/end: (n_valid, 2, 3) → (2*n_valid, 3)
+          pairs = np.stack([starts[mask], ends[mask]], axis=1)
+          trail_pos.append(pairs.reshape(-1, 3))
+          tc = track_colors[mask].astype(np.float32) / 255.0
+          trail_col.append(np.repeat(tc, 2, axis=0))
+
+      if trail_pos:
+        line_pos = np.concatenate(trail_pos).astype(np.float32)
+        line_col = np.concatenate(trail_col).astype(np.float32)
+        line_rgba = np.column_stack(
+            [line_col, np.ones(len(line_col))]).astype(np.float32)
+        trail_prim = pyrender.Primitive(
+            positions=line_pos, color_0=line_rgba, mode=1)  # GL_LINES
+        trail_node = scene.add(
+            pyrender.Mesh(primitives=[trail_prim]))
+        nodes_to_remove.append(trail_node)
+
+    # --- 4. Camera frustum wireframes (GL_LINES) ---
+    frust_pos, frust_col = [], []
+    for ci, cam_id in enumerate(camera_ids):
+      ext_c2w = scene_state[cam_id]['extrinsics'][frame_idx]
+      R, t = ext_c2w[:3, :3], ext_c2w[:3, 3]
+      corners_w = (R @ corners_cam.T).T + t
+      color = cam_colors_rgb[ci % len(cam_colors_rgb)]
+      for ei, ej in frustum_edges:
+        frust_pos.extend([corners_w[ei], corners_w[ej]])
+        frust_col.extend([color, color])
+
+    if frust_pos:
+      frust_pos = np.array(frust_pos, dtype=np.float32)
+      frust_col = np.array(frust_col, dtype=np.float32)
+      frust_prim = pyrender.Primitive(
+          positions=frust_pos, color_0=frust_col, mode=1)  # GL_LINES
+      frust_node = scene.add(
+          pyrender.Mesh(primitives=[frust_prim]))
+      nodes_to_remove.append(frust_node)
+
+    # --- Render & cleanup ---
+    color_img, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
+    for node in nodes_to_remove:
+      scene.remove_node(node)
+
+    img_rgb = color_img[:, :, :3].copy()
+    cv2.putText(img_rgb, f"Frame: {frame_idx:03d}", (30, 50),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    video_frames.append(img_rgb)
+
+  renderer.delete()
+  return video_frames
+
+
 # ===========================================================================
 # ScenePic Interactive 4D Visualization
 # ===========================================================================
