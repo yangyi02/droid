@@ -892,19 +892,35 @@ def _sp_simulate_orbit(pcl_xyzs, tracks_3d, pred_cam_poses_w2c,
 
 
 def _sp_init_camera_mesh(poses, scene, thickness, depth, color):
-  """Create camera frustum meshes for a sequence of w2c poses."""
+  """Create camera frustum meshes for a sequence of w2c poses.
+
+  Args:
+    poses: (T, 4, 4) single camera per frame, or (T, C, 4, 4) multiple
+        cameras per frame.
+
+  Returns:
+    List of lists of meshes: outer list is per-frame, inner list is
+    per-camera within that frame.
+  """
   import scenepic as sp  # lazy import
-  assert poses.ndim == 3 and poses.shape[1:] == (4, 4)
-  meshes = []
-  for pose in poses:
-    frustum = scene.create_mesh()
-    cam = sp.Camera(
-        world_to_camera=np.diag([-1, -1, -1, 1]) @ pose,
-        fov_y_degrees=60)
-    frustum.add_camera_frustum(
-        camera=cam, thickness=thickness, depth=depth, color=color)
-    meshes.append(frustum)
-  return meshes
+  if poses.ndim == 3:
+    # (T, 4, 4) → treat as 1 camera per frame
+    assert poses.shape[1:] == (4, 4)
+    poses = poses[:, np.newaxis, :, :]  # → (T, 1, 4, 4)
+  assert poses.ndim == 4 and poses.shape[2:] == (4, 4)
+  frame_meshes = []
+  for t in range(poses.shape[0]):
+    cam_meshes = []
+    for c in range(poses.shape[1]):
+      frustum = scene.create_mesh()
+      cam = sp.Camera(
+          world_to_camera=np.diag([-1, -1, -1, 1]) @ poses[t, c],
+          fov_y_degrees=60)
+      frustum.add_camera_frustum(
+          camera=cam, thickness=thickness, depth=depth, color=color)
+      cam_meshes.append(frustum)
+    frame_meshes.append(cam_meshes)
+  return frame_meshes
 
 
 def _sp_init_point_cloud_mesh(xyzs, rgbs, scene, radius=0.01):
@@ -1136,9 +1152,11 @@ def scenepic_add_point_cloud(
       frame.add_mesh(m_tracks[i])
       frame.add_mesh(m_tracks_lines[i])
     if m_gt_camera is not None:
-      frame.add_mesh(m_gt_camera[i])
+      for mesh in m_gt_camera[i]:
+        frame.add_mesh(mesh)
     if m_pred_camera is not None:
-      frame.add_mesh(m_pred_camera[i])
+      for mesh in m_pred_camera[i]:
+        frame.add_mesh(mesh)
   return canvas
 
 
