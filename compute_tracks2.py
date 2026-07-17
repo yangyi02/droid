@@ -686,14 +686,18 @@ def process_episode(episode_id, pb_renderer, device,
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(
       description="DROID Stage 3 v2: Static Background + Robot Tracks")
+  parser.add_argument("--rank", type=int, default=0,
+                      help="Rank of the process (for multi-GPU sharding)")
+  parser.add_argument("--world_size", type=int, default=1,
+                      help="Total number of processes")
+  parser.add_argument("--limit", type=int, default=-1,
+                      help="Limit total number of episodes to process")
   parser.add_argument("--depth_root", type=str,
                       default="~/droid_data/output/mv-tap/droid/depth")
   parser.add_argument("--extrinsics_root", type=str,
                       default="~/droid_data/output/mv-tap/droid/extrinsics")
   parser.add_argument("--export_root", type=str,
                       default="~/droid_data/output/mv-tap/droid/tracks2")
-  parser.add_argument("--limit", type=int, default=-1,
-                      help="Limit total number of episodes to process")
   args = parser.parse_args()
 
   print("🚀 DROID Stage 3 v2: Static Background + Robot Tracks")
@@ -702,24 +706,60 @@ if __name__ == "__main__":
 
   # Discover available episodes from extrinsics output
   ext_abs = os.path.abspath(os.path.expanduser(args.extrinsics_root))
+  export_abs = os.path.abspath(os.path.expanduser(args.export_root))
   available_eps = sorted([
       d for d in os.listdir(ext_abs)
       if os.path.isdir(os.path.join(ext_abs, d))
   ])
+
+  # Deterministic shuffle for load balancing across ranks
+  import random, fcntl
+  random.seed(42)
+  random.shuffle(available_eps)
+
   if args.limit > 0:
     available_eps = available_eps[:args.limit]
 
-  print(f"📋 Processing {len(available_eps)} episodes")
+  # Shard across ranks
+  target_eps = available_eps[args.rank::args.world_size]
 
-  for idx, ep_id in enumerate(available_eps):
-    print(f"\n🎬 [{idx + 1}/{len(available_eps)}] Episode: {ep_id}")
+  # Skip episodes that already have output (resume-friendly)
+  todo_eps = []
+  for ep_id in target_eps:
+    ep_out = os.path.join(export_abs, ep_id, "tracks_3d.npz")
+    if os.path.exists(ep_out):
+      continue
+    todo_eps.append(ep_id)
+
+  print(f"📋 Rank {args.rank}/{args.world_size}: "
+        f"{len(todo_eps)} episodes to process "
+        f"({len(target_eps) - len(todo_eps)} already done)")
+
+  succeeded_eps = []
+
+  for idx, ep_id in enumerate(todo_eps):
+    print(f"\n🎬 [{idx + 1}/{len(todo_eps)}] Episode: {ep_id}")
     try:
       process_episode(
           ep_id, pb_renderer, device,
           args.depth_root, args.extrinsics_root, args.export_root)
+      succeeded_eps.append(ep_id)
     except Exception as e:
       print(f"  ❌ Episode {ep_id} failed: {e}")
       import traceback
       traceback.print_exc()
 
-  print(f"\n🎉 Stage 3 v2 complete!")
+  # Multi-process safe append to success list
+  tracks_list = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "episodes_tracks2.txt")
+  if succeeded_eps:
+    batch = "".join(ep_id + "\n" for ep_id in succeeded_eps)
+    with open(tracks_list, "a") as f:
+      fcntl.flock(f, fcntl.LOCK_EX)
+      f.write(batch)
+      fcntl.flock(f, fcntl.LOCK_UN)
+    print(f"\n📝 Appended {len(succeeded_eps)} episodes to {tracks_list}")
+
+  print(f"\n🎉 Stage 3 v2 complete! "
+        f"{len(succeeded_eps)}/{len(todo_eps)} episodes succeeded.")
+
