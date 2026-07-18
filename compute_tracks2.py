@@ -620,11 +620,19 @@ def export_tracks(scene_constants, scene_state, final_traj_3d,
 # ===========================================================================
 
 def process_episode(episode_id, pb_renderer, device,
-                    depth_root, extrinsics_root, export_root):
+                    depth_root, extrinsics_root, export_root,
+                    num_static_points=1000,
+                    max_robot_pts_per_cam=100):
   """Full static+robot pipeline for a single episode.
 
   No tracker model needed — background points use static prior only.
   Dense pixel sampling at frame 0 for both robot and background.
+
+  Args:
+    num_static_points: Target number of static background points (subsampled
+        from cross-view consensus candidates). Matches pipeline.ipynb default.
+    max_robot_pts_per_cam: Max robot surface points per source camera.
+        Matches pipeline.ipynb default.
   """
   print(f"\n{'=' * 60}")
   print(f"🎬 Processing Episode: {episode_id}")
@@ -643,7 +651,8 @@ def process_episode(episode_id, pb_renderer, device,
   print(f"🏔️ Phase 1: Dense at t=0 → Cross-View Consensus → Static Points")
   print(f"{'=' * 60}")
   static_pts_3d, static_rgb = phase1_find_static_candidates(
-      scene_constants, scene_state, pb_renderer)
+      scene_constants, scene_state, pb_renderer,
+      num_points=num_static_points)
 
   # Phase 2: Project static points to all views
   if len(static_pts_3d) > 0:
@@ -659,7 +668,8 @@ def process_episode(episode_id, pb_renderer, device,
 
   # Phase 3: Robot tracks (dense at t=0)
   robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis, n_robot = \
-      phase3_robot_tracks(scene_constants, scene_state, pb_renderer)
+      phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
+                          max_robot_pts_per_cam=max_robot_pts_per_cam)
 
   # Phase 4: Merge
   (final_traj_3d, final_vis_global, final_per_cam_tracks,
@@ -698,6 +708,10 @@ if __name__ == "__main__":
                       default="~/droid_data/output/mv-tap/droid/extrinsics")
   parser.add_argument("--export_root", type=str,
                       default="~/droid_data/output/mv-tap/droid/tracks2")
+  parser.add_argument("--num_static_points", type=int, default=1000,
+                      help="Target number of static background points")
+  parser.add_argument("--max_robot_pts_per_cam", type=int, default=100,
+                      help="Max robot surface points per source camera")
   args = parser.parse_args()
 
   print("🚀 DROID Stage 3 v2: Static Background + Robot Tracks")
@@ -742,7 +756,9 @@ if __name__ == "__main__":
     try:
       process_episode(
           ep_id, pb_renderer, device,
-          args.depth_root, args.extrinsics_root, args.export_root)
+          args.depth_root, args.extrinsics_root, args.export_root,
+          num_static_points=args.num_static_points,
+          max_robot_pts_per_cam=args.max_robot_pts_per_cam)
       succeeded_eps.append(ep_id)
     except Exception as e:
       print(f"  ❌ Episode {ep_id} failed: {e}")
