@@ -621,7 +621,7 @@ def export_tracks(scene_constants, scene_state, final_traj_3d,
 
 def process_episode(episode_id, pb_renderer, device,
                     depth_root, extrinsics_root, export_root,
-                    num_static_points=1000,
+                    num_static_points=300,
                     max_robot_pts_per_cam=100):
   """Full static+robot pipeline for a single episode.
 
@@ -708,7 +708,7 @@ if __name__ == "__main__":
                       default="~/droid_data/output/mv-tap/droid/extrinsics")
   parser.add_argument("--export_root", type=str,
                       default="~/droid_data/output/mv-tap/droid/tracks2")
-  parser.add_argument("--num_static_points", type=int, default=1000,
+  parser.add_argument("--num_static_points", type=int, default=300,
                       help="Target number of static background points")
   parser.add_argument("--max_robot_pts_per_cam", type=int, default=100,
                       help="Max robot surface points per source camera")
