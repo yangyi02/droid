@@ -351,8 +351,24 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
   print(f"📐 Phase 2: Project {N} Static Points → {len(camera_ids)} Views × {T_frames} Frames")
   print(f"{'=' * 60}")
 
-  per_cam_tracks = {}
-  per_cam_vis = {}
+  per_cam_tracks = {cam: np.zeros((T_frames, N, 2), dtype=np.float32) for cam in camera_ids}
+  per_cam_vis = {cam: np.zeros((T_frames, N), dtype=bool) for cam in camera_ids}
+  kernel = np.ones((safe_margin, safe_margin), np.uint8)
+
+  # Pre-render dilated robot masks once per frame across all cameras
+  robot_masks_dilated = {cam: [] for cam in camera_ids}
+  for t in range(T_frames):
+    pb_renderer.update_robot_pose(
+        scene_constants["robot"]["joint_positions"][t],
+        gripper_state=scene_constants["robot"]["gripper_positions"][t])
+    for cam_id in camera_ids:
+      cam_data = scene_constants["camera"][cam_id]
+      ext = scene_state[cam_id]["extrinsics"][t]
+      K = cam_data["K_mat"]
+      h_img, w_img = cam_data["video_rgb"][0].shape[:2]
+      rmask = pb_renderer.render_mask(ext, K, w_img, h_img)
+      rmask_dil = cv2.dilate(rmask.astype(np.uint8), kernel, iterations=1) > 0
+      robot_masks_dilated[cam_id].append(rmask_dil)
 
   for cam_id in camera_ids:
     cam_data = scene_constants["camera"][cam_id]
@@ -381,14 +397,7 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
       depth_ok = (z_obs > 0.05) & (np.abs(z_pred - z_obs) < depth_tolerance)
 
       # Robot occlusion check
-      pb_renderer.update_robot_pose(
-          scene_constants["robot"]["joint_positions"][t],
-          gripper_state=scene_constants["robot"]["gripper_positions"][t])
-      robot_mask = pb_renderer.render_mask(ext, K, w_img, h_img)
-      kernel = np.ones((safe_margin, safe_margin), np.uint8)
-      robot_mask_dilated = cv2.dilate(
-          robot_mask.astype(np.uint8), kernel, iterations=1) > 0
-      not_robot = ~robot_mask_dilated[vi, ui]
+      not_robot = ~robot_masks_dilated[cam_id][t][vi, ui]
 
       vis[t] = in_bounds & depth_ok & not_robot
 

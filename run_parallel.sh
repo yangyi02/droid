@@ -14,6 +14,7 @@ MODE="depth"
 LIMIT=""
 CONFIGS="E0,E4"
 EPISODES="10"
+JOBS=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -31,6 +32,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --episodes|-e)
             EPISODES="$2"
+            shift 2
+            ;;
+        --jobs|-j)
+            JOBS="$2"
             shift 2
             ;;
         *)
@@ -71,11 +76,22 @@ echo "🎯 Running: $SCRIPT ($OP_NAME)"
 # 3. Detect available GPUs
 # ---------------------------------------------------------
 NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
-if [ "$NUM_GPUS" -eq 0 ]; then
-    echo "❌ No GPUs detected by nvidia-smi"
-    exit 1
+NUM_CPUS=$(nproc 2>/dev/null || echo 16)
+
+if [ -n "$JOBS" ]; then
+    PARALLEL_JOBS="$JOBS"
+elif [[ "$MODE" == "tracks2" ]]; then
+    # tracks2 is CPU-only, use 75% of available CPU cores (leaving headroom for IO)
+    PARALLEL_JOBS=$(( NUM_CPUS * 3 / 4 ))
+    if [ "$PARALLEL_JOBS" -lt 1 ]; then PARALLEL_JOBS=1; fi
+else
+    if [ "$NUM_GPUS" -eq 0 ]; then
+        echo "❌ No GPUs detected by nvidia-smi"
+        exit 1
+    fi
+    PARALLEL_JOBS="$NUM_GPUS"
 fi
-echo "🔍 Detected $NUM_GPUS GPU(s)"
+echo "🔍 Detected $NUM_GPUS GPU(s), $NUM_CPUS CPU core(s) -> Using $PARALLEL_JOBS parallel worker(s)"
 
 # ---------------------------------------------------------
 # 4. Full-load parallel execution
@@ -91,9 +107,9 @@ if [[ "$MODE" == "ablation" ]]; then
     EXTRA_ARGS="--configs $CONFIGS --episodes $EPISODES"
 fi
 
-echo "🚀 Running $SCRIPT | Slots: ${NUM_GPUS}x GPU (PointWorld Static Sharding Mode) | Limit: ${LIMIT:-All}"
-seq 0 $((NUM_GPUS-1)) | parallel -j "$NUM_GPUS" --ungroup --progress --joblog "$LOGFILE" \
-    "CUDA_VISIBLE_DEVICES={} python $SCRIPT --rank {} --world_size $NUM_GPUS $EXTRA_ARGS"
+echo "🚀 Running $SCRIPT | Slots: ${PARALLEL_JOBS}x Worker(s) | Limit: ${LIMIT:-All}"
+seq 0 $((PARALLEL_JOBS-1)) | parallel -j "$PARALLEL_JOBS" --ungroup --progress --joblog "$LOGFILE" \
+    "CUDA_VISIBLE_DEVICES={} python $SCRIPT --rank {} --world_size $PARALLEL_JOBS $EXTRA_ARGS"
 
 # Post-processing: aggregate ablation results
 if [[ "$MODE" == "ablation" ]]; then
