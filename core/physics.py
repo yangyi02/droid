@@ -3,7 +3,7 @@
 TensorRobotRenderer (yourdfpy): differentiable point cloud renderer for
   camera-robot depth alignment in compute_extrinsics.
 PyBulletRenderer (pybullet): segmentation + depth renderer for robot
-  masking and URDF tracking in compute_tracks.
+  masking and URDF tracking in compute_tracks2.
 """
 
 import os
@@ -122,7 +122,7 @@ class TensorRobotRenderer:
 
 
 # ===========================================================================
-# PyBulletRenderer — for compute_tracks (segmentation + masking)
+# PyBulletRenderer — for compute_tracks2 (segmentation + masking)
 # ===========================================================================
 
 class PyBulletRenderer:

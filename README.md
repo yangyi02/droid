@@ -31,7 +31,7 @@ bash run_parallel.sh --mode tracks      # Stage 3: tracks
 |-------|--------|--------------|-------------|
 | 1. Depth | `compute_depth.py` | `core.depth` | SVO decode → S2M2 stereo depth → SAM gripper mask → depth distillation |
 | 2. Extrinsics | `compute_extrinsics.py` | `core.physics` | VGGT visual anchoring → differentiable robot alignment → global joint optimization |
-| 3. Tracks | `compute_tracks.py` | `core.tracking` | CoTracker 2D tracking → 3D lift → cross-view dedup → multi-view fusion |
+| 3. Tracks | `compute_tracks2.py` | `core.tracking` | CoTracker 2D tracking → 3D lift → cross-view dedup → multi-view fusion |
 
 ### Stage 1 — `compute_depth.py`
 
@@ -76,7 +76,7 @@ Multi-stage camera extrinsics calibration using differentiable rendering and poi
   extrinsics.json              # base_extrinsic (4x4), extrinsics (Nx4x4), is_wrist
 ```
 
-### Stage 3 — `compute_tracks.py`
+### Stage 3 — `compute_tracks2.py`
 
 Dense multi-view 3D point tracking via CoTracker + URDF kinematics.
 
@@ -101,7 +101,7 @@ tracks_3d.npz                  # final_traj_3d, final_vis_global
 droid/
 ├── compute_depth.py           # Stage 1: SVO → stereo depth + gripper refinement
 ├── compute_extrinsics.py      # Stage 2: VGGT + camera-robot alignment
-├── compute_tracks.py          # Stage 3: CoTracker + multi-view 3D fusion
+├── compute_tracks2.py         # Stage 3: CoTracker + multi-view 3D fusion
 ├── core/                      # Shared algorithmic modules
 │   ├── geometry.py            #   3D math: unproject, project, make_4x4, rodrigues
 │   ├── io.py                  #   Data loading: get_accelerator, load_depth/extrinsics
@@ -116,11 +116,11 @@ droid/
 ├── mount_gcs.sh               # GCS bucket mount helper
 ├── episodes.txt               # Full episode ID list
 ├── verify_outputs.py          # Output verification script
+├── assets/                    # Local assets (Franka + Robotiq URDF)
 ├── third_party/               # Dependencies (git submodules + downloaded weights)
 │   ├── s2m2/                  #   Stereo matching model
 │   ├── vggt/                  #   Visual camera pose estimation
 │   ├── co-tracker/            #   Dense point tracking
-│   ├── PointWorld/            #   Franka + Robotiq URDF assets (branch: data)
 │   └── sam_weights/           #   SAM ViT-H weights
 └── .gitmodules                # Submodule declarations
 ```

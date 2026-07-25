@@ -62,12 +62,9 @@ elif [[ "$MODE" == "extrinsics" ]]; then
 elif [[ "$MODE" == "ablation" ]]; then
     SCRIPT="run_extrinsics_ablation.py"
     OP_NAME="ablation"
-elif [[ "$MODE" == "tracks2" ]]; then
+else
     SCRIPT="compute_tracks2.py"
     OP_NAME="compute_tracks2"
-else
-    SCRIPT="compute_tracks.py"
-    OP_NAME="compute_tracks"
 fi
 
 echo "🎯 Running: $SCRIPT ($OP_NAME)"
