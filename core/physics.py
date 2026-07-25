@@ -17,7 +17,7 @@ import yourdfpy
 
 _SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_URDF = os.path.join(
-    _SCRIPT_DIR, "third_party", "PointWorld", "assets", "franka_description",
+    _SCRIPT_DIR, "assets", "franka_description",
     "franka_panda_robotiq_2f85_og.urdf",
 )
 
