@@ -4,6 +4,7 @@
 #   bash run_parallel.sh                              # Compute depth, all episodes
 #   bash run_parallel.sh --mode extrinsics            # Compute extrinsics, all episodes
 #   bash run_parallel.sh --mode tracks                # Compute tracks, all episodes
+#   bash run_parallel.sh --mode metrics               # Evaluate quality metrics, all episodes
 #   bash run_parallel.sh --mode ablation --configs E0,E4  # Ablation, 16 GPUs
 #   bash run_parallel.sh --limit 32                   # Limit to 32 episodes
 
@@ -45,8 +46,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$MODE" != "depth" && "$MODE" != "extrinsics" && "$MODE" != "tracks" && "$MODE" != "tracks2" && "$MODE" != "ablation" ]]; then
-    echo "❌ Invalid mode: $MODE (must be 'depth', 'extrinsics', 'tracks', 'tracks2', or 'ablation')"
+if [[ "$MODE" != "depth" && "$MODE" != "extrinsics" && "$MODE" != "tracks" && "$MODE" != "tracks2" && "$MODE" != "metrics" && "$MODE" != "ablation" ]]; then
+    echo "❌ Invalid mode: $MODE (must be 'depth', 'extrinsics', 'tracks', 'tracks2', 'metrics', or 'ablation')"
     exit 1
 fi
 
@@ -62,6 +63,9 @@ elif [[ "$MODE" == "extrinsics" ]]; then
 elif [[ "$MODE" == "ablation" ]]; then
     SCRIPT="run_extrinsics_ablation.py"
     OP_NAME="ablation"
+elif [[ "$MODE" == "metrics" ]]; then
+    SCRIPT="evaluate_episodes.py"
+    OP_NAME="evaluate_metrics"
 else
     SCRIPT="compute_tracks2.py"
     OP_NAME="compute_tracks2"

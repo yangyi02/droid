@@ -148,12 +148,13 @@ bash mount_gcs.sh
 bash run_parallel.sh                          # depth, all episodes
 bash run_parallel.sh --mode extrinsics        # extrinsics, all episodes
 bash run_parallel.sh --mode tracks            # tracks, all episodes
+bash run_parallel.sh --mode metrics           # quality metrics, all episodes
 bash run_parallel.sh --mode depth --limit 32  # depth, first 32 episodes
 ```
 
 | Flag | Short | Values | Default | Description |
 |------|-------|--------|---------|-------------|
-| `--mode` | `-m` | `depth`, `extrinsics`, `tracks` | `depth` | Pipeline stage |
+| `--mode` | `-m` | `depth`, `extrinsics`, `tracks`, `metrics` | `depth` | Pipeline stage |
 | `--limit` | `-l` | integer | all | Max episodes to process |
 
 Jobs auto-scale to the number of GPUs detected by `nvidia-smi`.
@@ -165,16 +166,10 @@ After running all 3 stages, compute quality metrics across episodes and select a
 ### Step 1: Batch Metrics (on GCP)
 
 ```bash
-# Single GPU
-python evaluate_episodes.py
-
-# Multi-GPU sharding (4 GPUs)
-python evaluate_episodes.py --rank 0 --world_size 4 &
-python evaluate_episodes.py --rank 1 --world_size 4 &
-python evaluate_episodes.py --rank 2 --world_size 4 &
-python evaluate_episodes.py --rank 3 --world_size 4 &
-wait
+bash run_parallel.sh --mode metrics
 ```
+
+Auto-detects GPUs and runs `evaluate_episodes.py` in parallel across all of them.
 
 Outputs `metrics.csv` (shared across all ranks via file locking) with 30+ quality columns per episode:
 
