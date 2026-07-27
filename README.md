@@ -30,8 +30,8 @@ bash run_parallel.sh --mode tracks      # Stage 3: tracks
 | Stage | Script | Core Modules | Description |
 |-------|--------|--------------|-------------|
 | 1. Depth | `compute_depth.py` | `core.depth` | SVO decode → S2M2 stereo depth → SAM gripper mask → depth distillation |
-| 2. Extrinsics | `compute_extrinsics.py` | `core.physics` | VGGT visual anchoring → differentiable robot alignment → global joint optimization |
-| 3. Tracks | `compute_tracks2.py` | `core.tracking` | CoTracker 2D tracking → 3D lift → cross-view dedup → multi-view fusion |
+| 2. Extrinsics | `compute_extrinsics.py` | `core.physics` | Dataset extrinsics → differentiable robot alignment → global joint optimization |
+| 3. Tracks | `compute_tracks2.py` | `core.tracking` | Static background depth consensus + URDF FK robot tracks (model-free) |
 
 ### Stage 1 — `compute_depth.py`
 
@@ -64,11 +64,9 @@ Multi-stage camera extrinsics calibration using differentiable rendering and poi
 
 | Stage | Description |
 |-------|-------------|
-| Stage 0 | Read pre-calibrated dataset extrinsics (if available) |
-| Stage 1 | VGGT visual anchoring from first frame |
-| Stage 2a | External camera ↔ robot arm depth alignment |
-| Stage 2b | Wrist camera ↔ gripper body alignment |
-| Stage 3 | Global joint optimization (Chamfer + Robot + Wrist) |
+| Stage 0 | Read pre-calibrated dataset extrinsics from metadata |
+| Stage 1 | Per-camera independent depth & robot alignment |
+| Stage 2 | Global joint optimization (Chamfer + Robot + Wrist) |
 
 **Output** (`~/droid_data/output/mv-tap/droid/extrinsics/<episode_id>/`):
 ```
@@ -78,21 +76,21 @@ Multi-stage camera extrinsics calibration using differentiable rendering and poi
 
 ### Stage 3 — `compute_tracks2.py`
 
-Dense multi-view 3D point tracking via CoTracker + URDF kinematics.
+Dense multi-view 3D point tracking via static background prior + URDF forward kinematics (model-free).
 
 | Phase | Description |
 |-------|-------------|
-| Phase 1 | Per-view 2D tracking (CoTracker3) |
-| Phase 2 | Lift to 3D + robot/environment split (PyBullet masking) |
-| Phase 3 | Cross-view 3D deduplication |
-| Phase 4 | Cross-view completion (re-track unified points) |
-| Phase 5 | Median 3D fusion across views |
+| Phase 1 | Multi-view depth consensus to sample static background points |
+| Phase 2 | Project static background 3D points into per-view 2D trajectories |
+| Phase 3 | Sample robot CAD surface points + URDF FK forward propagation |
+| Phase 4 | Merge static background & robot tracks with global visibility masks |
 
-**Output** (`~/droid_data/output/mv-tap/droid/tracks/<episode_id>/`):
+**Output** (`~/droid_data/output/mv-tap/droid/tracks2/<episode_id>/`):
 ```
-tracks_3d.npz                  # final_traj_3d, final_vis_global
+tracks_3d.npz                  # traj_3d, vis_global
+track_metadata.npz             # n_static, n_robot
 <cam_serial>/
-  tracks_2d.npz                # per-camera 2D tracks + visibility
+  tracks_2d.npz                # per-camera 2D tracks (traj_2d) + visibility (vis_2d)
 ```
 
 ## Directory Structure
@@ -100,29 +98,26 @@ tracks_3d.npz                  # final_traj_3d, final_vis_global
 ```
 droid/
 ├── compute_depth.py           # Stage 1: SVO → stereo depth + gripper refinement
-├── compute_extrinsics.py      # Stage 2: VGGT + camera-robot alignment
-├── compute_tracks2.py         # Stage 3: CoTracker + multi-view 3D fusion
+├── compute_extrinsics.py      # Stage 2: Dataset init + camera-robot alignment
+├── compute_tracks2.py         # Stage 3: Static prior + URDF FK dense 3D tracking
 ├── core/                      # Shared algorithmic modules
 │   ├── geometry.py            #   3D math: unproject, project, make_4x4, rodrigues
 │   ├── io.py                  #   Data loading: get_accelerator, load_depth/extrinsics
 │   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
 │   ├── physics.py             #   TensorRobotRenderer + PyBulletRenderer
-│   └── tracking.py            #   URDFKinematicsTracker (FK propagation + visibility)
-├── utils/
-│   └── visualization.py       # Notebook visualization helpers (point clouds, videos)
-├── pipeline.ipynb             # Interactive Colab notebook (thin orchestration layer)
+│   ├── tracking.py            #   URDFKinematicsTracker (FK propagation + visibility)
+│   └── visualization.py       #   Visualization helpers (point clouds, tracking videos, 4D orbit)
+├── pipeline.ipynb             # Interactive Colab notebook (flag-based execution flow)
 ├── run_parallel.sh            # Multi-GPU parallel runner
 ├── setup.sh                   # One-shot dependency + weights setup
 ├── mount_gcs.sh               # GCS bucket mount helper
 ├── episodes.txt               # Full episode ID list
 ├── verify_outputs.py          # Output verification script
 ├── assets/                    # Local assets (Franka + Robotiq URDF)
-├── third_party/               # Dependencies (git submodules + downloaded weights)
-│   ├── s2m2/                  #   Stereo matching model
-│   ├── vggt/                  #   Visual camera pose estimation
-│   ├── co-tracker/            #   Dense point tracking
-│   └── sam_weights/           #   SAM ViT-H weights
-└── .gitmodules                # Submodule declarations
+└── third_party/               # Dependencies (git submodules + downloaded weights)
+    ├── s2m2/                  #   Stereo matching model
+    ├── sam_weights/           #   SAM ViT-H weights
+    └── PointWorld/            #   Robot URDF assets
 ```
 
 ## Data Setup
@@ -165,9 +160,9 @@ Jobs auto-scale to the number of GPUs detected by `nvidia-smi`.
 
 Open [`pipeline.ipynb`](https://colab.research.google.com/github/yangyi02/droid/blob/main/pipeline.ipynb) in Colab for single-episode debugging.
 
-Each stage has two paths:
-- **🚧 Compute** — run from scratch
-- **☁️ Load** — pull pre-computed results from GCS (skip earlier stages)
+The notebook uses **3 global boolean flags** at the top (`COMPUTE_DEPTH`, `COMPUTE_EXTRINSICS`, `COMPUTE_TRACKS`):
+- `True` — Compute stage from scratch
+- `False` — Load pre-computed results directly from GCS
 
 ## Dependencies
 
@@ -185,8 +180,6 @@ find /usr/local/zed/ -name "pyzed*.whl" -exec pip install {} \;
 | Submodule | Repo | Notes |
 |-----------|------|-------|
 | `third_party/s2m2` | [junhong-3dv/s2m2](https://github.com/junhong-3dv/s2m2) | Stereo depth |
-| `third_party/vggt` | [facebookresearch/vggt](https://github.com/facebookresearch/vggt) | Camera pose |
-| `third_party/co-tracker` | [facebookresearch/co-tracker](https://github.com/facebookresearch/co-tracker) | Point tracking |
 | `third_party/PointWorld` | [NVlabs/PointWorld @ data](https://github.com/NVlabs/PointWorld/tree/data) | Robot URDF assets |
 
 ### Model Weights (downloaded by `setup.sh`)
@@ -194,6 +187,4 @@ find /usr/local/zed/ -name "pyzed*.whl" -exec pip install {} \;
 | Model | Source | Path |
 |-------|--------|------|
 | S2M2 XL | HuggingFace `minimok/s2m2` | `third_party/s2m2/weights/` |
-| CoTracker3 | HuggingFace `facebook/cotracker3` | `third_party/co-tracker/weights/` |
 | SAM ViT-H | `dl.fbaipublicfiles.com` | `third_party/sam_weights/` |
-| VGGT-1B | HuggingFace `facebook/VGGT-1B` | Auto-downloaded at first run |
