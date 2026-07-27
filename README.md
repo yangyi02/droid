@@ -100,10 +100,13 @@ droid/
 ├── compute_depth.py           # Stage 1: SVO → stereo depth + gripper refinement
 ├── compute_extrinsics.py      # Stage 2: Dataset init + camera-robot alignment
 ├── compute_tracks2.py         # Stage 3: Static prior + URDF FK dense 3D tracking
+├── evaluate_episodes.py       # Batch quality metrics evaluation (GCP)
+├── select_episodes.py         # Stratified episode selection from metrics CSV
 ├── core/                      # Shared algorithmic modules
 │   ├── geometry.py            #   3D math: unproject, project, make_4x4, rodrigues
 │   ├── io.py                  #   Data loading: get_accelerator, load_depth/extrinsics
 │   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
+│   ├── metrics.py             #   Quality metrics: depth consistency, motion, visibility
 │   ├── physics.py             #   TensorRobotRenderer + PyBulletRenderer
 │   ├── tracking.py            #   URDFKinematicsTracker (FK propagation + visibility)
 │   └── visualization.py       #   Visualization helpers (point clouds, tracking videos, 4D orbit)
@@ -112,7 +115,7 @@ droid/
 ├── setup.sh                   # One-shot dependency + weights setup
 ├── mount_gcs.sh               # GCS bucket mount helper
 ├── episodes.txt               # Full episode ID list
-├── verify_outputs.py          # Output verification script
+├── episodes_success.txt       # Filtered successful episode IDs
 ├── assets/                    # Local assets (Franka + Robotiq URDF)
 └── third_party/               # Dependencies (git submodules + downloaded weights)
     ├── s2m2/                  #   Stereo matching model
@@ -154,6 +157,48 @@ bash run_parallel.sh --mode depth --limit 32  # depth, first 32 episodes
 | `--limit` | `-l` | integer | all | Max episodes to process |
 
 Jobs auto-scale to the number of GPUs detected by `nvidia-smi`.
+
+## Episode Evaluation & Selection
+
+After running all 3 stages, compute quality metrics across episodes and select a diverse evaluation set:
+
+### Step 1: Batch Metrics (on GCP)
+
+```bash
+# Single GPU
+python evaluate_episodes.py
+
+# Multi-GPU sharding (4 GPUs)
+python evaluate_episodes.py --rank 0 --world_size 4 &
+python evaluate_episodes.py --rank 1 --world_size 4 &
+python evaluate_episodes.py --rank 2 --world_size 4 &
+python evaluate_episodes.py --rank 3 --world_size 4 &
+wait
+```
+
+Outputs `metrics_rank{N}.csv` with 30+ quality columns per episode:
+
+| Category | Metrics |
+|---|---|
+| Extrinsics | Chamfer distance, robot depth loss per camera |
+| Track consistency | Depth residual (median/mean mm) for static/robot/overall |
+| Motion | End-effector travel distance, joint range, gripper range |
+| Coverage | Depth valid-pixel percentage, per-camera visibility |
+| Metadata | Site, robot ID, frame count, resolution |
+
+### Step 2: Merge & Select
+
+```bash
+# Merge per-rank CSVs
+head -1 metrics_rank0.csv > metrics_all.csv
+tail -n +2 -q metrics_rank*.csv >> metrics_all.csv
+
+# Select 50 episodes (stratified by site + motion diversity)
+python select_episodes.py --input metrics_all.csv --n 50
+```
+
+Selection applies quality filtering (chamfer, depth residual thresholds),
+site-proportional quotas, and within-site motion diversity (evenly spaced by EE travel).
 
 ## Interactive Notebook
 
