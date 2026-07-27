@@ -1,15 +1,14 @@
 """DROID Stage 2: Camera Extrinsics Calibration Pipeline.
 
-Multi-stage camera extrinsics calibration using differentiable rendering,
-point cloud alignment, and VGGT visual anchoring. Reads Stage 1 outputs
-(depth, calibration, robot kinematics, video) and produces optimized 4x4
-extrinsic matrices for all cameras.
+Multi-stage camera extrinsics calibration using differentiable rendering
+and point cloud alignment. Reads Stage 1 outputs (depth, calibration,
+robot kinematics, video) and produces optimized 4x4 extrinsic matrices
+for all cameras.
 
 Pipeline:
-  Stage 0: Read dataset extrinsics (if available in metadata)
-  Stage 1: VGGT visual-physical chain anchoring (first frame only)
-  Stage 2: Unified camera-robot alignment (external + wrist in one loop)
-  Stage 3: Global joint optimization (Chamfer + Robot + Wrist)
+  Stage 0: Read dataset extrinsics (required, no fallback)
+  Stage 1: Unified camera-robot alignment (external + wrist in one loop)
+  Stage 2: Global joint optimization (Chamfer + Robot + Wrist)
 """
 
 import argparse
@@ -18,7 +17,6 @@ import fcntl
 import gc
 import json
 import os
-import sys
 
 import cv2
 import numpy as np
@@ -32,79 +30,10 @@ from core.physics import TensorRobotRenderer
 
 
 # ---------------------------------------------------------------------------
-# 1. Model Loading (VGGT only for Stage 2)
-# ---------------------------------------------------------------------------
-def init_calibration_models():
-  """Load VGGT model for camera extrinsics estimation.
-
-  Installs the vggt package on-demand if not already installed.
-  """
-  import subprocess
-
-  device = get_accelerator()
-  print(f"🚀 Launching VGGT model onto {device} | CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}")
-  if not torch.cuda.is_available():
-    print("⚠️ WARNING: PyTorch cannot find a valid CUDA device.")
-
-  # Install vggt package on-demand from GitHub (skipped if already installed)
-  try:
-    import vggt  # noqa: F401
-  except ImportError:
-    print("  📦 Installing vggt package from GitHub...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
-                           "git+https://github.com/facebookresearch/vggt.git"])
-
-  from vggt.models.vggt import VGGT
-  from vggt.utils.load_fn import load_and_preprocess_images
-  from vggt.utils.pose_enc import pose_encoding_to_extri_intri
-
-  vggt_model = VGGT.from_pretrained("facebook/VGGT-1B").to(device).eval()
-
-  print("  ✅ VGGT model loaded.")
-  return vggt_model, load_and_preprocess_images, pose_encoding_to_extri_intri
-
-
-# ---------------------------------------------------------------------------
-# 2. Metadata & Data Loading
+# Metadata & Data Loading
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# 3. VGGT Visual Pose Estimation
-# ---------------------------------------------------------------------------
-def estimate_multi_camera_vggt(img_list, vggt_model, load_fn, pose_fn, device):
-  """Estimate relative camera poses from N images using VGGT.
-
-  The first image is treated as the reference frame origin.
-  Returns a list of (N-1) relative T matrices from ref to each target.
-  """
-  dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
-
-  filenames = []
-  for i, img in enumerate(img_list):
-    fname = f"/tmp/tmp_vggt_{i}.png"
-    cv2.imwrite(fname, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-    filenames.append(fname)
-
-  images = load_fn(filenames).to(device)
-  images_input = images.unsqueeze(0)
-
-  with torch.inference_mode():
-    with torch.autocast(device_type="cuda", dtype=dtype):
-      aggregated_tokens_list, ps_idx = vggt_model.aggregator(images_input)
-      pose_enc = vggt_model.camera_head(aggregated_tokens_list)[-1]
-      extrinsic, _ = pose_fn(pose_enc, images_input.shape[-2:])
-
-  T_ref_to_tgts = []
-  for i in range(1, len(img_list)):
-    ext_mat = extrinsic[0, i].cpu().numpy()
-    T = np.eye(4)
-    T[:3, :] = ext_mat
-    T_ref_to_tgts.append(T)
-
-  return T_ref_to_tgts
-
-
-# ---------------------------------------------------------------------------
-# 6. Stage 0: Read Dataset Extrinsics
+# Stage 0: Read Dataset Extrinsics
 # ---------------------------------------------------------------------------
 def init_camera_states(scene_constants, extrinsics_db):
   """Assemble initial 3D camera states from dataset metadata."""
@@ -141,106 +70,20 @@ def init_camera_states(scene_constants, extrinsics_db):
   return scene_state
 
 
-# ---------------------------------------------------------------------------
-# 7. Stage 1: VGGT Visual-Physical Chain Anchoring
-# ---------------------------------------------------------------------------
-def vggt_warmup_extrinsics(scene_constants, vggt_model, load_fn, pose_fn, device):
-  """Estimate absolute camera poses via VGGT on the first frame."""
-  print("\n🌍 Stage 1: VGGT visual-physical chain anchoring (first frame only)...")
-  wrist_serial = scene_constants["meta"]["wrist_serial"]
-  ext_cams = [cam for cam in scene_constants["camera"].keys() if cam != wrist_serial]
+def init_extrinsics(scene_constants, extrinsics_db):
+  """Initialize camera extrinsics from dataset metadata.
 
-  ref_cam = ext_cams[0]
-  other_cams = ext_cams[1:]
-
-  new_scene_state = {}
-  robot_data = scene_constants["robot"]
-  n_frames = len(robot_data["joint_positions"])
-
-  # Wrist camera: full kinematic trajectory
-  new_scene_state[wrist_serial] = {
-      "base_extrinsic": robot_data["T_cam_ee_init"],
-      "extrinsics": robot_data["T_ee_base_all"] @ robot_data["T_cam_ee_init"],
-  }
-
-  # Read first frame from each camera
-  print("  📸 Extracting first-frame images for VGGT inference...")
-  img_ref = scene_constants["camera"][ref_cam]["first_frame_rgb"]
-  img_others = [scene_constants["camera"][cam]["first_frame_rgb"] for cam in other_cams]
-  img_wrist = scene_constants["camera"][wrist_serial]["first_frame_rgb"]
-
-  img_list = [img_ref] + img_others + [img_wrist]
-  T_rel_list = estimate_multi_camera_vggt(img_list, vggt_model, load_fn, pose_fn, device)
-
-  T_ref_to_others = T_rel_list[:-1]
-  T_ref_to_wrist = T_rel_list[-1]
-
-  # Chain rule: ref → base via wrist GT
-  T_ee_base_first = scene_constants["robot"]["T_ee_base_all"][0]
-  T_cam_ee = scene_constants["robot"]["T_cam_ee_init"]
-  T_wrist_to_base_first = T_ee_base_first @ T_cam_ee
-
-  T_ref_to_base = T_wrist_to_base_first @ T_ref_to_wrist
-
-  new_scene_state[ref_cam] = {
-      "base_extrinsic": T_ref_to_base,
-      "extrinsics": np.tile(T_ref_to_base, (n_frames, 1, 1)),
-  }
-
-  for tgt_cam, T_ref_to_tgt in zip(other_cams, T_ref_to_others):
-    T_tgt_to_base = T_ref_to_base @ np.linalg.inv(T_ref_to_tgt)
-    new_scene_state[tgt_cam] = {
-        "base_extrinsic": T_tgt_to_base,
-        "extrinsics": np.tile(T_tgt_to_base, (n_frames, 1, 1)),
-    }
-
-  print("  ✅ VGGT anchoring complete!")
-  return new_scene_state
-
-
-def init_extrinsics(scene_constants, extrinsics_db, device,
-                    vggt_models=None):
-  """Initialize camera extrinsics: dataset first, VGGT fallback.
-
-  Combines Stage 0 (dataset init) and Stage 1 (VGGT anchoring) into a
-  single call.  If all cameras have pre-calibrated extrinsics in the
-  dataset metadata, VGGT is skipped entirely.
-
-  Args:
-    scene_constants: Scene data dict.
-    extrinsics_db: Dict of pre-calibrated extrinsics keyed by episode_id.
-    device: Torch device.
-    vggt_models: Optional tuple ``(vggt_model, load_fn, pose_fn)`` to
-        reuse a previously loaded VGGT model.  If ``None`` and VGGT is
-        needed, the model is loaded on demand.
-
-  Returns:
-    scene_state: Dict with ``base_extrinsic`` and ``extrinsics`` per camera.
-    vggt_models: Tuple ``(vggt_model, load_fn, pose_fn)``, or ``None``
-        if VGGT was never loaded.  Callers should cache this across
-        episodes to avoid reloading the 1B model.
+  Requires pre-calibrated extrinsics for all external cameras.
   """
-  # Stage 0: try dataset extrinsics
   scene_state = init_camera_states(scene_constants, extrinsics_db)
-
-  all_extrinsics_exist = all(
-      state["extrinsics"] is not None for state in scene_state.values()
-  )
-
-  if all_extrinsics_exist:
-    print("  ✅ Full pre-calibrated extrinsics found, skipping VGGT.")
-    return scene_state, vggt_models
-
-  # Stage 1: VGGT visual anchoring (lazy-load model on first use)
-  if vggt_models is None:
-    print("  📦 Loading VGGT model (first use)...")
-    vggt_models = init_calibration_models()
-  vggt_model, load_fn, pose_fn = vggt_models
-
-  scene_state = vggt_warmup_extrinsics(
-      scene_constants, vggt_model, load_fn, pose_fn, device)
-
-  return scene_state, vggt_models
+  missing = [cam for cam, state in scene_state.items()
+             if state['extrinsics'] is None]
+  if missing:
+    raise ValueError(
+        f"Missing pre-calibrated extrinsics for cameras: {missing}. "
+        f"Only episodes with dataset extrinsics are supported.")
+  print("  ✅ All cameras have pre-calibrated extrinsics.")
+  return scene_state
 
 
 # ---------------------------------------------------------------------------
@@ -1165,7 +1008,7 @@ def export_extrinsics(scene_constants, scene_state,
 
   Output layout:
     <episode_id>/<cam_id>/extrinsics.json            (final)
-    <episode_id>/<cam_id>/extrinsics_stage1.json     (after VGGT / init)
+    <episode_id>/<cam_id>/extrinsics_stage1.json     (after dataset init)
     <episode_id>/<cam_id>/extrinsics_stage2.json     (after robot alignment)
 
   Each JSON contains:
@@ -1229,8 +1072,7 @@ if __name__ == "__main__":
   device = get_accelerator()
   serials_db, _, _, extrinsics_db, _ = load_metadata()
 
-  # VGGT is lazy-loaded only when needed (cached across episodes)
-  vggt_models = None
+
 
   # Discover available episodes from depth output
   depth_abs = os.path.abspath(os.path.expanduser(args.depth_root))
@@ -1277,9 +1119,8 @@ if __name__ == "__main__":
       # Load Stage 1 outputs
       scene_constants = load_depth_data(ep_id, args.depth_root)
 
-      # Stage 0+1: Dataset extrinsics → VGGT fallback
-      stage1_scene_state, vggt_models = init_extrinsics(
-          scene_constants, extrinsics_db, device, vggt_models=vggt_models)
+      # Stage 0: Load dataset extrinsics
+      stage1_scene_state = init_extrinsics(scene_constants, extrinsics_db)
       print_metrics(
           evaluate_extrinsics(scene_constants, stage1_scene_state, device,
                               tensor_renderer=tensor_renderer),

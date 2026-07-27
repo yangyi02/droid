@@ -27,7 +27,6 @@ wget -nc -O third_party/tapnext_weights/tapnextpp_512.ckpt             "https://
 wget -nc -O third_party/sam_weights/sam_vit_h_4b8939.pth               "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
 wget -nc -O third_party/alltracker/weights/alltracker.pth              "https://huggingface.co/aharley/alltracker/resolve/main/alltracker.pth"
 
-echo "  ℹ️  VGGT: downloaded on first use"
 
 # 4. Verify
 echo "🔍 [4/5] Verify checkpoints"
