@@ -119,6 +119,76 @@ def render_distilled_gripper_3d(median_depth, K_mat, rgb_img):
   fig.show()
 
 
+def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
+  """2D inspection of wrist gripper mask and depth refinement."""
+  wrist_serial = scene_constants['meta'].get('wrist_serial')
+  if not wrist_serial or wrist_serial not in scene_constants['camera']:
+    print("⚠️ No wrist camera found in scene_constants.")
+    return
+
+  cam_data = scene_constants['camera'][wrist_serial]
+  rgb = cam_data['video_rgb'][frame_idx]
+
+  orig_depth = cam_data.get('original_raw_depth')
+  raw_depth = cam_data.get('raw_depth')
+  gripper_mask = cam_data.get('sam_real_masks')
+  emp_depth = cam_data.get('empirical_gripper_depth')
+
+  d_orig = orig_depth[frame_idx] if orig_depth is not None and len(orig_depth) > frame_idx else None
+  d_final = raw_depth[frame_idx] if raw_depth is not None and len(raw_depth) > frame_idx else None
+
+  if gripper_mask is not None:
+    mask_vis = gripper_mask[min(frame_idx, len(gripper_mask)-1)] if gripper_mask.ndim == 3 else gripper_mask
+  else:
+    mask_vis = None
+
+  fig, axes = plt.subplots(1, 4, figsize=(20, 4.5))
+
+  # 1. RGB + SAM Gripper Mask Overlay
+  axes[0].imshow(rgb)
+  if mask_vis is not None:
+    overlay = rgb.copy()
+    overlay[mask_vis > 0] = [255, 0, 128]
+    blended = cv2.addWeighted(rgb, 0.6, overlay, 0.4, 0)
+    axes[0].imshow(blended)
+    axes[0].set_title("RGB + SAM Gripper Mask", fontsize=11)
+  else:
+    axes[0].set_title("RGB (No Mask)", fontsize=11)
+  axes[0].axis('off')
+
+  # 2. Original Sensor Depth
+  if d_orig is not None:
+    im1 = axes[1].imshow(np.where(d_orig > 0, d_orig, np.nan), cmap='viridis', vmin=0.1, vmax=1.2)
+    axes[1].set_title("Original Sensor Depth", fontsize=11)
+    plt.colorbar(im1, ax=axes[1], fraction=0.046)
+  else:
+    axes[1].set_title("Original Depth N/A", fontsize=11)
+  axes[1].axis('off')
+
+  # 3. Distilled Gripper Surface Depth
+  if emp_depth is not None:
+    im2 = axes[2].imshow(np.where(emp_depth > 0, emp_depth, np.nan), cmap='viridis', vmin=0.1, vmax=1.2)
+    axes[2].set_title("Distilled Gripper Surface Depth", fontsize=11)
+    plt.colorbar(im2, ax=axes[2], fraction=0.046)
+  else:
+    axes[2].set_title("Distilled Gripper Depth N/A", fontsize=11)
+  axes[2].axis('off')
+
+  # 4. Final Refined Metric Depth
+  if d_final is not None:
+    im3 = axes[3].imshow(np.where(d_final > 0, d_final, np.nan), cmap='viridis', vmin=0.1, vmax=1.2)
+    axes[3].set_title("Final Refined Depth (Injected)", fontsize=11)
+    plt.colorbar(im3, ax=axes[3], fraction=0.046)
+  else:
+    axes[3].set_title("Final Depth N/A", fontsize=11)
+  axes[3].axis('off')
+
+  plt.suptitle(f"Wrist Camera [{wrist_serial[:8]}] Gripper Refinement Inspection (Frame {frame_idx})", fontsize=13, y=1.02)
+  plt.tight_layout()
+  plt.show()
+
+
+
 # ===========================================================================
 # Animated 4D Point Cloud (Plotly)
 # ===========================================================================
