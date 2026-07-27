@@ -5,15 +5,11 @@ Reads the merged metrics CSV produced by evaluate_episodes.py and
 applies stratified sampling to select a diverse, high-quality subset.
 
 Usage:
-  # Merge per-rank CSVs first
-  head -1 metrics_rank0.csv > metrics_all.csv
-  tail -n +2 -q metrics_rank*.csv >> metrics_all.csv
-
-  # Select 50 episodes
-  python select_episodes.py --input metrics_all.csv --n 50
+  # Select 50 episodes (reads from default metrics output directory)
+  python select_episodes.py --n 50
 
   # Select with stricter quality thresholds
-  python select_episodes.py --input metrics_all.csv --n 50 \
+  python select_episodes.py --n 50 \
     --max_chamfer 0.05 --max_depth_residual 20
 
 Output:
@@ -160,8 +156,9 @@ def stratified_sample(rows, n_target, seed=42):
 def main():
   parser = argparse.ArgumentParser(
       description="Select evaluation episodes from metrics CSV")
-  parser.add_argument("--input", type=str, required=True,
-                      help="Path to merged metrics CSV")
+  parser.add_argument("--input", type=str,
+                      default="~/droid_data/output/mv-tap/droid/metrics/metrics.csv",
+                      help="Path to metrics CSV")
   parser.add_argument("--n", type=int, default=50,
                       help="Number of episodes to select")
   parser.add_argument("--max_chamfer", type=float, default=0.10,

@@ -15,12 +15,9 @@ Usage:
   python evaluate_episodes.py --rank 2 --world_size 4
   python evaluate_episodes.py --rank 3 --world_size 4
 
-  # Merge results
-  head -1 metrics_rank0.csv > metrics_all.csv
-  tail -n +2 -q metrics_rank*.csv >> metrics_all.csv
-
 Output:
-  metrics_rank{rank}.csv — one row per episode with ~30+ metric columns.
+  metrics.csv — one row per episode with ~30+ metric columns.
+  All ranks append to the same file (file-locked), no merge step needed.
 """
 
 import argparse
@@ -170,13 +167,12 @@ def main():
   device = get_accelerator()
   pb_renderer = PyBulletRenderer()
 
-  # Output CSV
-  csv_path = os.path.join(output_dir, f"metrics_rank{args.rank}.csv")
-  header_written = os.path.exists(csv_path) and os.path.getsize(csv_path) > 0
+  # Output CSV (shared across all ranks, file-locked)
+  csv_path = os.path.join(output_dir, "metrics.csv")
 
   # Check which episodes are already evaluated (resume-friendly)
   done_eps = set()
-  if header_written:
+  if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
     with open(csv_path, "r") as f:
       reader = csv.DictReader(f)
       for row in reader:
@@ -204,13 +200,17 @@ def main():
         failed += 1
         continue
 
-      # Write to CSV (append mode, thread-safe)
+      # Write to CSV (append mode, file-locked, header-safe)
       with open(csv_path, "a", newline="") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
+        # Check if header exists (another rank may have written it)
+        needs_header = (f.tell() == 0)
+        if not needs_header:
+          f.seek(0, 2)  # seek to end
+          needs_header = (f.tell() == 0)
         writer = csv.DictWriter(f, fieldnames=sorted(metrics.keys()))
-        if not header_written:
+        if needs_header:
           writer.writeheader()
-          header_written = True
         writer.writerow(metrics)
         fcntl.flock(f, fcntl.LOCK_UN)
 
@@ -228,9 +228,11 @@ def main():
       failed += 1
 
       # Log failure
-      fail_path = os.path.join(output_dir, f"failures_rank{args.rank}.txt")
+      fail_path = os.path.join(output_dir, "failures.txt")
       with open(fail_path, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
         f.write(f"{ep_id}\t{str(e)}\n")
+        fcntl.flock(f, fcntl.LOCK_UN)
 
   print(f"\n{'=' * 60}")
   print(f"🎉 Evaluation complete!")

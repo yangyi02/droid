@@ -176,7 +176,7 @@ python evaluate_episodes.py --rank 3 --world_size 4 &
 wait
 ```
 
-Outputs `metrics_rank{N}.csv` with 30+ quality columns per episode:
+Outputs `metrics.csv` (shared across all ranks via file locking) with 30+ quality columns per episode:
 
 | Category | Metrics |
 |---|---|
@@ -186,15 +186,11 @@ Outputs `metrics_rank{N}.csv` with 30+ quality columns per episode:
 | Coverage | Depth valid-pixel percentage, per-camera visibility |
 | Metadata | Site, robot ID, frame count, resolution |
 
-### Step 2: Merge & Select
+### Step 2: Select
 
 ```bash
-# Merge per-rank CSVs
-head -1 metrics_rank0.csv > metrics_all.csv
-tail -n +2 -q metrics_rank*.csv >> metrics_all.csv
-
 # Select 50 episodes (stratified by site + motion diversity)
-python select_episodes.py --input metrics_all.csv --n 50
+python select_episodes.py --n 50
 ```
 
 Selection applies quality filtering (chamfer, depth residual thresholds),
