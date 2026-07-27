@@ -116,8 +116,7 @@ droid/
 ├── assets/                    # Local assets (Franka + Robotiq URDF)
 └── third_party/               # Dependencies (git submodules + downloaded weights)
     ├── s2m2/                  #   Stereo matching model
-    ├── sam_weights/           #   SAM ViT-H weights
-    └── PointWorld/            #   Robot URDF assets
+    └── sam_weights/           #   SAM ViT-H weights
 ```
 
 ## Data Setup
@@ -180,7 +179,6 @@ find /usr/local/zed/ -name "pyzed*.whl" -exec pip install {} \;
 | Submodule | Repo | Notes |
 |-----------|------|-------|
 | `third_party/s2m2` | [junhong-3dv/s2m2](https://github.com/junhong-3dv/s2m2) | Stereo depth |
-| `third_party/PointWorld` | [NVlabs/PointWorld @ data](https://github.com/NVlabs/PointWorld/tree/data) | Robot URDF assets |
 
 ### Model Weights (downloaded by `setup.sh`)
 
