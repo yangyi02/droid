@@ -99,6 +99,7 @@ def evaluate_single_episode(episode_id, depth_root, extrinsics_root,
       final_per_cam_vis=final_per_cam_vis,
       n_static=n_static,
       n_robot=n_robot,
+      tracks_root=tracks_root,
       compute_extrinsics_metrics=True,
       pb_renderer=pb_renderer,
   )

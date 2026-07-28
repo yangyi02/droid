@@ -189,7 +189,116 @@ def compute_track_visibility_stats(
 
 
 # ===========================================================================
-# 3. Robot motion statistics
+# 3. Reprojection error (3D → 2D projected vs stored 2D tracks)
+# ===========================================================================
+
+def compute_reprojection_error(traj_3d, traj_2d, vis_2d,
+                               intrinsics, extrinsics_w2c):
+  """Vectorized 2D reprojection error across all frames.
+
+  Projects 3D world points into camera space and compares against
+  stored 2D track positions.
+
+  Args:
+    traj_3d: (T, N, 3) world-space 3D trajectories.
+    traj_2d: (T, N, 2) stored 2D track positions.
+    vis_2d: (T, N) bool visibility mask.
+    intrinsics: (4,) array [fx, fy, cx, cy].
+    extrinsics_w2c: (T, 4, 4) world-to-camera transforms.
+
+  Returns:
+    1-D np.ndarray of per-measurement reprojection errors in pixels,
+    or empty array if no valid measurements.
+  """
+  T, N, _ = traj_3d.shape
+  fx, fy, cx, cy = intrinsics
+
+  # Homogeneous coords: (T, N, 4)
+  ones = np.ones((T, N, 1), dtype=traj_3d.dtype)
+  pts_homo = np.concatenate([traj_3d, ones], axis=2)
+
+  # Batch transform: (T, 4, 4) @ (T, N, 4) -> (T, N, 4)
+  pts_cam = np.einsum('tij,tnj->tni', extrinsics_w2c, pts_homo)
+
+  z = pts_cam[:, :, 2]  # (T, N)
+  valid = vis_2d & (z > 0.01)
+
+  if not valid.any():
+    return np.array([], dtype=np.float32)
+
+  with np.errstate(divide='ignore', invalid='ignore'):
+    u_proj = fx * pts_cam[:, :, 0] / z + cx
+    v_proj = fy * pts_cam[:, :, 1] / z + cy
+
+  du = u_proj - traj_2d[:, :, 0]
+  dv = v_proj - traj_2d[:, :, 1]
+  errors = np.sqrt(du * du + dv * dv)
+
+  return errors[valid].astype(np.float32)
+
+
+def compute_reprojection_stats(traj_3d, per_cam_tracks_2d, tracks_root,
+                               episode_id):
+  """Compute reprojection error stats across all cameras.
+
+  Loads per-camera intrinsics and extrinsics_w2c from disk, then
+  computes reprojection error for each camera.
+
+  Args:
+    traj_3d: (T, N, 3) world-space 3D trajectories.
+    per_cam_tracks_2d: dict of cam_id -> {'traj_2d': (T,N,2), 'vis_2d': (T,N)}
+        or None to load from tracks_root.
+    tracks_root: path to tracks output directory.
+    episode_id: episode identifier.
+
+  Returns:
+    Dict with reproj_mean_px, reproj_median_px, reproj_p95_px.
+  """
+  import os
+
+  ep_dir = os.path.abspath(
+      os.path.expanduser(os.path.join(tracks_root, episode_id)))
+
+  all_errors = []
+  cam_dirs = sorted([
+      d for d in os.listdir(ep_dir)
+      if os.path.isdir(os.path.join(ep_dir, d))
+  ])
+
+  for cam_dir_name in cam_dirs:
+    cam_dir = os.path.join(ep_dir, cam_dir_name)
+    tracks_2d_path = os.path.join(cam_dir, "tracks_2d.npz")
+    intrinsics_path = os.path.join(cam_dir, "intrinsics.npy")
+    extrinsics_path = os.path.join(cam_dir, "extrinsics_w2c.npy")
+
+    if not all(os.path.exists(p) for p in
+               [tracks_2d_path, intrinsics_path, extrinsics_path]):
+      continue
+
+    cam_data = np.load(tracks_2d_path)
+    traj_2d = cam_data["traj_2d"]
+    vis_2d = cam_data["vis_2d"]
+    intrinsics = np.load(intrinsics_path)
+    extrinsics_w2c = np.load(extrinsics_path)
+
+    errs = compute_reprojection_error(
+        traj_3d, traj_2d, vis_2d, intrinsics, extrinsics_w2c)
+    if len(errs) > 0:
+      all_errors.append(errs)
+
+  if not all_errors:
+    return {}
+
+  all_errs = np.concatenate(all_errors)
+  return {
+      "reproj_mean_px": float(np.mean(all_errs)),
+      "reproj_median_px": float(np.median(all_errs)),
+      "reproj_p95_px": float(np.percentile(all_errs, 95)),
+  }
+
+
+# ===========================================================================
+# 4. Robot motion statistics
 # ===========================================================================
 
 def compute_motion_stats(scene_constants):
@@ -232,7 +341,7 @@ def compute_motion_stats(scene_constants):
 
 
 # ===========================================================================
-# 4. Scene metadata
+# 5. Scene metadata
 # ===========================================================================
 
 def compute_scene_metadata(scene_constants):
@@ -278,7 +387,7 @@ def compute_scene_metadata(scene_constants):
 
 
 # ===========================================================================
-# 5. Depth coverage statistics
+# 6. Depth coverage statistics
 # ===========================================================================
 
 def compute_depth_coverage_stats(scene_constants):
@@ -318,12 +427,13 @@ def compute_depth_coverage_stats(scene_constants):
 
 
 # ===========================================================================
-# 6. Aggregate all metrics for one episode
+# 7. Aggregate all metrics for one episode
 # ===========================================================================
 
 def evaluate_episode(scene_constants, scene_state, device,
                      final_traj_3d=None, final_per_cam_vis=None,
                      n_static=0, n_robot=0,
+                     tracks_root=None,
                      compute_extrinsics_metrics=True,
                      pb_renderer=None):
   """Compute all quality metrics for a single episode.
@@ -340,6 +450,7 @@ def evaluate_episode(scene_constants, scene_state, device,
     final_per_cam_vis: dict of (T, N) visibility, or None.
     n_static: number of static points.
     n_robot: number of robot points.
+    tracks_root: path to tracks directory (for reprojection error).
     compute_extrinsics_metrics: whether to compute extrinsics quality.
     pb_renderer: optional PyBulletRenderer to reuse.
 
@@ -384,5 +495,14 @@ def evaluate_episode(scene_constants, scene_state, device,
     # Visibility
     metrics.update(compute_track_visibility_stats(
         final_per_cam_vis, n_static, n_robot))
+
+    # Reprojection error (requires saved intrinsics/extrinsics_w2c on disk)
+    if tracks_root is not None:
+      try:
+        reproj = compute_reprojection_stats(
+            final_traj_3d, None, tracks_root, ep_id)
+        metrics.update(reproj)
+      except Exception as e:
+        metrics["reproj_error"] = str(e)
 
   return metrics

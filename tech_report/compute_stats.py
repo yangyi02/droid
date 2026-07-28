@@ -71,57 +71,12 @@ def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):
   }
 
 
-# ============================================================================
+# ===========================================================================
 # 2. Per-Episode: All Stats in One Pass (merged I/O + vectorized reproj)
-# ============================================================================
+# ===========================================================================
 
-def _vectorized_reprojection_error(traj_3d, traj_2d, vis_2d, intrinsics,
-                                   extrinsics_w2c):
-  """Compute reprojection error with fully vectorized batch matmul.
-
-  Instead of looping over T frames, we broadcast:
-    pts_cam = extrinsics_w2c @ pts_homo  for all frames at once.
-
-  Args:
-    traj_3d: (T, N, 3)
-    traj_2d: (T, N, 2)
-    vis_2d: (T, N) bool
-    intrinsics: (4,) [fx, fy, cx, cy]
-    extrinsics_w2c: (T, 4, 4)
-
-  Returns:
-    1-D array of per-measurement reprojection errors, or empty array.
-  """
-  T, N, _ = traj_3d.shape
-  fx, fy, cx, cy = intrinsics
-
-  # Build homogeneous coords: (T, N, 4)
-  ones = np.ones((T, N, 1), dtype=traj_3d.dtype)
-  pts_homo = np.concatenate([traj_3d, ones], axis=2)  # (T, N, 4)
-
-  # Batch transform: (T, 4, 4) @ (T, 4, N) -> (T, 4, N) -> (T, N, 4)
-  pts_cam = np.einsum('tij,tnj->tni', extrinsics_w2c, pts_homo)  # (T, N, 4)
-
-  z = pts_cam[:, :, 2]  # (T, N)
-
-  # Valid: visible AND in front of camera
-  valid = vis_2d & (z > 0.01)  # (T, N)
-
-  if not valid.any():
-    return np.array([], dtype=np.float32)
-
-  # Project to 2D (only compute where valid, but vectorized)
-  # We compute for everything then mask — faster than fancy indexing
-  with np.errstate(divide='ignore', invalid='ignore'):
-    u_proj = fx * pts_cam[:, :, 0] / z + cx  # (T, N)
-    v_proj = fy * pts_cam[:, :, 1] / z + cy  # (T, N)
-
-  # Compute errors
-  du = u_proj - traj_2d[:, :, 0]  # (T, N)
-  dv = v_proj - traj_2d[:, :, 1]  # (T, N)
-  errors = np.sqrt(du * du + dv * dv)  # (T, N)
-
-  return errors[valid]
+# Reprojection error computation lives in core.metrics
+from core.metrics import compute_reprojection_error
 
 
 def compute_all_episode_stats(episode_id, tracks_root, depth_root):
@@ -225,7 +180,7 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
       intrinsics = np.load(intrinsics_path)
       extrinsics_w2c = np.load(extrinsics_path)
 
-      errs = _vectorized_reprojection_error(
+      errs = compute_reprojection_error(
           traj_3d, traj_2d, vis_2d, intrinsics, extrinsics_w2c)
       if len(errs) > 0:
         all_reproj_errors.append(errs)
