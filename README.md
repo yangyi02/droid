@@ -31,7 +31,7 @@ bash run_parallel.sh --mode tracks      # Stage 3: tracks
 |-------|--------|--------------|-------------|
 | 1. Depth | `compute_depth.py` | `core.depth` | SVO decode → S2M2 stereo depth → SAM gripper mask → depth distillation |
 | 2. Extrinsics | `compute_extrinsics.py` | `core.physics` | Dataset extrinsics → differentiable robot alignment → global joint optimization |
-| 3. Tracks | `compute_tracks2.py` | `core.tracking` | Static background depth consensus + URDF FK robot tracks (model-free) |
+| 3. Tracks | `compute_tracks.py` | `core.tracking` | Static background depth consensus + URDF FK robot tracks (model-free) |
 
 ### Stage 1 — `compute_depth.py`
 
@@ -74,7 +74,7 @@ Multi-stage camera extrinsics calibration using differentiable rendering and poi
   extrinsics.json              # base_extrinsic (4x4), extrinsics (Nx4x4), is_wrist
 ```
 
-### Stage 3 — `compute_tracks2.py`
+### Stage 3 — `compute_tracks.py`
 
 Dense multi-view 3D point tracking via static background prior + URDF forward kinematics (model-free).
 
@@ -85,7 +85,7 @@ Dense multi-view 3D point tracking via static background prior + URDF forward ki
 | Phase 3 | Sample robot CAD surface points + URDF FK forward propagation |
 | Phase 4 | Merge static background & robot tracks with global visibility masks |
 
-**Output** (`~/droid_data/output/mv-tap/droid/tracks2/<episode_id>/`):
+**Output** (`~/droid_data/output/mv-tap/droid/tracks/<episode_id>/`):
 ```
 tracks_3d.npz                  # traj_3d, vis_global
 track_metadata.npz             # n_static, n_robot
@@ -99,7 +99,7 @@ track_metadata.npz             # n_static, n_robot
 droid/
 ├── compute_depth.py           # Stage 1: SVO → stereo depth + gripper refinement
 ├── compute_extrinsics.py      # Stage 2: Dataset init + camera-robot alignment
-├── compute_tracks2.py         # Stage 3: Static prior + URDF FK dense 3D tracking
+├── compute_tracks.py          # Stage 3: Static prior + URDF FK dense 3D tracking
 ├── evaluate_episodes.py       # Batch quality metrics evaluation (GCP)
 ├── select_episodes.py         # Stratified episode selection from metrics CSV
 ├── core/                      # Shared algorithmic modules

@@ -566,7 +566,7 @@ def phase4_merge(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
 def export_tracks(scene_constants, scene_state, final_traj_3d,
                   final_vis_global, final_per_cam_tracks, final_per_cam_vis,
                   n_static, n_robot,
-                  export_root="~/droid_data/output/mv-tap/droid/tracks2"):
+                  export_root="~/droid_data/output/mv-tap/droid/tracks"):
   """Serialize tracking results to disk."""
   ep_id = scene_constants["meta"]["episode_id"]
   camera_ids = list(scene_constants["camera"].keys())
@@ -716,7 +716,7 @@ if __name__ == "__main__":
   parser.add_argument("--extrinsics_root", type=str,
                       default="~/droid_data/output/mv-tap/droid/extrinsics")
   parser.add_argument("--export_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/tracks2")
+                      default="~/droid_data/output/mv-tap/droid/tracks")
   parser.add_argument("--num_static_points", type=int, default=300,
                       help="Target number of static background points")
   parser.add_argument("--max_robot_pts_per_cam", type=int, default=100,
@@ -760,7 +760,7 @@ if __name__ == "__main__":
 
   succeeded_eps = []
   tracks_list = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "episodes_tracks2.txt")
+                             "episodes_tracks.txt")
 
   for idx, ep_id in enumerate(todo_eps):
     print(f"\n🎬 [{idx + 1}/{len(todo_eps)}] Episode: {ep_id}")

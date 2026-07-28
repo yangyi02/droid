@@ -120,7 +120,7 @@ def main():
   parser.add_argument("--extrinsics_root", type=str,
                       default="~/droid_data/output/mv-tap/droid/extrinsics")
   parser.add_argument("--tracks_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/tracks2")
+                      default="~/droid_data/output/mv-tap/droid/tracks")
   parser.add_argument("--output_dir", type=str,
                       default="~/droid_data/output/mv-tap/droid/metrics")
   parser.add_argument("--require_tracks", action="store_true",

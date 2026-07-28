@@ -46,8 +46,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$MODE" != "depth" && "$MODE" != "extrinsics" && "$MODE" != "tracks" && "$MODE" != "tracks2" && "$MODE" != "metrics" && "$MODE" != "ablation" ]]; then
-    echo "❌ Invalid mode: $MODE (must be 'depth', 'extrinsics', 'tracks', 'tracks2', 'metrics', or 'ablation')"
+if [[ "$MODE" != "depth" && "$MODE" != "extrinsics" && "$MODE" != "tracks" && "$MODE" != "metrics" && "$MODE" != "ablation" ]]; then
+    echo "❌ Invalid mode: $MODE (must be 'depth', 'extrinsics', 'tracks', 'metrics', or 'ablation')"
     exit 1
 fi
 
@@ -67,8 +67,8 @@ elif [[ "$MODE" == "metrics" ]]; then
     SCRIPT="evaluate_episodes.py"
     OP_NAME="evaluate_metrics"
 else
-    SCRIPT="compute_tracks2.py"
-    OP_NAME="compute_tracks2"
+    SCRIPT="compute_tracks.py"
+    OP_NAME="compute_tracks"
 fi
 
 echo "🎯 Running: $SCRIPT ($OP_NAME)"
@@ -81,8 +81,8 @@ NUM_CPUS=$(nproc 2>/dev/null || echo 16)
 
 if [ -n "$JOBS" ]; then
     PARALLEL_JOBS="$JOBS"
-elif [[ "$MODE" == "tracks2" ]]; then
-    # tracks2 is CPU-only, use 75% of available CPU cores (leaving headroom for IO)
+elif [[ "$MODE" == "tracks" ]]; then
+    # tracks is CPU-only, use 75% of available CPU cores (leaving headroom for IO)
     PARALLEL_JOBS=$(( NUM_CPUS * 3 / 4 ))
     if [ "$PARALLEL_JOBS" -lt 1 ]; then PARALLEL_JOBS=1; fi
 else
