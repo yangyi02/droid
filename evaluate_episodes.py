@@ -31,6 +31,10 @@ import traceback
 
 import numpy as np
 
+from core.io import load_depth_data, load_extrinsics, get_accelerator
+from core.metrics import evaluate_episode
+from core.physics import PyBulletRenderer
+
 
 def load_track_data(episode_id, tracks_root):
   """Load pre-computed track data from disk.
@@ -77,9 +81,6 @@ def evaluate_single_episode(episode_id, depth_root, extrinsics_root,
   Returns:
     dict of metric_name → value, or None on failure.
   """
-  from core.io import load_depth_data, load_extrinsics
-  from core.metrics import evaluate_episode
-
   # Load depth data (with video for depth coverage stats)
   scene_constants = load_depth_data(
       episode_id, depth_root, load_video="first_frame")
@@ -161,9 +162,6 @@ def main():
         f"{len(target_eps)} episodes assigned")
 
   # Setup
-  from core.io import get_accelerator
-  from core.physics import PyBulletRenderer
-
   device = get_accelerator()
   pb_renderer = PyBulletRenderer()
 
