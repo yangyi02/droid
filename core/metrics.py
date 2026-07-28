@@ -47,13 +47,12 @@ def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
   return np.abs(z_proj[valid] - z_obs[valid]).astype(np.float32) * 1000.0
 
 
-def compute_track_depth_consistency(
+def compute_depth_residual_per_camera(
     scene_constants, scene_state,
     final_traj_3d, final_per_cam_vis, n_static, n_robot):
-  """Compute per-category depth consistency across all cameras and frames.
+  """Compute per-camera raw depth residual error arrays.
 
-  Returns a dict with median/mean depth residual in mm, split by
-  static / robot / overall, aggregated across all cameras.
+  Returns per-camera breakdowns suitable for visualization (e.g. histograms).
 
   Args:
     scene_constants: Scene data dict.
@@ -64,20 +63,19 @@ def compute_track_depth_consistency(
     n_robot: number of robot points.
 
   Returns:
-    Dict with keys:
-      depth_residual_static_median_mm, depth_residual_static_mean_mm,
-      depth_residual_robot_median_mm, depth_residual_robot_mean_mm,
-      depth_residual_overall_median_mm, depth_residual_overall_mean_mm
+    Dict of cam_id → {'static': np.ndarray, 'robot': np.ndarray,
+                       'all': np.ndarray} with raw error values in mm.
   """
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = final_traj_3d.shape[0]
 
-  all_static, all_robot, all_overall = [], [], []
-
+  per_camera = {}
   for cam_id in camera_ids:
     cam_data = scene_constants["camera"][cam_id]
     K = cam_data["K_mat"]
     h_img, w_img = cam_data["raw_depth"][0].shape[:2]
+
+    cam_static, cam_robot, cam_all = [], [], []
 
     for t in range(T_frames):
       raw_depth = cam_data["raw_depth"][t]
@@ -85,25 +83,51 @@ def compute_track_depth_consistency(
       vis_t = final_per_cam_vis[cam_id][t]
 
       if n_static > 0:
-        residuals = compute_depth_residual_mm(
+        cam_static.append(compute_depth_residual_mm(
             final_traj_3d[t, :n_static][vis_t[:n_static]],
-            K, ext, raw_depth, w_img, h_img)
-        all_static.append(residuals)
+            K, ext, raw_depth, w_img, h_img))
 
       if n_robot > 0:
-        residuals = compute_depth_residual_mm(
+        cam_robot.append(compute_depth_residual_mm(
             final_traj_3d[t, n_static:][vis_t[n_static:]],
-            K, ext, raw_depth, w_img, h_img)
-        all_robot.append(residuals)
+            K, ext, raw_depth, w_img, h_img))
 
-      residuals = compute_depth_residual_mm(
-          final_traj_3d[t, vis_t], K, ext, raw_depth, w_img, h_img)
-      all_overall.append(residuals)
+      cam_all.append(compute_depth_residual_mm(
+          final_traj_3d[t, vis_t], K, ext, raw_depth, w_img, h_img))
+
+    per_camera[cam_id] = {
+        "static": np.concatenate(cam_static) if cam_static else np.array([], dtype=np.float32),
+        "robot": np.concatenate(cam_robot) if cam_robot else np.array([], dtype=np.float32),
+        "all": np.concatenate(cam_all) if cam_all else np.array([], dtype=np.float32),
+    }
+
+  return per_camera
+
+
+def compute_track_depth_consistency(
+    scene_constants, scene_state,
+    final_traj_3d, final_per_cam_vis, n_static, n_robot):
+  """Compute global depth consistency stats (aggregated across all cameras).
+
+  Calls ``compute_depth_residual_per_camera`` and aggregates into
+  median/mean summary statistics suitable for CSV export.
+
+  Returns:
+    Dict with keys:
+      depth_residual_static_median_mm, depth_residual_static_mean_mm,
+      depth_residual_robot_median_mm, depth_residual_robot_mean_mm,
+      depth_residual_overall_median_mm, depth_residual_overall_mean_mm
+  """
+  per_camera = compute_depth_residual_per_camera(
+      scene_constants, scene_state,
+      final_traj_3d, final_per_cam_vis, n_static, n_robot)
+
+  all_static = [v["static"] for v in per_camera.values()]
+  all_robot = [v["robot"] for v in per_camera.values()]
+  all_overall = [v["all"] for v in per_camera.values()]
 
   def _stats(arrs):
-    if not arrs:
-      return float("nan"), float("nan")
-    concat = np.concatenate(arrs)
+    concat = np.concatenate(arrs) if arrs else np.array([])
     if len(concat) == 0:
       return float("nan"), float("nan")
     return float(np.median(concat)), float(np.mean(concat))
@@ -232,7 +256,17 @@ def compute_scene_metadata(scene_constants):
 
   camera_ids = list(scene_constants["camera"].keys())
   first_cam = scene_constants["camera"][camera_ids[0]]
-  h, w = first_cam["video_rgb"][0].shape[:2]
+
+  # Get image dimensions — prefer raw_depth (always available),
+  # fall back to video_rgb or first_frame_rgb.
+  if "raw_depth" in first_cam:
+    h, w = first_cam["raw_depth"][0].shape[:2]
+  elif "video_rgb" in first_cam:
+    h, w = first_cam["video_rgb"][0].shape[:2]
+  elif "first_frame_rgb" in first_cam:
+    h, w = first_cam["first_frame_rgb"].shape[:2]
+  else:
+    h, w = 0, 0
 
   return {
       "site": site,
