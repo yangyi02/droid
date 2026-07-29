@@ -46,12 +46,12 @@ def inspect_dict_structure(data, name="scene_constants", indent=0):
 
 def show_plotly_point_cloud(pts, cols, title="3D Point Cloud",
                             max_points=150000, eye_pos=(-1.5, -1.5, 1.0),
-                            height=600, width=1000):
+                            height=600, width=1000, renderer=None):
   """Interactive 3D point cloud rendering via Plotly."""
   import plotly.graph_objects as go  # lazy import
   idx = np.random.permutation(len(pts))[:max_points]
   p, c = pts[idx], cols[idx]
-  go.Figure(
+  fig = go.Figure(
       data=[go.Scatter3d(
           x=p[:, 0], y=p[:, 1], z=p[:, 2], mode='markers',
           marker=dict(size=1.5,
@@ -62,7 +62,12 @@ def show_plotly_point_cloud(pts, cols, title="3D Point Cloud",
           scene=dict(aspectmode='data',
                      camera=dict(eye=dict(x=eye_pos[0], y=eye_pos[1],
                                           z=eye_pos[2]))))
-  ).show(renderer="colab")
+  )
+  if renderer is not None:
+    fig.show(renderer=renderer)
+  else:
+    fig.show()
+
 
 
 def render_fused_point_cloud(scene_constants, scene_state, frame_idx=0,
@@ -195,7 +200,8 @@ def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
 
 def show_animated_plotly_point_cloud(traj_3d, colors_rgb,
                                     title="Animated 3D Tracks",
-                                    eye_pos=(0, -0.8, -1.5)):
+                                    eye_pos=(0, -0.8, -1.5),
+                                    renderer=None):
   """Dynamic interactive 3D point cloud player with timeline slider."""
   import plotly.graph_objects as go  # lazy import
   T, N, _ = traj_3d.shape
@@ -254,7 +260,11 @@ def show_animated_plotly_point_cloud(traj_3d, colors_rgb,
                        mode="immediate",
                        transition=dict(duration=0))])])],
       sliders=sliders)
-  fig.show(renderer="colab")
+  if renderer is not None:
+    fig.show(renderer=renderer)
+  else:
+    fig.show()
+
 
 
 # ===========================================================================
