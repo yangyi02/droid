@@ -5,7 +5,6 @@
 #   bash run_parallel.sh --mode extrinsics            # Compute extrinsics, all episodes
 #   bash run_parallel.sh --mode tracks                # Compute tracks, all episodes
 #   bash run_parallel.sh --mode metrics               # Evaluate quality metrics, all episodes
-#   bash run_parallel.sh --mode ablation --configs E0,E4  # Ablation, 16 GPUs
 #   bash run_parallel.sh --limit 32                   # Limit to 32 episodes
 
 # ---------------------------------------------------------
@@ -13,8 +12,6 @@
 # ---------------------------------------------------------
 MODE="depth"
 LIMIT=""
-CONFIGS="E0,E4"
-EPISODES="10"
 JOBS=""
 
 while [[ $# -gt 0 ]]; do
@@ -25,14 +22,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --limit|-l)
             LIMIT="$2"
-            shift 2
-            ;;
-        --configs|-c)
-            CONFIGS="$2"
-            shift 2
-            ;;
-        --episodes|-e)
-            EPISODES="$2"
             shift 2
             ;;
         --jobs|-j)
@@ -46,8 +35,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$MODE" != "depth" && "$MODE" != "extrinsics" && "$MODE" != "tracks" && "$MODE" != "metrics" && "$MODE" != "ablation" ]]; then
-    echo "❌ Invalid mode: $MODE (must be 'depth', 'extrinsics', 'tracks', 'metrics', or 'ablation')"
+if [[ "$MODE" != "depth" && "$MODE" != "extrinsics" && "$MODE" != "tracks" && "$MODE" != "metrics" ]]; then
+    echo "❌ Invalid mode: $MODE (must be 'depth', 'extrinsics', 'tracks', or 'metrics')"
     exit 1
 fi
 
@@ -60,9 +49,6 @@ if [[ "$MODE" == "depth" ]]; then
 elif [[ "$MODE" == "extrinsics" ]]; then
     SCRIPT="compute_extrinsics.py"
     OP_NAME="compute_extrinsics"
-elif [[ "$MODE" == "ablation" ]]; then
-    SCRIPT="run_extrinsics_ablation.py"
-    OP_NAME="ablation"
 elif [[ "$MODE" == "metrics" ]]; then
     SCRIPT="evaluate_episodes.py"
     OP_NAME="evaluate_metrics"
@@ -103,18 +89,7 @@ if [ -n "$LIMIT" ]; then
     EXTRA_ARGS="--limit $LIMIT"
 fi
 
-if [[ "$MODE" == "ablation" ]]; then
-    # Ablation mode: pass --configs and --episodes, no --limit
-    EXTRA_ARGS="--configs $CONFIGS --episodes $EPISODES"
-fi
-
 echo "🚀 Running $SCRIPT | Slots: ${PARALLEL_JOBS}x Worker(s) | Limit: ${LIMIT:-All}"
 seq 0 $((PARALLEL_JOBS-1)) | parallel -j "$PARALLEL_JOBS" --ungroup --progress --joblog "$LOGFILE" \
     "CUDA_VISIBLE_DEVICES={} python $SCRIPT --rank {} --world_size $PARALLEL_JOBS $EXTRA_ARGS"
 
-# Post-processing: aggregate ablation results
-if [[ "$MODE" == "ablation" ]]; then
-    echo ""
-    echo "📊 Aggregating ablation results..."
-    python run_extrinsics_ablation.py --configs "$CONFIGS" --episodes "$EPISODES" --summarize
-fi
