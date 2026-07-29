@@ -273,12 +273,7 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
                                 chamfer_weight=1.0, robot_weight=1.0,
                                 chamfer_n_points=2000,
                                 stage_name="Stage 2"):
-  """Global joint optimization: Chamfer + Robot depth + Wrist depth + optional 2D tracks.
-
-  When track_anchors and track_weight > 0 are provided, the 2D track
-  reprojection loss is added to the same optimization loop as Chamfer and
-  Robot depth.  This ensures all constraints pull together without any
-  single signal dominating.
+  """Global joint optimization: Chamfer + Robot depth + Wrist depth.
 
   Args:
     scene_constants: Scene data dict.
@@ -287,15 +282,10 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
     lr: Learning rate.
     n_steps: Number of optimization steps.
     robot_weight: Weight for robot depth losses.
-    track_anchors: Optional dict from prepare_track_anchors(). When provided
-        with track_weight > 0, adds 2D track reprojection constraints.
-    track_weight: Weight for 2D track reprojection loss (0 = off).
     stage_name: Display name for logging.
   """
-  use_tracks = (track_anchors is not None and track_weight > 0)
-  track_tag = f" + Tracks(w={track_weight})" if use_tracks else ""
   print(f"\n{stage_name}: Global joint optimization "
-        f"(Chamfer + Robot + Wrist{track_tag}, lr={lr})...")
+        f"(Chamfer + Robot + Wrist, lr={lr})...")
   device = tensor_renderer.device
   wrist_cam = scene_constants['meta']['wrist_serial']
   ext_cams = [c for c in scene_constants['camera'].keys() if c != wrist_cam]
@@ -433,7 +423,6 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
     device: Torch device.
     pb_renderer: Optional PyBulletRenderer to reuse. If None, one
         is created temporarily.
-    track_anchors: Optional track anchors for 2D reprojection eval.
 
   Returns:
     Dict with metrics: chamfer_total, robot_loss_*, bg_overlap_pct,
