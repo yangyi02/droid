@@ -271,9 +271,8 @@ def get_cam_points_local_t(t, cam_data, device, n_points=2000):
 def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_renderer,
                                 lr=0.001, n_steps=500,
                                 chamfer_weight=1.0, robot_weight=1.0,
-                                track_anchors=None, track_weight=0.0,
                                 chamfer_n_points=2000,
-                                stage_name="Stage 3"):
+                                stage_name="Stage 2"):
   """Global joint optimization: Chamfer + Robot depth + Wrist depth + optional 2D tracks.
 
   When track_anchors and track_weight > 0 are provided, the 2D track
@@ -328,12 +327,6 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
   batch_Pc1, batch_Pc2, batch_Pcw = torch.stack(cache_Pc1), torch.stack(cache_Pc2), torch.stack(cache_Pcw)
   batch_Tee = torch.stack(cache_Tee)
 
-  # Prepare FK tensor for track loss (full sequence, not just valid Chamfer frames)
-  if use_tracks:
-    T_ee_all_t = torch.tensor(T_ee_all, dtype=torch.float32, device=device)
-    n_track_cams = sum(1 for c in [cam1, cam2, wrist_cam] if c in track_anchors)
-    print(f"  Track anchors available for {n_track_cams} cameras")
-
   K_t1 = torch.tensor(scene_constants['camera'][cam1]['K_mat'], dtype=torch.float32, device=device)
   K_t2 = torch.tensor(scene_constants['camera'][cam2]['K_mat'], dtype=torch.float32, device=device)
   K_t_w = torch.tensor(scene_constants['camera'][wrist_cam]['K_mat'], dtype=torch.float32, device=device)
@@ -380,23 +373,6 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
 
     loss_total = chamfer_weight * loss_chamfer + robot_weight * (l_rob1 + l_rob2 + l_wrist)
 
-    # 2D track reprojection losses (when enabled)
-    loss_track = torch.tensor(0.0, device=device)
-    if use_tracks:
-      for cam_id in [cam1, cam2, wrist_cam]:
-        if cam_id not in track_anchors:
-          continue
-        d_cam, T_init_cam, K_cam = cam_opt_map[cam_id]
-        T_opt_cam = T_init_cam @ make_T(d_cam, device)
-        scheme = track_anchors[cam_id]['scheme']
-        if scheme == 'robot_fk':
-          continue  # robot_fk anchors are eval-only, no P_cam0 for optimization
-        l_trk = compute_track_reproj_loss(
-            track_anchors[cam_id], T_opt_cam, K_cam, T_ee_all_t,
-            scheme, device)
-        loss_track = loss_track + l_trk
-      loss_total = loss_total + track_weight * loss_track
-
     loss_total.backward()
     optimizer.step()
 
@@ -411,8 +387,6 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
           f"Rob1: {l_rob1.item():.4f}", f"Rob2: {l_rob2.item():.4f}",
           f"Wrst: {l_wrist.item():.4f}",
       ]
-      if use_tracks:
-        log_parts.append(f"Track: {loss_track.item():.2f}")
       log_parts.extend([
           f"BG Overlap: {bg_overlap:.1f}%",
           f"Shift → C1: {shift_c1:.2f}mm, C2: {shift_c2:.2f}mm, W: {shift_w:.2f}mm",
@@ -444,299 +418,11 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
 
 
 # ---------------------------------------------------------------------------
-# 11. Stage 5: 2D Track-Based Extrinsics Refinement
-# ---------------------------------------------------------------------------
-
-def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
-  """Lift tracked 2D points at t=0 to 3D and classify as robot or background.
-
-  For static cameras (Scheme A): selects robot-region tracks — points are
-  assumed to be on the EE link, moved by forward kinematics.
-  For the wrist camera (Scheme B): selects background tracks — points are
-  static in world frame while the camera moves.
-
-  Args:
-    scene_constants: Scene data dict with tracks_2d / vis_2d populated.
-    scene_state: Current extrinsics estimates for each camera.
-    pb_renderer: PyBulletRenderer for robot mask rendering.
-    device: Torch device.
-
-  Returns:
-    Dict[cam_id, dict] with per-camera anchor data:
-      P_cam0: (N, 4) float32, 3D points in camera frame at t=0 (homogeneous)
-      tracks_2d: (T, N, 2) float32, selected track positions over time
-      vis: (T, N) bool, visibility flags
-      scheme: "robot" or "background"
-  """
-  wrist_cam = scene_constants['meta']['wrist_serial']
-  anchors = {}
-
-  print("  Preparing track anchors from t=0...")
-
-  for cam_id in scene_constants['camera']:
-    cam_data = scene_constants['camera'][cam_id]
-
-    if 'tracks_2d' not in cam_data or 'raw_depth' not in cam_data:
-      print(f"    ⚠️ [{cam_id}] Missing tracks_2d or depth, skipping.")
-      continue
-
-    tracks = cam_data['tracks_2d']   # (T, N, 2) float32
-    vis = cam_data['vis_2d']         # (T, N) bool
-    T_frames, N_total, _ = tracks.shape
-    is_wrist = (cam_id == wrist_cam)
-
-    h_img, w_img = cam_data['raw_depth'][0].shape[:2]
-    K = cam_data['K_mat']
-
-    # Render masks at t=0 using current extrinsics
-    ext_t0 = scene_state[cam_id]['extrinsics'][0]
-    pb_renderer.update_robot_pose(
-        scene_constants['robot']['joint_positions'][0],
-        gripper_state=scene_constants['robot']['gripper_positions'][0])
-
-    # Track positions at t=0
-    u0 = tracks[0, :, 0]
-    v0 = tracks[0, :, 1]
-    u0i = np.clip(np.round(u0).astype(int), 0, w_img - 1)
-    v0i = np.clip(np.round(v0).astype(int), 0, h_img - 1)
-
-    if is_wrist:
-      # Scheme B: wrist camera — select BACKGROUND tracks
-      # Use SAM consensus gripper mask (from gripper_mask.npz).
-      # sam_real_masks is (T, H, W) with mask only at closed-gripper frames
-      # (same static consensus mask broadcast). OR across time gives the mask.
-      sam_masks = cam_data.get('sam_real_masks')
-      if sam_masks is None or not sam_masks.any():
-        print(f"    ⚠️ [{cam_id}] No SAM gripper mask, skipping wrist track eval.")
-        continue
-
-      consensus = sam_masks.any(axis=0)  # static gripper mask in camera frame
-      kernel = np.ones((15, 15), np.uint8)
-      robot_mask_d = cv2.dilate(
-          consensus.astype(np.uint8), kernel, iterations=1) > 0
-      on_robot = robot_mask_d[v0i, u0i]
-      selected = ~on_robot
-      scheme = "background"
-
-      # Only evaluate on closed-gripper frames (< 0.05) where the SAM mask
-      # is accurate. No PyBullet rendering needed at all.
-      gripper_pos = scene_constants['robot']['gripper_positions']
-      gripper_closed_frames = gripper_pos < 0.05
-      n_closed = gripper_closed_frames.sum()
-      print(f"    [{cam_id}] Closed-gripper eval frames: "
-            f"{n_closed}/{len(gripper_pos)}  mask: SAM")
-    else:
-      # Scheme A: static camera — ALL robot points via URDF FK
-      # Use URDFKinematicsTracker to bind surface points to link frames at t=0,
-      # propagate via FK, and get FK-based 2D predictions + visibility.
-      from core.tracking import URDFKinematicsTracker
-      urdf_tracker = URDFKinematicsTracker(pb_renderer)
-      fk_result = urdf_tracker.extract_robot_tracks(
-          cam_id, scene_constants, scene_state)
-      traj_3d, traj_2d_fk, vis_fk, robot_indices = fk_result
-
-      if robot_indices is None or len(robot_indices) < 5:
-        print(f"    ⚠️ [{cam_id}] URDF tracker found <5 robot points, skipping.")
-        continue
-
-      # FK 2D = predicted, tracker 2D = target
-      tracker_2d = tracks[:, robot_indices]  # (T, N_robot, 2)
-      tracker_vis = vis[:, robot_indices]    # (T, N_robot)
-
-      # Combined visibility: both FK visible and tracker visible
-      combined_vis = vis_fk & tracker_vis  # (T, N_robot)
-
-      # L1 pixel error: |FK_pred - tracker_pred|
-      pixel_err = np.abs(traj_2d_fk - tracker_2d).sum(axis=-1)  # (T, N_robot)
-
-      valid = combined_vis & (pixel_err < 500)  # sanity cap
-      if valid.sum() < 10:
-        print(f"    ⚠️ [{cam_id}] Too few valid FK-vs-tracker comparisons, skipping.")
-        continue
-
-      mean_err = float(pixel_err[valid].mean())
-      median_err = float(np.median(pixel_err[valid]))
-      n_pts = len(robot_indices)
-      avg_vis_pct = combined_vis.mean() * 100
-      print(f"    ✅ [{cam_id}] robot FK: {n_pts} points "
-            f"(avg vis: {avg_vis_pct:.0f}%, "
-            f"mean={mean_err:.1f}px, median={median_err:.1f}px)")
-
-      # Store directly as per-camera metric (no anchor needed)
-      anchors[cam_id] = {
-          'scheme': 'robot_fk',
-          'mean_px': mean_err,
-          'median_px': median_err,
-      }
-      continue  # skip the anchor building below
-
-    # --- Below only runs for wrist "background" scheme ---
-    depth_0 = cam_data['raw_depth'][0].astype(np.float32)
-    z0 = depth_0[v0i, u0i]
-
-    # Diagnostic: show how many points survive each filter
-    n_total = len(u0)
-    n_not_robot = selected.sum()
-    n_vis0 = (selected & vis[0]).sum()
-    n_has_depth = (z0 > 0.01).sum()
-    n_depth_range = ((z0 > 0.05) & (z0 < 3.0)).sum()
-    print(f"    [{cam_id}] Filter chain: total={n_total} "
-          f"→ not_gripper={n_not_robot} "
-          f"→ vis[0]={n_vis0} "
-          f"→ has_depth(>0.01)={n_has_depth} "
-          f"→ depth_range(0.05-3m)={n_depth_range}")
-
-    has_depth = (z0 > 0.05) & (z0 < 3.0)
-    selected = selected & vis[0] & has_depth
-
-    if selected.sum() < 5:
-      print(f"    ⚠️ [{cam_id}] background: only {selected.sum()} initial tracks, skipping.")
-      continue
-
-    sel_idx = np.where(selected)[0]
-
-    # Keep only tracks visible in >20% of frames
-    vis_frac = vis[:, sel_idx].mean(axis=0)
-    good = vis_frac > 0.2
-    sel_idx = sel_idx[good]
-
-    if len(sel_idx) < 5:
-      print(f"    ⚠️ [{cam_id}] background: only {len(sel_idx)} well-visible tracks, skipping.")
-      continue
-
-    # Cap at 500 for memory efficiency
-    if len(sel_idx) > 500:
-      rng = np.random.RandomState(42)
-      sel_idx = rng.choice(sel_idx, 500, replace=False)
-      sel_idx.sort()
-
-    # Lift to 3D in camera frame at t=0
-    u_s = u0[sel_idx].astype(np.float32)
-    v_s = v0[sel_idx].astype(np.float32)
-    z_s = z0[sel_idx].astype(np.float32)
-    x_c = (u_s - K[0, 2]) * z_s / K[0, 0]
-    y_c = (v_s - K[1, 2]) * z_s / K[1, 1]
-    P_cam0 = np.stack([x_c, y_c, z_s, np.ones_like(z_s)], axis=-1)
-
-    avg_vis = vis[:, sel_idx].mean() * 100
-    print(f"    ✅ [{cam_id}] background: {len(sel_idx)} tracks "
-          f"(avg vis: {avg_vis:.0f}%, depth: sensor)")
-
-    anchor_data = {
-        'P_cam0': torch.tensor(P_cam0, dtype=torch.float32, device=device),
-        'tracks_2d': torch.tensor(
-            tracks[:, sel_idx], dtype=torch.float32, device=device),
-        'vis': torch.tensor(
-            vis[:, sel_idx], dtype=torch.bool, device=device),
-        'scheme': 'background',
-    }
-    anchor_data['eval_frame_mask'] = torch.tensor(
-        gripper_closed_frames, dtype=torch.bool, device=device)
-    anchors[cam_id] = anchor_data
-
-  return anchors
-
-
-def compute_track_reproj_loss(anchor, T_opt, K, T_ee_all, scheme, device,
-                              return_median=False):
-  """Differentiable 2D track reprojection loss for one camera.
-
-  Scheme A (robot tracks on static camera):
-    Points are on the EE link. At t=0 they are lifted to EE-local coords:
-      P_ee = T_ee(0)^{-1} @ T_cam_to_base @ P_cam0
-    At time t, they are projected back through FK:
-      P_cam(t) = T_base_to_cam @ T_ee(t) @ P_ee
-
-  Scheme B (background tracks on wrist camera):
-    Points are static in world frame. At t=0 they are lifted to world:
-      P_world = T_ee(0) @ T_cam_ee @ P_cam0
-    At time t, the wrist camera has moved:
-      P_cam(t) = inv(T_ee(t) @ T_cam_ee) @ P_world
-
-  Both schemes produce predicted 2D positions via standard pinhole projection,
-  compared to tracked positions using L1 pixel error.
-
-  Args:
-    anchor: Dict from prepare_track_anchors: P_cam0, tracks_2d, vis, scheme.
-    T_opt: (4, 4) Current optimized extrinsic (cam-to-base for static,
-        cam-to-ee for wrist). Differentiable w.r.t. delta.
-    K: (3, 3) Camera intrinsics tensor.
-    T_ee_all: (T, 4, 4) FK transforms for all timesteps.
-    scheme: "robot" or "background".
-    device: Torch device.
-    return_median: If True, return (mean, median) tuple for evaluation.
-
-  Returns:
-    Scalar mean L1 loss, or (mean, median) tuple when return_median=True.
-  """
-  P_cam0 = anchor['P_cam0']       # (N, 4)
-  targets = anchor['tracks_2d']   # (T, N, 2)
-  vis = anchor['vis']             # (T, N)
-
-  if scheme in ("robot", "gripper"):
-    # Scheme A: static camera, gripper/EE tracks
-    # T_opt = T_cam_to_base (static camera extrinsic)
-    T_base_to_cam = torch.linalg.inv(T_opt)
-    T_ee_0_inv = torch.linalg.inv(T_ee_all[0])
-
-    # P_world at t=0 → P_ee (constant on EE link)
-    P_world0 = T_opt @ P_cam0.T                  # (4, N)
-    P_ee = T_ee_0_inv @ P_world0                  # (4, N)
-
-    # For all t: project through FK → camera
-    # P_world(t) = T_ee(t) @ P_ee → P_cam(t) = T_base_to_cam @ P_world(t)
-    P_ee_batch = P_ee.unsqueeze(0)                # (1, 4, N)
-    P_world_all = T_ee_all @ P_ee_batch           # (T, 4, N)
-    P_cam_all = T_base_to_cam.unsqueeze(0) @ P_world_all  # (T, 4, N)
-
-  elif scheme == "background":
-    # Scheme B: wrist camera, background tracks
-    # T_opt = T_cam_ee (hand-eye extrinsic)
-    # P_world = T_ee(0) @ T_cam_ee @ P_cam0 (constant in world)
-    T_cam_to_world_0 = T_ee_all[0] @ T_opt       # (4, 4)
-    P_world = T_cam_to_world_0 @ P_cam0.T         # (4, N)
-
-    # For all t: inv(T_ee(t) @ T_cam_ee) @ P_world
-    T_cam_to_world_all = T_ee_all @ T_opt.unsqueeze(0)   # (T, 4, 4)
-    T_world_to_cam_all = torch.linalg.inv(T_cam_to_world_all)
-    P_cam_all = T_world_to_cam_all @ P_world.unsqueeze(0)  # (T, 4, N)
-
-  else:
-    zero = torch.tensor(0.0, device=device)
-    return (zero, zero) if return_median else zero
-
-  # Pinhole projection → predicted 2D
-  Z = P_cam_all[:, 2, :].clamp(min=1e-4)                   # (T, N)
-  u_pred = K[0, 0] * P_cam_all[:, 0, :] / Z + K[0, 2]     # (T, N)
-  v_pred = K[1, 1] * P_cam_all[:, 1, :] / Z + K[1, 2]     # (T, N)
-  pred = torch.stack([u_pred, v_pred], dim=-1)              # (T, N, 2)
-
-  # Mean pixel reprojection error (L1: |Δu| + |Δv|)
-  pixel_err = (pred - targets).abs().sum(dim=-1)            # (T, N)
-  valid = vis & (Z > 0.05)
-
-  # For wrist background: only evaluate on closed-gripper frames
-  # where SAM mask is accurate
-  if 'eval_frame_mask' in anchor:
-    valid = valid & anchor['eval_frame_mask'][:, None]
-
-  if valid.any():
-    err = pixel_err[valid]
-    if return_median:
-      return err.mean(), err.median()
-    return err.mean()
-
-  zero = torch.tensor(0.0, device=device)
-  return (zero, zero) if return_median else zero
-
-
-# ---------------------------------------------------------------------------
-# 11b. Evaluate Extrinsics Quality
+# Evaluate Extrinsics Quality
 # ---------------------------------------------------------------------------
 @torch.no_grad()
 def evaluate_extrinsics(scene_constants, scene_state, device,
-                        pb_renderer=None, tensor_renderer=None,
-                        track_anchors=None):
+                        pb_renderer=None, tensor_renderer=None):
   """Compute extrinsics quality metrics without re-running optimization.
 
   Can be called after any stage to monitor calibration quality.
@@ -834,64 +520,6 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
   except Exception as e:
     metrics["chamfer_total"] = float("nan")
     metrics["bg_overlap_pct"] = float("nan")
-
-  # --- Track model error (if anchors provided) ---
-  if track_anchors:
-    T_ee_t = torch.tensor(T_ee_all, dtype=torch.float32, device=device)
-    # Per-scheme accumulators
-    bg_means, bg_medians = [], []
-    robot_fk_means, robot_fk_medians = [], []
-    for cam_id in track_anchors:
-      scheme = track_anchors[cam_id]["scheme"]
-
-      if scheme == "robot_fk":
-        # Pre-computed in prepare_track_anchors via URDFKinematicsTracker
-        robot_fk_means.append(track_anchors[cam_id]["mean_px"])
-        robot_fk_medians.append(track_anchors[cam_id]["median_px"])
-      elif scheme == "background":
-        T_opt = torch.tensor(
-            scene_state[cam_id]["base_extrinsic"],
-            dtype=torch.float32, device=device)
-        K_t = torch.tensor(
-            scene_constants["camera"][cam_id]["K_mat"],
-            dtype=torch.float32, device=device)
-        l_mean, l_median = compute_track_reproj_loss(
-            track_anchors[cam_id], T_opt, K_t, T_ee_t, scheme, device,
-            return_median=True)
-        bg_means.append(l_mean.item())
-        bg_medians.append(l_median.item())
-
-    # Primary metric: wrist background (cleanest test of T_cam_ee)
-    metrics["track_reproj_wrist_bg_mean_px"] = (
-        float(np.mean(bg_means)) if bg_means else float("nan"))
-    metrics["track_reproj_wrist_bg_median_px"] = (
-        float(np.mean(bg_medians)) if bg_medians else float("nan"))
-    # Secondary metric: static camera robot FK vs tracker
-    metrics["track_reproj_static_robot_mean_px"] = (
-        float(np.mean(robot_fk_means)) if robot_fk_means else float("nan"))
-    metrics["track_reproj_static_robot_median_px"] = (
-        float(np.mean(robot_fk_medians)) if robot_fk_medians else float("nan"))
-    # Overall (all cameras, backward compat)
-    all_means = bg_means + robot_fk_means
-    all_medians = bg_medians + robot_fk_medians
-    metrics["track_reproj_mean_px"] = (
-        float(np.mean(all_means)) if all_means else float("nan"))
-    metrics["track_reproj_median_px"] = (
-        float(np.mean(all_medians)) if all_medians else float("nan"))
-  else:
-    metrics["track_reproj_mean_px"] = float("nan")
-    metrics["track_reproj_median_px"] = float("nan")
-    metrics["track_reproj_wrist_bg_mean_px"] = float("nan")
-    metrics["track_reproj_wrist_bg_median_px"] = float("nan")
-    metrics["track_reproj_static_robot_mean_px"] = float("nan")
-    metrics["track_reproj_static_robot_median_px"] = float("nan")
-
-  # --- Extrinsic magnitude from identity ---
-  for cam_id in scene_constants["camera"]:
-    T = scene_state[cam_id]["base_extrinsic"]
-    metrics[f"shift_mm_{cam_id}"] = float(np.linalg.norm(T[:3, 3]) * 1000)
-
-
 
   return metrics
 
