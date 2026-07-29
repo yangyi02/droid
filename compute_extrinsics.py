@@ -765,7 +765,7 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
 
   # --- Robot depth losses ---
   if tensor_renderer is not None:
-    # Fast path: yourdfpy FK → direct 3D point clouds (no rendering)
+    # Fast path: yourdfpy FK -> direct 3D point clouds (no rendering)
     for cam_id, key_prefix in [(cam1, "cam1"), (cam2, "cam2"),
                                 (wrist_cam, "wrist")]:
       try:
@@ -787,74 +787,6 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
         metrics[f"robot_loss_{key_prefix}"] = loss.item()
       except Exception as e:
         metrics[f"robot_loss_{key_prefix}"] = float("nan")
-  else:
-    # Slow path: PyBullet per-frame rendering
-    own_renderer = False
-    if pb_renderer is None:
-      from core.physics import PyBulletRenderer
-      pb_renderer = PyBulletRenderer()
-      own_renderer = True
-    from core.pybullet_extrinsics import (
-        get_foreground_robot_points, get_foreground_gripper_points,
-        compute_robot_loss_batched, compute_wrist_loss_batched,
-    )
-    for cam_id, key_prefix in [(cam1, "cam1"), (cam2, "cam2"),
-                                (wrist_cam, "wrist")]:
-      try:
-        is_wrist = (cam_id == wrist_cam)
-        K_np = scene_constants["camera"][cam_id]["K_mat"]
-        K_t = torch.tensor(K_np, dtype=torch.float32, device=device)
-
-        cache_X, cache_obs = [], []
-        for t in range(n_frames):
-          joints = scene_constants["robot"]["joint_positions"][t]
-          gripper = scene_constants["robot"]["gripper_positions"][t]
-          pb_renderer.update_robot_pose(joints, gripper_state=gripper)
-
-          d_obs = scene_constants["camera"][cam_id]["raw_depth"][t].astype(np.float32)
-          ext_t = scene_state[cam_id]["extrinsics"][t]
-
-          if is_wrist:
-            pts = get_foreground_gripper_points(
-                ext_t, K_np, d_obs, pb_renderer, device)
-            if pts is None:
-              continue
-            T_world_to_ee = np.linalg.inv(T_ee_all[t])
-            pts_world = (ext_t @ pts)[:3, :].T
-            pts_ee = (T_world_to_ee[:3, :3] @ pts_world.T +
-                      T_world_to_ee[:3, 3:4]).T
-            cache_X.append(
-                torch.tensor(pts_ee, dtype=torch.float32, device=device))
-          else:
-            pts = get_foreground_robot_points(
-                ext_t, K_np, d_obs, pb_renderer, device)
-            if pts is None:
-              continue
-            cache_X.append(pts)
-
-          cache_obs.append(
-              torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
-
-        if not cache_X:
-          metrics[f"robot_loss_{key_prefix}"] = float("nan")
-          continue
-
-        batch_X = torch.stack(cache_X)
-        batch_obs = torch.stack(cache_obs)
-        T_opt = torch.tensor(
-            scene_state[cam_id]["base_extrinsic"],
-            dtype=torch.float32, device=device)
-
-        with torch.no_grad():
-          if is_wrist:
-            loss = compute_wrist_loss_batched(batch_X, T_opt, K_t, batch_obs)
-          else:
-            loss = compute_robot_loss_batched(batch_X, T_opt, K_t, batch_obs)
-        metrics[f"robot_loss_{key_prefix}"] = loss.item()
-      except Exception as e:
-        metrics[f"robot_loss_{key_prefix}"] = float("nan")
-    if own_renderer:
-      del pb_renderer
 
   # --- Chamfer losses ---
   try:
@@ -1068,7 +1000,7 @@ if __name__ == "__main__":
                        help="Root directory for extrinsics output")
   args = parser.parse_args()
 
-  print(f"DROID Stage 2: Camera Extrinsics Calibration Pipeline [method={args.method}]")
+  print(f"DROID Stage 2: Camera Extrinsics Calibration Pipeline")
   device = get_accelerator()
   serials_db, _, _, extrinsics_db, _ = load_metadata()
 
@@ -1088,20 +1020,8 @@ if __name__ == "__main__":
   target_eps = available_eps[args.rank::args.world_size]
   print(f"Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
 
-  # Initialize renderer based on method
-  if args.method == "pybullet":
-    from core.physics import PyBulletRenderer
-    from core.pybullet_extrinsics import (
-        run_stage2_alignment_pybullet,
-        run_global_joint_alignment_pybullet,
-    )
-    pb_renderer = PyBulletRenderer()
-    tensor_renderer = None
-    print("  Using PyBullet rendering engine")
-  else:
-    pb_renderer = None
-    tensor_renderer = TensorRobotRenderer(device=device)
-    print("  Using yourdfpy TensorRobotRenderer")
+  tensor_renderer = TensorRobotRenderer(device=device)
+  print("  Using TensorRobotRenderer (yourdfpy)")
 
   succeeded_eps = []
 
@@ -1131,14 +1051,9 @@ if __name__ == "__main__":
                         export_root=args.export_root, stage_suffix="stage1")
 
       # Stage 2: Per-camera independent alignment (external + wrist)
-      if args.method == "pybullet":
-        stage2_state = run_stage2_alignment_pybullet(
-            scene_constants, pb_renderer, stage1_scene_state, device,
-        )
-      else:
-        stage2_state = run_stage2_alignment(
-            scene_constants, tensor_renderer, stage1_scene_state,
-        )
+      stage2_state = run_stage2_alignment(
+          scene_constants, tensor_renderer, stage1_scene_state,
+      )
       print_metrics(
           evaluate_extrinsics(scene_constants, stage2_state, device,
                               tensor_renderer=tensor_renderer),
@@ -1153,16 +1068,10 @@ if __name__ == "__main__":
         succeeded_eps.append(ep_id)
       else:
         # Stage 3: Global joint optimization (Chamfer + Robot + Wrist)
-        if args.method == "pybullet":
-          stage3_state = run_global_joint_alignment_pybullet(
-              scene_constants, stage2_state, pb_renderer, device,
-              lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
-          )
-        else:
-          stage3_state = run_global_joint_alignment(
-              scene_constants, stage2_state, tensor_renderer,
-              lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
-          )
+        stage3_state = run_global_joint_alignment(
+            scene_constants, stage2_state, tensor_renderer,
+            lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
+        )
         print_metrics(
             evaluate_extrinsics(scene_constants, stage3_state, device,
                                 tensor_renderer=tensor_renderer),
@@ -1172,18 +1081,11 @@ if __name__ == "__main__":
 
         # Stage 4: Optional fine-tuning (second pass of global joint alignment)
         if args.stage4:
-          if args.method == "pybullet":
-            final_state = run_global_joint_alignment_pybullet(
-                scene_constants, stage3_state, pb_renderer, device,
-                lr=args.stage4_lr, n_steps=args.stage4_steps,
-                robot_weight=args.stage4_robot_weight, stage_name="Stage 4",
-            )
-          else:
-            final_state = run_global_joint_alignment(
-                scene_constants, stage3_state, tensor_renderer,
-                lr=args.stage4_lr, n_steps=args.stage4_steps,
-                robot_weight=args.stage4_robot_weight, stage_name="Stage 4",
-            )
+          final_state = run_global_joint_alignment(
+              scene_constants, stage3_state, tensor_renderer,
+              lr=args.stage4_lr, n_steps=args.stage4_steps,
+              robot_weight=args.stage4_robot_weight, stage_name="Stage 4",
+          )
           print_metrics(
               evaluate_extrinsics(scene_constants, final_state, device,
                                   tensor_renderer=tensor_renderer),
