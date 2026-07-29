@@ -409,7 +409,7 @@ def main():
         },
         "compute_errors": errors_list,
     }, f, indent=2)
-  print(f"💾 Failure analysis → {failure_path}")
+  print(f"Failure analysis -> {failure_path}")
 
   # ------------------------------------------------------------------
   # 5. Print Summary Table

@@ -37,7 +37,7 @@ from core.physics import TensorRobotRenderer
 # ---------------------------------------------------------------------------
 def init_camera_states(scene_constants, extrinsics_db):
   """Assemble initial 3D camera states from dataset metadata."""
-  print("  🌐 Initializing camera 3D states...")
+  print("  Initializing camera 3D states...")
   wrist_serial = scene_constants["meta"]["wrist_serial"]
   robot_data = scene_constants["robot"]
   n_frames = len(robot_data["T_ee_base_all"])
@@ -165,7 +165,7 @@ def extract_robot_physical_tensors(cam_id, scene_constants, tensor_renderer):
 # ---------------------------------------------------------------------------
 def run_stage2_alignment(scene_constants, tensor_renderer, stage1_scene_state):
   """Unified Stage 2: optimize all cameras against robot body/gripper depth."""
-  print("\n🦾 Stage 2: Unified camera-robot alignment (external + wrist)...")
+  print("\nStage 2: Unified camera-robot alignment (external + wrist)...")
   device = tensor_renderer.device
   wrist_cam = scene_constants['meta']['wrist_serial']
   stage2_scene_state = copy.deepcopy(stage1_scene_state)
@@ -174,7 +174,7 @@ def run_stage2_alignment(scene_constants, tensor_renderer, stage1_scene_state):
   for cam in scene_constants['camera'].keys():
     is_wrist = (cam == wrist_cam)
     mode = "wrist (gripper-only)" if is_wrist else "external (full body)"
-    print(f"\n  📷 Optimizing [{mode}] camera: [{cam}] ...")
+    print(f"\n  Optimizing [{mode}] camera: [{cam}] ...")
 
     # Extract physical tensors from shared factory
     batch_X_base, batch_obs = extract_robot_physical_tensors(cam, scene_constants, tensor_renderer)
@@ -295,7 +295,7 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
   """
   use_tracks = (track_anchors is not None and track_weight > 0)
   track_tag = f" + Tracks(w={track_weight})" if use_tracks else ""
-  print(f"\n🌍 {stage_name}: Global joint optimization "
+  print(f"\n{stage_name}: Global joint optimization "
         f"(Chamfer + Robot + Wrist{track_tag}, lr={lr})...")
   device = tensor_renderer.device
   wrist_cam = scene_constants['meta']['wrist_serial']
@@ -305,13 +305,13 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
   T_ee_all = scene_constants['robot']['T_ee_base_all']
 
   # Extract robot physical tensors from shared factory
-  print(f"  🔍 Extracting robot physical tensor caches...")
+  print(f"  Extracting robot physical tensor caches...")
   batch_X1, batch_obs1 = extract_robot_physical_tensors(cam1, scene_constants, tensor_renderer)
   batch_X2, batch_obs2 = extract_robot_physical_tensors(cam2, scene_constants, tensor_renderer)
   batch_P_ee, batch_obs_w = extract_robot_physical_tensors(wrist_cam, scene_constants, tensor_renderer)
 
   # Extract Chamfer environment point clouds
-  print(f"  🔍 Extracting Chamfer environment point clouds...")
+  print(f"  Extracting Chamfer environment point clouds...")
   cache_Pc1, cache_Pc2, cache_Pcw, cache_Tee = [], [], [], []
 
   for t in range(n_frames):
@@ -332,7 +332,7 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
   if use_tracks:
     T_ee_all_t = torch.tensor(T_ee_all, dtype=torch.float32, device=device)
     n_track_cams = sum(1 for c in [cam1, cam2, wrist_cam] if c in track_anchors)
-    print(f"  🎯 Track anchors available for {n_track_cams} cameras")
+    print(f"  Track anchors available for {n_track_cams} cameras")
 
   K_t1 = torch.tensor(scene_constants['camera'][cam1]['K_mat'], dtype=torch.float32, device=device)
   K_t2 = torch.tensor(scene_constants['camera'][cam2]['K_mat'], dtype=torch.float32, device=device)
@@ -471,7 +471,7 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
   wrist_cam = scene_constants['meta']['wrist_serial']
   anchors = {}
 
-  print("  📌 Preparing track anchors from t=0...")
+  print("  Preparing track anchors from t=0...")
 
   for cam_id in scene_constants['camera']:
     cam_data = scene_constants['camera'][cam_id]
@@ -523,7 +523,7 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
       gripper_pos = scene_constants['robot']['gripper_positions']
       gripper_closed_frames = gripper_pos < 0.05
       n_closed = gripper_closed_frames.sum()
-      print(f"    🔒 [{cam_id}] Closed-gripper eval frames: "
+      print(f"    [{cam_id}] Closed-gripper eval frames: "
             f"{n_closed}/{len(gripper_pos)}  mask: SAM")
     else:
       # Scheme A: static camera — ALL robot points via URDF FK
@@ -580,7 +580,7 @@ def prepare_track_anchors(scene_constants, scene_state, pb_renderer, device):
     n_vis0 = (selected & vis[0]).sum()
     n_has_depth = (z0 > 0.01).sum()
     n_depth_range = ((z0 > 0.05) & (z0 < 3.0)).sum()
-    print(f"    📊 [{cam_id}] Filter chain: total={n_total} "
+    print(f"    [{cam_id}] Filter chain: total={n_total} "
           f"→ not_gripper={n_not_robot} "
           f"→ vis[0]={n_vis0} "
           f"→ has_depth(>0.01)={n_has_depth} "
@@ -978,7 +978,7 @@ def print_metrics(metrics, stage_name=""):
   static_robot = metrics.get("track_reproj_static_robot_mean_px", float("nan"))
   static_robot_med = metrics.get("track_reproj_static_robot_median_px", float("nan"))
 
-  header = f"📊 Metrics after {stage_name}" if stage_name else "📊 Metrics"
+  header = f"Metrics after {stage_name}" if stage_name else "Metrics"
   print(f"\n{header}")
   print(f"  Chamfer total: {chamfer:.4f}")
   print(f"  Robot depth:   cam1={rob1:.4f}  cam2={rob2:.4f}  wrist={robw:.4f}")
@@ -1038,7 +1038,7 @@ def export_extrinsics(scene_constants, scene_state,
     with open(out_path, "w") as f:
       json.dump(payload, f, indent=2)
 
-  print(f"  💾 Extrinsics saved to {ep_dir}/*/{fname}")
+  print(f"  Extrinsics saved to {ep_dir}/*/{fname}")
 
 
 # ---------------------------------------------------------------------------
@@ -1068,7 +1068,7 @@ if __name__ == "__main__":
                        help="Root directory for extrinsics output")
   args = parser.parse_args()
 
-  print(f"🚀 DROID Stage 2: Camera Extrinsics Calibration Pipeline [method={args.method}]")
+  print(f"DROID Stage 2: Camera Extrinsics Calibration Pipeline [method={args.method}]")
   device = get_accelerator()
   serials_db, _, _, extrinsics_db, _ = load_metadata()
 
@@ -1086,7 +1086,7 @@ if __name__ == "__main__":
   if args.limit > 0:
     available_eps = available_eps[:args.limit]
   target_eps = available_eps[args.rank::args.world_size]
-  print(f"📋 Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
+  print(f"Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
 
   # Initialize renderer based on method
   if args.method == "pybullet":
@@ -1097,16 +1097,16 @@ if __name__ == "__main__":
     )
     pb_renderer = PyBulletRenderer()
     tensor_renderer = None
-    print("  🔧 Using PyBullet rendering engine (V52 style)")
+    print("  Using PyBullet rendering engine")
   else:
     pb_renderer = None
     tensor_renderer = TensorRobotRenderer(device=device)
-    print("  🔧 Using yourdfpy TensorRobotRenderer (V55 style)")
+    print("  Using yourdfpy TensorRobotRenderer")
 
   succeeded_eps = []
 
   for idx, ep_id in enumerate(target_eps):
-    print(f"\n🎬 [{idx + 1}/{len(target_eps)}] Processing Episode: {ep_id}")
+    print(f"\n[{idx + 1}/{len(target_eps)}] Processing Episode: {ep_id}")
 
     # Pre-initialize for safe cleanup in finally block
     scene_constants = None
@@ -1223,6 +1223,6 @@ if __name__ == "__main__":
       fcntl.flock(f, fcntl.LOCK_EX)
       f.write(batch)
       fcntl.flock(f, fcntl.LOCK_UN)
-    print(f"\n📝 Appended {len(succeeded_eps)} episodes to {extrinsics_path}")
+    print(f"\nAppended {len(succeeded_eps)} episodes to {extrinsics_path}")
 
-  print(f"\n🎉 Stage 2 complete! {len(succeeded_eps)}/{len(target_eps)} episodes succeeded.")
+  print(f"\nStage 2 complete! {len(succeeded_eps)}/{len(target_eps)} episodes succeeded.")

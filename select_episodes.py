@@ -31,7 +31,7 @@ def load_metrics(csv_path):
   with open(csv_path, "r") as f:
     reader = csv.DictReader(f)
     rows = list(reader)
-  print(f"📊 Loaded {len(rows)} episodes from {csv_path}")
+  print(f"Loaded {len(rows)} episodes from {csv_path}")
   return rows
 
 
@@ -94,7 +94,7 @@ def stratified_sample(rows, n_target, seed=42):
     by_site.setdefault(site, []).append(row)
 
   n_sites = len(by_site)
-  print(f"  📍 {n_sites} unique sites: {sorted(by_site.keys())}")
+  print(f"  {n_sites} unique sites: {sorted(by_site.keys())}")
 
   # Allocate quotas proportional to site size (min 1)
   total = len(rows)
@@ -120,7 +120,7 @@ def stratified_sample(rows, n_target, seed=42):
     if idx > n_target * 10:  # safety
       break
 
-  print(f"  📊 Site quotas: {dict(sorted(quotas.items()))}")
+  print(f"  Site quotas: {dict(sorted(quotas.items()))}")
 
   # Within each site, pick evenly spaced by motion
   selected = []
@@ -206,7 +206,7 @@ def main():
   with open(list_path, "w") as f:
     for row in selected:
       f.write(row["episode_id"] + "\n")
-  print(f"\n📝 Episode list: {list_path}")
+  print(f"\nEpisode list: {list_path}")
 
   # Write detailed CSV
   csv_path = os.path.join(args.output_dir, f"episodes_eval{args.n}_details.csv")
@@ -215,7 +215,7 @@ def main():
     writer.writeheader()
     for row in selected:
       writer.writerow(row)
-  print(f"📊 Detailed CSV: {csv_path}")
+  print(f"Detailed CSV: {csv_path}")
 
   # Summary
   print(f"\n{'=' * 60}")

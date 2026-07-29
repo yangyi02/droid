@@ -151,7 +151,7 @@ def load_depth_data(episode_id, depth_root="~/droid_data/output/mv-tap/droid/dep
   if not os.path.isdir(ep_dir):
     raise FileNotFoundError(f"Depth output not found: {ep_dir}")
 
-  print(f"  📂 Loading depth data from {ep_dir}...")
+  print(f"  Loading depth data from {ep_dir}...")
 
   # --- Robot kinematics ---
   robot_data = np.load(os.path.join(ep_dir, "robot.npz"), allow_pickle=True)

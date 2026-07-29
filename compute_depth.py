@@ -30,7 +30,7 @@ from core.io import get_accelerator, load_metadata
 def init_all_models():
   """Load vision foundation models and vendor dependencies dynamically."""
   device = get_accelerator()
-  print(f"🚀 Launching models onto {device} | CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}")
+  print(f"Launching models onto {device} | CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}")
   if not torch.cuda.is_available():
     print("⚠️ WARNING: PyTorch cannot find a valid CUDA device. Please ensure your CUDA_VISIBLE_DEVICES index is correct (e.g. 0 or 1) and NVIDIA drivers are running.")
 
@@ -117,7 +117,7 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
   """Decode SVO video, extract full stereo calibration, both rectified/unrectified frames, and timestamps."""
   import pyzed.sl as sl
 
-  print("  🎥 Fast-decoding SVO video streams and physical calibration data (including timestamps)...")
+  print("  Fast-decoding SVO video streams and physical calibration data (including timestamps)...")
   episode_path = scene_constants["meta"]["episode_path"]
 
   for cam in scene_constants["camera"]:
@@ -180,13 +180,13 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
     # Frame extraction loop (left/right + raw)
     # ==========================================
     all_left, all_right, all_left_raw, all_right_raw = [], [], [], []
-    all_timestamps = []  # 🌟 New: list for storing per-frame timestamps
+    all_timestamps = []  # list for storing per-frame timestamps
     left_mat, right_mat = sl.Mat(), sl.Mat()
     left_raw_mat, right_raw_mat = sl.Mat(), sl.Mat()
 
     for _ in tqdm(range(zed.get_svo_number_of_frames()), desc=f"Decoding {cam}"):
       if zed.grab() == sl.ERROR_CODE.SUCCESS:
-        # 🌟 New: capture hardware exposure timestamp for the current frame (ms)
+        # capture hardware exposure timestamp for the current frame (ms)
         timestamp_ms = zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_milliseconds()
         all_timestamps.append(timestamp_ms)
 
@@ -221,7 +221,7 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
         "video_right": np.stack(all_right),
         "video_raw_rgb": np.stack(all_left_raw),
         "video_raw_right": np.stack(all_right_raw),
-        "timestamps": np.array(all_timestamps),  # 🌟 New: timestamp array packed into scene dict
+        "timestamps": np.array(all_timestamps),  # timestamp array packed into scene dict
     })
 
   return scene_constants
@@ -229,7 +229,7 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
 
 def parse_robot_kinematics(scene_constants):
   """Load H5 and JSON to extract robot kinematics, hand-eye matrices, and timestamps."""
-  print("  🦾 Parsing robot H5 kinematics and dynamic hand-eye matrices...")
+  print("  Parsing robot H5 kinematics and dynamic hand-eye matrices...")
   ep_path = scene_constants["meta"]["episode_path"]
 
   with h5py.File(f"{ep_path}/trajectory.h5", "r") as f:
@@ -237,7 +237,7 @@ def parse_robot_kinematics(scene_constants):
     joint_poses = f["observation/robot_state/joint_positions"][:]
     gripper_poses = f["observation/robot_state/gripper_position"][:]
 
-    # New: extract robot state timestamps from H5
+    # extract robot state timestamps from H5
     timestamps = f["observation/timestamp/robot_state/read_start"][:]
 
   with open(glob.glob(f"{ep_path}/metadata_*.json")[0]) as jf:
@@ -258,7 +258,7 @@ def parse_robot_kinematics(scene_constants):
       "gripper_positions": gripper_poses,
       "T_cam_ee_init": np.linalg.inv(make_4x4(ee_poses[0])) @ make_4x4(wrist_ext),
       "T_ee_base_all": T_ee_all,
-      "timestamps": timestamps,  # New: robot state timestamps
+      "timestamps": timestamps,  # robot state timestamps
   }
   return scene_constants
 
@@ -333,7 +333,7 @@ def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droi
   out_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_str)))
   os.makedirs(out_dir, exist_ok=True)
 
-  print(f"  💾 Exporting multi-view data to {out_dir}...")
+  print(f"  Exporting multi-view data to {out_dir}...")
 
   # --- Robot kinematics (episode-level) ---
   robot = scene_constants["robot"]
@@ -445,12 +445,12 @@ if __name__ == "__main__":
   if args.limit > 0:
     valid_ids = valid_ids[:args.limit]
   target_eps = valid_ids[args.rank::args.world_size]
-  print(f"📋 Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
+  print(f"Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
 
   succeeded_eps = []
 
   for idx, ep_id in enumerate(target_eps):
-    print(f"\n🎬 [{idx + 1}/{len(target_eps)}] Processing Episode: {ep_id}")
+    print(f"\n[{idx + 1}/{len(target_eps)}] Processing Episode: {ep_id}")
     if ep_id not in id_to_path:
       print(f"  ❌ Invalid episode ID: {ep_id}")
       continue
@@ -500,6 +500,6 @@ if __name__ == "__main__":
       fcntl.flock(f, fcntl.LOCK_EX)
       f.write(batch)
       fcntl.flock(f, fcntl.LOCK_UN)
-    print(f"\n📝 Appended {len(succeeded_eps)} episodes to {depth_path}")
+    print(f"\nAppended {len(succeeded_eps)} episodes to {depth_path}")
 
-  print(f"\n🎉 Pipeline complete! {len(succeeded_eps)}/{len(target_eps)} episodes succeeded.")
+  print(f"\nPipeline complete! {len(succeeded_eps)}/{len(target_eps)} episodes succeeded.")

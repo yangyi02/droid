@@ -1,6 +1,6 @@
 """Visualization utilities for the DROID processing pipeline.
 
-Collected from pipeline.ipynb and 2026_06_11_DROID_dataset_v60.ipynb.
+Collected from pipeline.ipynb.
 Provides point cloud rendering, 2D tracking overlays, mask inspection,
 robot segmentation video, camera axes visualization, and 4D orbit video.
 """
@@ -24,20 +24,20 @@ def inspect_dict_structure(data, name="scene_constants", indent=0):
   import torch
   spacing = "  " * indent
   if isinstance(data, dict):
-    print(f"{spacing}📂 {name} (dict, {len(data)} keys)")
+    print(f"{spacing}{name} (dict, {len(data)} keys)")
     for k, v in data.items():
       inspect_dict_structure(v, name=str(k), indent=indent + 1)
   elif isinstance(data, np.ndarray):
-    print(f"{spacing}📊 {name}: ndarray, shape={data.shape}, dtype={data.dtype}")
+    print(f"{spacing}{name}: ndarray, shape={data.shape}, dtype={data.dtype}")
   elif torch.is_tensor(data):
-    print(f"{spacing}🔥 {name}: Tensor, shape={tuple(data.shape)}, dtype={data.dtype}")
+    print(f"{spacing}{name}: Tensor, shape={tuple(data.shape)}, dtype={data.dtype}")
   elif isinstance(data, (list, tuple)):
-    print(f"{spacing}📜 {name}: {type(data).__name__}, len={len(data)}")
+    print(f"{spacing}{name}: {type(data).__name__}, len={len(data)}")
   else:
     val_str = str(data)
     if len(val_str) > 50:
       val_str = val_str[:47] + "..."
-    print(f"{spacing}🏷️ {name}: {type(data).__name__} = {val_str}")
+    print(f"{spacing}{name}: {type(data).__name__} = {val_str}")
 
 
 # ===========================================================================
@@ -90,7 +90,7 @@ def render_fused_point_cloud(scene_constants, scene_state, frame_idx=0,
 
   title = f"Fused Point Cloud (Frame {frame_idx})"
   if use_tint:
-    title += " 🎨 [Tinted Debug Mode]"
+    title += " [Tinted Debug Mode]"
   show_plotly_point_cloud(
       pts=np.vstack(fused_points), cols=np.vstack(fused_colors),
       title=title, max_points=max_render_points, eye_pos=eye_pos,
@@ -110,7 +110,7 @@ def render_distilled_gripper_3d(median_depth, K_mat, rgb_img):
       mode='markers',
       marker=dict(size=2, color=rgb_img[v, u], opacity=0.8))])
   fig.update_layout(
-      title="Distilled Gripper Surface 🦾",
+      title="Distilled Gripper Surface",
       scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Depth (Z)',
                  aspectmode='data',
                  camera=dict(eye=dict(x=0, y=-0.5, z=-1.5),
@@ -299,7 +299,7 @@ def render_multicam_disparity_video(scene_constants, tgt_size=(128, 228),
 
 def render_distortion_comparison_video(scene_constants, tgt_width=1280):
   """Render a 2x2 grid comparing raw vs rectified stereo images."""
-  print("🎨 Rendering stereo distortion comparison video...")
+  print("Rendering stereo distortion comparison video...")
   wrist_cam = scene_constants['meta']['wrist_serial']
   cam_data = scene_constants['camera'][wrist_cam]
   video_rect_l = cam_data['video_rgb']
@@ -596,8 +596,8 @@ def inspect_gripper_extremes(scene_constants, scene_state, pb_renderer,
   idx_zero = np.argmin(np.abs(gripper_states))
   val_zero = gripper_states[idx_zero]
 
-  print(f"🎯 State ~ 0: Frame {idx_zero} | gripper={val_zero:.4f}")
-  print(f"🎯 State Max: Frame {idx_max} | gripper={val_max:.4f}")
+  print(f"State ~ 0: Frame {idx_zero} | gripper={val_zero:.4f}")
+  print(f"State Max: Frame {idx_max} | gripper={val_max:.4f}")
 
   camera_ids = list(scene_constants['camera'].keys())
   wrist_serial = scene_constants['meta']['wrist_serial']
@@ -657,7 +657,7 @@ def render_segmentation_video(scene_constants, scene_state, pb_renderer,
     n_frames = min(n_frames, max_frames)
   video_frames = []
 
-  for frame_idx in tqdm(range(n_frames), desc="🎥 Rendering segmentation"):
+  for frame_idx in tqdm(range(n_frames), desc="Rendering segmentation"):
     current_joints = scene_constants['robot']['joint_positions'][frame_idx]
     current_gripper = scene_constants['robot']['gripper_positions'][frame_idx]
     pb_renderer.update_robot_pose(current_joints,
@@ -704,7 +704,7 @@ def render_cross_camera_axes(scene_constants, scene_state, axis_len=0.15,
       [0, axis_len, 0, 1], [0, 0, axis_len, 1]]).T
   video_frames = []
 
-  for frame_idx in tqdm(range(n_frames), desc="🎥 Rendering camera axes"):
+  for frame_idx in tqdm(range(n_frames), desc="Rendering camera axes"):
     camera_views = []
     for obs_cam in cams:
       cam_data = scene_constants['camera'][obs_cam]
@@ -790,7 +790,7 @@ def render_cinematic_4d_orbit(scene_constants, scene_state,
   renderer = pyrender.OffscreenRenderer(width, height)
 
   video_frames = []
-  for frame_idx in tqdm(range(n_frames), desc="🎥 Rendering 4D orbit"):
+  for frame_idx in tqdm(range(n_frames), desc="Rendering 4D orbit"):
     points, colors = [], []
     for cam_id in camera_ids:
       cam_data = scene_constants['camera'][cam_id]
@@ -937,7 +937,7 @@ def render_4d_orbit_with_tracks(
 
   video_frames = []
   for frame_idx in tqdm(range(n_frames),
-                        desc="🎥 Rendering 4D orbit + tracks"):
+                        desc="Rendering 4D orbit + tracks"):
     nodes_to_remove = []
 
     # --- 1. Background point cloud ---

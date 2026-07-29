@@ -148,7 +148,7 @@ def main():
                      if os.path.isdir(os.path.join(tracks_abs, d)))
     available_eps = sorted(set(available_eps) & tracks_eps)
 
-  print(f"📊 Found {len(available_eps)} episodes with depth + extrinsics")
+  print(f"Found {len(available_eps)} episodes with depth + extrinsics")
 
   # Deterministic shuffle for load balancing
   random.seed(42)
@@ -159,7 +159,7 @@ def main():
 
   # Shard across ranks
   target_eps = available_eps[args.rank::args.world_size]
-  print(f"📋 Rank {args.rank}/{args.world_size}: "
+  print(f"Rank {args.rank}/{args.world_size}: "
         f"{len(target_eps)} episodes assigned")
 
   # Setup
@@ -178,7 +178,7 @@ def main():
         done_eps.add(row.get("episode_id", ""))
 
   todo_eps = [ep for ep in target_eps if ep not in done_eps]
-  print(f"📋 {len(todo_eps)} remaining ({len(done_eps)} already done)")
+  print(f"{len(todo_eps)} remaining ({len(done_eps)} already done)")
 
   succeeded = 0
   failed = 0
@@ -234,7 +234,7 @@ def main():
         fcntl.flock(f, fcntl.LOCK_UN)
 
   print(f"\n{'=' * 60}")
-  print(f"🎉 Evaluation complete!")
+  print(f"Evaluation complete!")
   print(f"   Succeeded: {succeeded}/{len(todo_eps)}")
   print(f"   Failed:    {failed}/{len(todo_eps)}")
   print(f"   Output:    {csv_path}")

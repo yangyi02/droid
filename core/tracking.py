@@ -75,7 +75,7 @@ class URDFKinematicsTracker:
       vis_2d:  (T, N_robot) visibility mask in src_cam
       robot_indices: indices into the dense pixel array
     """
-    print(f"    🦾 URDF tracking [{src_cam}]")
+    print(f"    URDF tracking [{src_cam}]")
     src_data = scene_constants["camera"][src_cam]
     src_state = scene_state[src_cam]
     K_mat = src_data["K_mat"]

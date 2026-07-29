@@ -55,7 +55,7 @@ def get_s2m2_disparity(img_left, img_right, s2m2_model, run_stereo_matching,
 def compute_stereo_depth(scene_constants, s2m2_model, run_stereo_matching,
                          device):
   """S2M2 stereo depth inference over the full video pool."""
-  print("  🧠 Running S2M2 stereo depth inference (frame-by-frame)...")
+  print("  Running S2M2 stereo depth inference (frame-by-frame)...")
 
   for cam_id in scene_constants["camera"]:
     cam_data = scene_constants["camera"][cam_id]
@@ -148,7 +148,7 @@ def build_universal_gripper_mask(scene_constants, sam_predictor):
     print("  ⚠️ No closed-gripper frames found, skipping mask extraction.")
     return scene_constants
 
-  print(f"  🎭 Building consensus gripper mask from {len(closed_indices)} closed-gripper frames...")
+  print(f"  Building consensus gripper mask from {len(closed_indices)} closed-gripper frames...")
 
   masks_list = []
   for idx in tqdm(closed_indices, desc="SAM mask"):
@@ -196,7 +196,7 @@ def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
   h, w = cam_data["video_rgb"][0].shape[:2]
   num_frames = len(closed_indices)
 
-  print(f"  🧪 Distilling gripper depth from {num_frames} closed-gripper frames...")
+  print(f"  Distilling gripper depth from {num_frames} closed-gripper frames...")
   depth_bank = np.full((num_frames, h, w), np.nan, dtype=np.float32)
 
   for i, idx in enumerate(tqdm(closed_indices, desc="Depth collect")):
@@ -205,7 +205,7 @@ def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
     valid_pixels = (mask > 0) & (raw_depth > 0) & (raw_depth < max_depth_thresh)
     depth_bank[i, valid_pixels] = raw_depth[valid_pixels]
 
-  print("  🔨 Computing temporal median depth...")
+  print("  Computing temporal median depth...")
   with warnings.catch_warnings():
     warnings.simplefilter("ignore", category=RuntimeWarning)
     median_depth = np.nanmedian(depth_bank, axis=0)
@@ -236,7 +236,7 @@ def inject_gripper_depth(scene_constants):
 
   valid_mask = empirical_depth > 0
 
-  print(f"  💉 Injecting distilled gripper depth into {len(closed_indices)} frames...")
+  print(f"  Injecting distilled gripper depth into {len(closed_indices)} frames...")
   cam_data["raw_depth"][closed_indices] = np.where(
       valid_mask,
       empirical_depth,

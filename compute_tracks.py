@@ -83,7 +83,7 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     print("  ⚠️ Need at least 2 cameras for consensus.")
     return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
 
-  print(f"  📸 Querying at frame 0 on all {len(camera_ids)} cameras (dense)")
+  print(f"  Querying at frame 0 on all {len(camera_ids)} cameras (dense)")
 
   # Build robot mask at t=0
   pb_renderer.update_robot_pose(
@@ -188,12 +188,12 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
   # Concatenate and dedup (same 3D point may be verified from multiple cameras)
   all_pts = np.concatenate(all_verified_pts, axis=0)
   all_rgb = np.concatenate(all_verified_rgb, axis=0)
-  print(f"\n  📊 Total verified points (pre-dedup): {len(all_pts)}")
+  print(f"\n  Total verified points (pre-dedup): {len(all_pts)}")
 
   dedup_pts, dedup_rgb = _voxel_dedup(all_pts, all_rgb,
                                        voxel_size=match_radius * 2)
   if len(dedup_pts) < len(all_pts):
-    print(f"  📊 After dedup: {len(dedup_pts)}")
+    print(f"  After dedup: {len(dedup_pts)}")
 
   # Multi-frame static verification (query is still only t=0, but we
   # verify that each candidate 3D point has consistent depth across
@@ -210,7 +210,7 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
         depth_tolerance=0.03,
         min_consistent_frames=max(1, len(keyframe_indices) // 2),
         safe_margin=safe_margin)
-    print(f"  📊 Multi-frame verification ({len(keyframe_indices)} keyframes): "
+    print(f"  Multi-frame verification ({len(keyframe_indices)} keyframes): "
           f"{n_before} → {len(dedup_pts)} points")
 
   # Subsample to target number of points
@@ -219,7 +219,7 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     idx = rng.choice(len(dedup_pts), num_points, replace=False)
     dedup_pts = dedup_pts[idx]
     dedup_rgb = dedup_rgb[idx]
-    print(f"  📊 Subsampled to {num_points} points")
+    print(f"  Subsampled to {num_points} points")
 
   print(f"  ✅ Found {len(dedup_pts)} static background points")
   return dedup_pts, dedup_rgb
@@ -348,7 +348,7 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
   N = len(static_pts_3d)
 
   print(f"\n{'=' * 60}")
-  print(f"📐 Phase 2: Project {N} Static Points → {len(camera_ids)} Views × {T_frames} Frames")
+  print(f"Phase 2: Project {N} Static Points → {len(camera_ids)} Views × {T_frames} Frames")
   print(f"{'=' * 60}")
 
   per_cam_tracks = {cam: np.zeros((T_frames, N, 2), dtype=np.float32) for cam in camera_ids}
@@ -438,7 +438,7 @@ def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
 
   print(f"\n{'=' * 60}")
-  print(f"🦾 Phase 3: URDF FK Robot Tracking (max {max_robot_pts_per_cam} pts/cam)")
+  print(f"Phase 3: URDF FK Robot Tracking (max {max_robot_pts_per_cam} pts/cam)")
   print(f"{'=' * 60}")
 
   urdf_tracker = URDFKinematicsTracker(pb_renderer)
@@ -478,7 +478,7 @@ def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
         cam: np.concatenate(robot_per_cam_vis_all[cam], axis=1)
         for cam in camera_ids}
     n_robot = robot_traj_3d.shape[1]
-    print(f"  🦾 Total robot points: {n_robot}")
+    print(f"  Total robot points: {n_robot}")
   else:
     robot_traj_3d = np.zeros((T_frames, 0, 3), dtype=np.float32)
     robot_per_cam_tracks = {
@@ -514,9 +514,9 @@ def phase4_merge(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
   n_robot = robot_traj_3d.shape[1]
 
   print(f"\n{'=' * 60}")
-  print("🔗 Phase 4: Merging Static Background + Robot Tracks")
+  print("Phase 4: Merging Static Background + Robot Tracks")
   print(f"{'=' * 60}")
-  print(f"  📊 Static: {n_static} | Robot: {n_robot} | Total: {n_static + n_robot}")
+  print(f"  Static: {n_static} | Robot: {n_robot} | Total: {n_static + n_robot}")
 
   # Static 3D trajectory: constant across all frames
   if n_static > 0:
@@ -620,7 +620,7 @@ def export_tracks(scene_constants, scene_state, final_traj_3d,
           [0] * n_static + [1] * n_robot, dtype=np.uint8),
   )
 
-  print(f"  💾 Exported {N} tracks × {T} frames to {ep_dir}")
+  print(f"  Exported {N} tracks × {T} frames to {ep_dir}")
   return ep_dir
 
 
@@ -644,7 +644,7 @@ def process_episode(episode_id, pb_renderer, device,
         Matches pipeline.ipynb default.
   """
   print(f"\n{'=' * 60}")
-  print(f"🎬 Processing Episode: {episode_id}")
+  print(f"Processing Episode: {episode_id}")
   print(f"{'=' * 60}")
 
   # Load data (full video, no truncation)
@@ -653,11 +653,11 @@ def process_episode(episode_id, pb_renderer, device,
 
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
-  print(f"  📊 {len(camera_ids)} cameras × {T_frames} frames (full video)")
+  print(f"  {len(camera_ids)} cameras × {T_frames} frames (full video)")
 
   # Phase 1: Find static background points (t=0 only, dense)
   print(f"\n{'=' * 60}")
-  print(f"🏔️ Phase 1: Dense at t=0 → Cross-View Consensus → Static Points")
+  print(f"Phase 1: Dense at t=0 -> Cross-View Consensus -> Static Points")
   print(f"{'=' * 60}")
   static_pts_3d, static_rgb = phase1_find_static_candidates(
       scene_constants, scene_state, pb_renderer,
@@ -723,7 +723,7 @@ if __name__ == "__main__":
                       help="Max robot surface points per source camera")
   args = parser.parse_args()
 
-  print("🚀 DROID Stage 3 v2: Static Background + Robot Tracks")
+  print("DROID Stage 3 v2: Static Background + Robot Tracks")
   device = get_accelerator()
   pb_renderer = PyBulletRenderer()
 
@@ -754,7 +754,7 @@ if __name__ == "__main__":
       continue
     todo_eps.append(ep_id)
 
-  print(f"📋 Rank {args.rank}/{args.world_size}: "
+  print(f"Rank {args.rank}/{args.world_size}: "
         f"{len(todo_eps)} episodes to process "
         f"({len(target_eps) - len(todo_eps)} already done)")
 
@@ -763,7 +763,7 @@ if __name__ == "__main__":
                              "episodes_tracks.txt")
 
   for idx, ep_id in enumerate(todo_eps):
-    print(f"\n🎬 [{idx + 1}/{len(todo_eps)}] Episode: {ep_id}")
+    print(f"\n[{idx + 1}/{len(todo_eps)}] Episode: {ep_id}")
     try:
       process_episode(
           ep_id, pb_renderer, device,
@@ -782,6 +782,6 @@ if __name__ == "__main__":
       import traceback
       traceback.print_exc()
 
-  print(f"\n🎉 Stage 3 v2 complete! "
+  print(f"\nStage 3 v2 complete! "
         f"{len(succeeded_eps)}/{len(todo_eps)} episodes succeeded.")
 

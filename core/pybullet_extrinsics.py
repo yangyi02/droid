@@ -11,7 +11,7 @@ Key differences from the yourdfpy path:
   - ``get_foreground_gripper_points`` uses PyBullet segmentation masks to
     isolate gripper-only pixels for the wrist camera.
   - ``compute_robot_loss_batched`` does NOT use surface normals, front-face
-    culling, or depth tolerance — matching V52 notebook conventions.
+    culling, or depth tolerance.
   - The Stage 2 loop uses 5 outer × 100 inner restart iterations per camera
     instead of a single 500-step sweep.
 
@@ -138,11 +138,11 @@ def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer,
 
 
 # ===========================================================================
-# Differentiable loss functions (V52-style — no normals / no tolerance)
+# Differentiable loss functions (no normals / no tolerance)
 # ===========================================================================
 
 def compute_robot_loss_batched(batch_X, T_opt, K, batch_obs):
-  """Depth re-projection loss for external cameras (V52 style).
+  """Depth re-projection loss for external cameras.
 
   Projects world-frame robot points into the camera using *T_opt*, samples
   observed depth via differentiable ``grid_sample``, and returns the mean
@@ -190,7 +190,7 @@ def compute_robot_loss_batched(batch_X, T_opt, K, batch_obs):
 
 
 def compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K, batch_obs):
-  """Depth re-projection loss for the wrist camera (V52 style).
+  """Depth re-projection loss for the wrist camera.
 
   Points are anchored in the end-effector frame.  The function inverts
   ``T_cam_ee_opt`` to transform them back to the camera frame before
@@ -259,7 +259,7 @@ def run_stage2_alignment_pybullet(scene_constants, pb_renderer,
   Returns:
     Updated ``scene_state`` dict with the same structure.
   """
-  print("\n🦾 Stage 2 (PyBullet): Per-camera independent alignment...")
+  print("\nStage 2 (PyBullet): Per-camera independent alignment...")
   wrist_cam = scene_constants['meta']['wrist_serial']
   stage2_scene_state = copy.deepcopy(init_scene_state)
   T_ee_base_all = scene_constants['robot']['T_ee_base_all']
@@ -268,7 +268,7 @@ def run_stage2_alignment_pybullet(scene_constants, pb_renderer,
   for cam in scene_constants['camera'].keys():
     is_wrist = (cam == wrist_cam)
     mode = "wrist (gripper-only)" if is_wrist else "external (full body)"
-    print(f"\n  📷 Optimizing [{mode}] camera: [{cam}] ...")
+    print(f"\n  Optimizing [{mode}] camera: [{cam}] ...")
 
     K_np = scene_constants['camera'][cam]['K_mat']
     K_t = torch.tensor(K_np, dtype=torch.float32, device=device)
@@ -451,7 +451,7 @@ def run_global_joint_alignment_pybullet(scene_constants, prev_scene_state,
   Returns:
     Final ``scene_state`` dict with the same structure as input.
   """
-  print(f"\n🌍 {stage_name} (PyBullet): Global joint optimisation "
+  print(f"\n{stage_name} (PyBullet): Global joint optimization "
         f"(Chamfer + Robot + Wrist, lr={lr})...")
   wrist_cam = scene_constants['meta']['wrist_serial']
   ext_cams = [c for c in scene_constants['camera'].keys() if c != wrist_cam]
@@ -460,7 +460,7 @@ def run_global_joint_alignment_pybullet(scene_constants, prev_scene_state,
   T_ee_all = scene_constants['robot']['T_ee_base_all']
 
   # -- Pre-extract robot point clouds per camera per frame ---
-  print(f"  🔍 Extracting PyBullet robot point clouds...")
+  print(f"  Extracting PyBullet robot point clouds...")
   caches = {}  # cam_id → (batch_X, batch_obs)
 
   for cam in [cam1, cam2, wrist_cam]:
@@ -510,7 +510,7 @@ def run_global_joint_alignment_pybullet(scene_constants, prev_scene_state,
   batch_P_ee, batch_obs_w = caches[wrist_cam]
 
   # -- Extract Chamfer environment point clouds ---
-  print(f"  🔍 Extracting Chamfer environment point clouds...")
+  print(f"  Extracting Chamfer environment point clouds...")
   cache_Pc1, cache_Pc2, cache_Pcw, cache_Tee = [], [], [], []
 
   for t in range(n_frames):
