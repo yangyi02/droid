@@ -10,8 +10,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from core.geometry import project_points
-from core.geometry import unproject_points
 from core.geometry import unproject_to_3d
 
 
