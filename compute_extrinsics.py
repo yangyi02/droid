@@ -602,8 +602,6 @@ if __name__ == "__main__":
                        help="Root directory of depth outputs")
   parser.add_argument("--method", type=str, choices=["yourdfpy", "pybullet"], default="yourdfpy",
                        help="Rendering engine for robot point cloud extraction")
-  parser.add_argument("--skip_stage3", action="store_true",
-                       help="Skip Stage 3 global joint optimization")
   parser.add_argument("--export_root", type=str,
                        default="~/droid_data/output/mv-tap/droid/extrinsics",
                        help="Root directory for extrinsics output")
@@ -670,27 +668,21 @@ if __name__ == "__main__":
       export_extrinsics(scene_constants, stage2_state,
                         export_root=args.export_root, stage_suffix="stage2")
 
-      if args.skip_stage3:
-        # Export Stage 2 result as final
-        export_extrinsics(scene_constants, stage2_state,
-                          export_root=args.export_root)
-        succeeded_eps.append(ep_id)
-      else:
-        # Stage 3: Global joint optimization (Chamfer + Robot + Wrist)
-        stage3_state = run_global_joint_alignment(
-            scene_constants, stage2_state, tensor_renderer,
-            lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
-        )
-        print_metrics(
-            evaluate_extrinsics(scene_constants, stage3_state, device,
-                                tensor_renderer=tensor_renderer),
-            stage_name="Stage 3 (Global Joint)")
-        export_extrinsics(scene_constants, stage3_state,
-                          export_root=args.export_root, stage_suffix="stage3")
-        # Final export (canonical name)
-        export_extrinsics(scene_constants, stage3_state,
-                          export_root=args.export_root)
-        succeeded_eps.append(ep_id)
+      # Stage 3: Global joint optimization (Chamfer + Robot + Wrist)
+      stage3_state = run_global_joint_alignment(
+          scene_constants, stage2_state, tensor_renderer,
+          lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
+      )
+      print_metrics(
+          evaluate_extrinsics(scene_constants, stage3_state, device,
+                              tensor_renderer=tensor_renderer),
+          stage_name="Stage 3 (Global Joint)")
+      export_extrinsics(scene_constants, stage3_state,
+                        export_root=args.export_root, stage_suffix="stage3")
+      # Final export (canonical name)
+      export_extrinsics(scene_constants, stage3_state,
+                        export_root=args.export_root)
+      succeeded_eps.append(ep_id)
       print(f"  ✅ Episode {ep_id} completed successfully.")
 
     except Exception as e:
