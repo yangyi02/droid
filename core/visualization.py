@@ -486,66 +486,6 @@ def render_multiview_mask_inspection(scene_constants, scene_state,
   plt.show()
 
 
-def inspect_gripper_extremes(scene_constants, scene_state, pb_renderer,
-                             tgt_width=1800):
-  """Compare robot segmentation at gripper-closed vs gripper-open extremes."""
-  gripper_states = scene_constants['robot']['gripper_positions']
-  idx_max = np.argmax(np.abs(gripper_states))
-  val_max = gripper_states[idx_max]
-  idx_zero = np.argmin(np.abs(gripper_states))
-  val_zero = gripper_states[idx_zero]
-
-  print(f"State ~ 0: Frame {idx_zero} | gripper={val_zero:.4f}")
-  print(f"State Max: Frame {idx_max} | gripper={val_max:.4f}")
-
-  camera_ids = list(scene_constants['camera'].keys())
-  wrist_serial = scene_constants['meta']['wrist_serial']
-
-  def render_single_frame(frame_idx, gripper_val):
-    current_joints = scene_constants['robot']['joint_positions'][frame_idx]
-    pb_renderer.update_robot_pose(current_joints, gripper_state=gripper_val)
-    frame_views = []
-    for cam_id in camera_ids:
-      cam_data = scene_constants['camera'][cam_id]
-      cam_state = scene_state[cam_id]
-      img_rgb = cam_data['video_rgb'][frame_idx].copy()
-      h_img, w_img = img_rgb.shape[:2]
-      robot_mask = pb_renderer.render_mask(
-          cam_state['extrinsics'][frame_idx],
-          cam_data['K_mat'],
-          w_img, h_img) > 0
-      overlay = img_rgb.copy()
-      overlay[robot_mask] = [50, 150, 255]
-      blended_img = cv2.addWeighted(img_rgb, 0.6, overlay, 0.4, 0)
-      is_wrist = (cam_id == wrist_serial)
-      cam_type = "Wrist Cam" if is_wrist else "Ext Cam"
-      cv2.putText(blended_img, f"{cam_type} [{cam_id}]", (20, 50),
-                  cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 4)
-      cv2.putText(blended_img, f"{cam_type} [{cam_id}]", (20, 50),
-                  cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
-      frame_views.append(blended_img)
-    row_concat = np.concatenate(frame_views, axis=1)
-    tgt_height = int(row_concat.shape[0] * (tgt_width / row_concat.shape[1]))
-    return cv2.resize(row_concat, (tgt_width, tgt_height))
-
-  img_zero = render_single_frame(idx_zero, val_zero)
-  img_max = render_single_frame(idx_max, val_max)
-
-  fig, axes = plt.subplots(2, 1, figsize=(18, 12))
-  axes[0].imshow(img_zero)
-  axes[0].set_title(
-      f"Gripper State ~ 0 (Frame {idx_zero} | State {val_zero:.4f})",
-      fontsize=16, fontweight='bold')
-  axes[0].axis('off')
-  axes[1].imshow(img_max)
-  axes[1].set_title(
-      f"Gripper Maximum Value (Frame {idx_max} | State {val_max:.4f})",
-      fontsize=16, fontweight='bold')
-  axes[1].axis('off')
-  plt.tight_layout()
-  plt.show()
-
-
 def render_segmentation_video(scene_constants, scene_state, pb_renderer,
                               tgt_width=1200, max_frames=None):
   """Render a multi-camera robot segmentation overlay video."""
