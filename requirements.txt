@@ -1,7 +1,10 @@
 torch>=2.0.0
+numpy
 pybullet
 opencv-python
 scipy
+matplotlib
+trimesh
 tqdm
 h5py
 mediapy
