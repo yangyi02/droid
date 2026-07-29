@@ -13,24 +13,6 @@ from scipy.spatial.transform import Rotation as R
 from core.geometry import project_points, unproject_points
 
 
-def generate_grid_queries(h, w, grid_size=30):
-  """Generate a uniform grid of (x, y) query points at native resolution.
-
-  Args:
-    h: Image height.
-    w: Image width.
-    grid_size: Number of points per axis (total = grid_size²).
-
-  Returns:
-    queries: np.float32 (N, 2) with (x, y) pixel coordinates.
-  """
-  xs = np.linspace(0, w - 1, grid_size, dtype=np.float32)
-  ys = np.linspace(0, h - 1, grid_size, dtype=np.float32)
-  xx, yy = np.meshgrid(xs, ys)
-  queries = np.stack([xx.ravel(), yy.ravel()], axis=-1)
-  return queries
-
-
 class URDFKinematicsTracker:
   """Forward kinematics-based robot 3D trajectory generator.
 
