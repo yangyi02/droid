@@ -9,7 +9,7 @@ git submodule update --init --recursive
 # 2. Python packages
 echo "🐍 [2/4] Python packages"
 pip install -r requirements.txt
-pip install -e .
+
 
 # 3. Model weights
 echo "⬇️  [3/4] Model weights"
