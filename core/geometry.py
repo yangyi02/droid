@@ -1,7 +1,7 @@
 """3D vision geometry primitives for the DROID pipeline.
 
 Provides disparity decoding, 3D unprojection, 2D projection, rigid
-transform helpers, and differentiable rotation in both NumPy and PyTorch.
+transform helpers, and differentiable rotation formulas.
 """
 
 import numpy as np
@@ -13,17 +13,9 @@ from scipy.spatial.transform import Rotation as R
 # Disparity → Depth
 # ===========================================================================
 
-def decode_disparity_np(disp, fx, baseline):
+def decode_disparity(disp, fx, baseline):
   """Convert raw stereo disparity to metric depth Z (NumPy)."""
   z = np.zeros_like(disp)
-  valid_mask = disp > 0
-  z[valid_mask] = (fx * baseline) / disp[valid_mask]
-  return z
-
-
-def decode_disparity_pt(disp, fx, baseline):
-  """Convert raw stereo disparity to metric depth Z (PyTorch)."""
-  z = torch.zeros_like(disp)
   valid_mask = disp > 0
   z[valid_mask] = (fx * baseline) / disp[valid_mask]
   return z
@@ -33,7 +25,7 @@ def decode_disparity_pt(disp, fx, baseline):
 # 3D Unprojection (pixel + depth → world)
 # ===========================================================================
 
-def unproject_points_np(u, v, z, K, T_cam2world=None):
+def unproject_points(u, v, z, K, T_cam2world=None):
   """Back-project 2D pixel coordinates to 3D world points (NumPy).
 
   Args:
@@ -53,21 +45,11 @@ def unproject_points_np(u, v, z, K, T_cam2world=None):
   return (T_cam2world @ pts_cam)[:3, :].T
 
 
-def unproject_points_pt(u, v, z, K, T_cam2world=None):
-  """Back-project 2D pixel coordinates to 3D world points (PyTorch)."""
-  x_cam = (u - K[0, 2]) * z / K[0, 0]
-  y_cam = (v - K[1, 2]) * z / K[1, 1]
-  pts_cam = torch.stack([x_cam, y_cam, z, torch.ones_like(z)], dim=0)
-  if T_cam2world is None:
-    return pts_cam[:3, :].T
-  return (T_cam2world @ pts_cam)[:3, :].T
-
-
 # ===========================================================================
 # 2D Projection (world → pixel)
 # ===========================================================================
 
-def project_points_np(pts_world, K, T_cam2world):
+def project_points(pts_world, K, T_cam2world):
   """Project 3D world points to 2D pixel coordinates (NumPy).
 
   Args:
@@ -91,21 +73,6 @@ def project_points_np(pts_world, K, T_cam2world):
   return u, v, z_cam
 
 
-def project_points_pt(pts_world, K, T_cam2world):
-  """Project 3D world points to 2D pixel coordinates (PyTorch)."""
-  T_world2cam = torch.linalg.inv(T_cam2world)
-  pts_homo = torch.cat(
-      [pts_world, torch.ones((len(pts_world), 1), device=pts_world.device)],
-      dim=1).T
-  pts_cam = T_world2cam @ pts_homo
-  z_cam = pts_cam[2, :]
-  u = torch.zeros_like(z_cam)
-  v = torch.zeros_like(z_cam)
-  valid = z_cam > 0
-  u[valid] = (pts_cam[0, valid] / z_cam[valid]) * K[0, 0] + K[0, 2]
-  v[valid] = (pts_cam[1, valid] / z_cam[valid]) * K[1, 1] + K[1, 2]
-  return u, v, z_cam
-
 
 # ===========================================================================
 # Convenience: depth map → colored 3D point cloud
@@ -118,7 +85,7 @@ def unproject_to_3d(depth, color_img, K_mat, T_cam2world=None,
   v, u = np.where(mask)
   if T_cam2world is None:
     T_cam2world = np.eye(4)
-  pts_world = unproject_points_np(u, v, depth[mask], K_mat, T_cam2world)
+  pts_world = unproject_points(u, v, depth[mask], K_mat, T_cam2world)
   return pts_world, color_img[mask]
 
 

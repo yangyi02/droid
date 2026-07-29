@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from core.geometry import decode_disparity_np
+from core.geometry import decode_disparity
 
 
 # ===========================================================================
@@ -72,7 +72,7 @@ def compute_stereo_depth(scene_constants, s2m2_model, run_stereo_matching,
 
     fx = cam_data["K_mat"][0, 0]
     baseline = cam_data["baseline"]
-    cam_data["raw_depth"] = decode_disparity_np(raw_disp, fx, baseline)
+    cam_data["raw_depth"] = decode_disparity(raw_disp, fx, baseline)
 
   return scene_constants
 

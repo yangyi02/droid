@@ -10,7 +10,7 @@ import numpy as np
 import pybullet as p
 from scipy.spatial.transform import Rotation as R
 
-from core.geometry import project_points_np, unproject_points_np
+from core.geometry import project_points, unproject_points
 
 
 def generate_grid_queries(h, w, grid_size=30):
@@ -125,7 +125,7 @@ class URDFKinematicsTracker:
     robot_links = link_ids[v0[robot_indices], u0[robot_indices]]
     z0 = urdf_depth[v0[robot_indices], u0[robot_indices]]
 
-    pts_world_t0 = unproject_points_np(
+    pts_world_t0 = unproject_points(
         seed_pts_2d[robot_indices, 0],
         seed_pts_2d[robot_indices, 1],
         z0, K_mat, extrinsics[0])
@@ -159,7 +159,7 @@ class URDFKinematicsTracker:
         P_world_t = T_link_t @ P_local
         traj_3d[t, mask, :] = P_world_t[:3, :].T
 
-      u_t, v_t, z_pred = project_points_np(
+      u_t, v_t, z_pred = project_points(
           traj_3d[t], K_mat, extrinsics[t])
       traj_2d[t, :, 0] = u_t
       traj_2d[t, :, 1] = v_t
@@ -220,7 +220,7 @@ class URDFKinematicsTracker:
 
         urdf_depth_t = cache[cache_key]
 
-        u_t, v_t, z_pred = project_points_np(
+        u_t, v_t, z_pred = project_points(
             traj_3d[t], K, cam_state["extrinsics"][t])
         cam_traj_2d[t, :, 0] = u_t
         cam_traj_2d[t, :, 1] = v_t

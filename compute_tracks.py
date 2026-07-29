@@ -31,7 +31,7 @@ from collections import defaultdict
 import cv2
 import numpy as np
 
-from core.geometry import project_points_np, unproject_points_np
+from core.geometry import project_points, unproject_points
 from core.io import get_accelerator, load_depth_data, load_extrinsics
 from core.physics import PyBulletRenderer
 from core.tracking import URDFKinematicsTracker
@@ -122,7 +122,7 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     v_f = vs.astype(np.float32)
 
     # Unproject to 3D
-    pts_3d = unproject_points_np(u_f, v_f, z, K, ext)
+    pts_3d = unproject_points(u_f, v_f, z, K, ext)
 
     # RGB colors
     rgb = cam_data["video_rgb"][0][vs, us]
@@ -159,7 +159,7 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
       dst_h, dst_w = dst_data["video_rgb"][0].shape[:2]
 
       # Project 3D points from src into dst view
-      u_d, v_d, z_pred = project_points_np(pts, dst_K, dst_ext)
+      u_d, v_d, z_pred = project_points(pts, dst_K, dst_ext)
       ui_d = np.clip(np.round(u_d).astype(int), 0, dst_w - 1)
       vi_d = np.clip(np.round(v_d).astype(int), 0, dst_h - 1)
 
@@ -293,7 +293,7 @@ def _verify_static_across_frames(pts, rgb, scene_constants, scene_state,
           robot_mask.astype(np.uint8), kernel, iterations=1) > 0
 
       # Project points
-      u, v, z_pred = project_points_np(pts, K, ext)
+      u, v, z_pred = project_points(pts, K, ext)
       ui = np.clip(np.round(u).astype(int), 0, w_img - 1)
       vi = np.clip(np.round(v).astype(int), 0, h_img - 1)
 
@@ -382,7 +382,7 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
       ext = scene_state[cam_id]["extrinsics"][t]
 
       # Project 3D → 2D
-      u, v, z_pred = project_points_np(static_pts_3d, K, ext)
+      u, v, z_pred = project_points(static_pts_3d, K, ext)
       tracks[t, :, 0] = u
       tracks[t, :, 1] = v
 

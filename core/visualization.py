@@ -10,8 +10,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from core.geometry import project_points_np
-from core.geometry import unproject_points_np
+from core.geometry import project_points
+from core.geometry import unproject_points
 from core.geometry import unproject_to_3d
 
 
@@ -470,7 +470,7 @@ def lift_tracks_to_3d(tracks_2d, vis_2d, depth, K_mat, extrinsics):
     invalid_mask = (~vis_2d[t]) | (~in_bounds)
     z_raw[invalid_mask] = 0.0
     zs_src[t] = z_raw
-    traj_3d[t] = unproject_points_np(
+    traj_3d[t] = unproject_points(
         pts[:, 0], pts[:, 1], zs_src[t], K_mat, extrinsics[t])
   return traj_3d, zs_src
 
@@ -484,7 +484,7 @@ def project_to_camera(traj_3d, zs_src, depth, K_mat, extrinsics,
   proj_vis = np.zeros((n_frames, n_points), dtype=bool)
 
   for t in range(n_frames):
-    u, v, z_pred = project_points_np(traj_3d[t], K_mat, extrinsics[t])
+    u, v, z_pred = project_points(traj_3d[t], K_mat, extrinsics[t])
     valid_z = (zs_src[t] > 0.05) & (z_pred > 0.05)
     in_bounds = (u >= 0) & (u < w_img) & (v >= 0) & (v < h_img)
     valid_mask = valid_z & in_bounds

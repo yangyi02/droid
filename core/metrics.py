@@ -33,11 +33,11 @@ def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
   Returns:
     np.ndarray of residual errors in mm (variable length), or empty array.
   """
-  from core.geometry import project_points_np
+  from core.geometry import project_points
 
   if len(pts_3d) == 0:
     return np.array([], dtype=np.float32)
-  u_proj, v_proj, z_proj = project_points_np(pts_3d, K, extrinsics)
+  u_proj, v_proj, z_proj = project_points(pts_3d, K, extrinsics)
   ui = np.clip(np.round(u_proj).astype(int), 0, w_img - 1)
   vi = np.clip(np.round(v_proj).astype(int), 0, h_img - 1)
   z_obs = raw_depth[vi, ui]
