@@ -11,6 +11,8 @@ plus additional motion/coverage statistics for episode selection.
 
 import numpy as np
 
+from core.geometry import project_points
+
 
 # ===========================================================================
 # 1. Depth consistency (track 3D → projected depth vs observed depth)
@@ -33,8 +35,6 @@ def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
   Returns:
     np.ndarray of residual errors in mm (variable length), or empty array.
   """
-  from core.geometry import project_points
-
   if len(pts_3d) == 0:
     return np.array([], dtype=np.float32)
   u_proj, v_proj, z_proj = project_points(pts_3d, K, extrinsics)

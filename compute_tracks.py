@@ -24,7 +24,9 @@ Output format (same as v1 for downstream compatibility):
 """
 
 import argparse
+import fcntl
 import os
+import random
 
 import cv2
 import numpy as np
@@ -734,7 +736,6 @@ if __name__ == "__main__":
   ])
 
   # Deterministic shuffle for load balancing across ranks
-  import random, fcntl
   random.seed(42)
   random.shuffle(available_eps)
 

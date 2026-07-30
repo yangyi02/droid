@@ -18,7 +18,6 @@ import argparse
 import csv
 import json
 import os
-import sys
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial

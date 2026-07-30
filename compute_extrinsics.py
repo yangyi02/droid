@@ -326,13 +326,6 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
   T2_init_t = torch.tensor(prev_scene_state[cam2]['base_extrinsic'], dtype=torch.float32, device=device)
   Tee_init_t = torch.tensor(prev_scene_state[wrist_cam]['base_extrinsic'], dtype=torch.float32, device=device)
 
-  # Map camera IDs to their delta/init/K for track loss lookup
-  cam_opt_map = {
-      cam1: (d1, T1_init_t, K_t1),
-      cam2: (d2, T2_init_t, K_t2),
-      wrist_cam: (dhe, Tee_init_t, K_t_w),
-  }
-
   print(f"  ✅ Data ready! Launching GPU joint optimization engine ({n_steps} steps)...")
   for step in range(n_steps):
     optimizer.zero_grad()
@@ -629,7 +622,6 @@ if __name__ == "__main__":
     stage1_scene_state = None
     stage2_state = None
     stage3_state = None
-    final_state = None
 
     try:
       # Load Stage 1 outputs
@@ -685,7 +677,6 @@ if __name__ == "__main__":
       stage1_scene_state = None
       stage2_state = None
       stage3_state = None
-      final_state = None
       # Clear the per-joint-config GPU tensor cache (main source of OOM)
       if tensor_renderer is not None:
         tensor_renderer.world_points_cache.clear()
