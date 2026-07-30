@@ -114,7 +114,6 @@ droid/
 ├── run_parallel.sh            # Multi-GPU parallel runner
 ├── setup.sh                   # One-shot dependency + weights setup
 ├── mount_gcs.sh               # GCS bucket mount helper
-├── episodes.txt               # Full episode ID list
 ├── episodes_success.txt       # Filtered successful episode IDs
 ├── assets/                    # Local assets (Franka + Robotiq URDF)
 └── third_party/               # Dependencies (git submodules + downloaded weights)
