@@ -25,8 +25,6 @@ Output format (same as v1 for downstream compatibility):
 
 import argparse
 import os
-import warnings
-from collections import defaultdict
 
 import cv2
 import numpy as np

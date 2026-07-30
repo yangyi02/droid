@@ -63,10 +63,7 @@ def init_all_models():
 
 
 # ---------------------------------------------------------------------------
-# 2. Metadata Management
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# 3. SVO Decoding & Kinematics Extraction
+# 2. SVO Decoding & Kinematics Extraction
 # ---------------------------------------------------------------------------
 def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
   """Build the hierarchical scene_constants dict for one episode."""

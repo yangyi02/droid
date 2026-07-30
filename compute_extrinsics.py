@@ -18,7 +18,6 @@ import gc
 import json
 import os
 
-import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -29,9 +28,6 @@ from core.io import get_accelerator, load_depth_data, load_metadata
 from core.physics import TensorRobotRenderer
 
 
-# ---------------------------------------------------------------------------
-# Metadata & Data Loading
-# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Stage 0: Read Dataset Extrinsics
 # ---------------------------------------------------------------------------
@@ -412,7 +408,7 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
 # ---------------------------------------------------------------------------
 @torch.no_grad()
 def evaluate_extrinsics(scene_constants, scene_state, device,
-                        pb_renderer=None, tensor_renderer=None):
+                        tensor_renderer=None):
   """Compute extrinsics quality metrics without re-running optimization.
 
   Can be called after any stage to monitor calibration quality.
@@ -421,15 +417,12 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
     scene_constants: Scene data dict.
     scene_state: Current extrinsics state.
     device: Torch device.
-    pb_renderer: Optional PyBulletRenderer to reuse. If None, one
-        is created temporarily.
+    tensor_renderer: Optional TensorRobotRenderer for robot depth losses.
 
   Returns:
     Dict with metrics: chamfer_total, robot_loss_*, bg_overlap_pct,
     track_reproj_mean_px, shift_mm_*.
   """
-
-
   wrist_cam = scene_constants["meta"]["wrist_serial"]
   ext_cams = [c for c in scene_constants["camera"].keys() if c != wrist_cam]
   cam1, cam2 = ext_cams[0], ext_cams[1]
@@ -600,8 +593,6 @@ if __name__ == "__main__":
   parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
   parser.add_argument("--depth_root", type=str, default="~/droid_data/output/mv-tap/droid/depth",
                        help="Root directory of depth outputs")
-  parser.add_argument("--method", type=str, choices=["yourdfpy", "pybullet"], default="yourdfpy",
-                       help="Rendering engine for robot point cloud extraction")
   parser.add_argument("--export_root", type=str,
                        default="~/droid_data/output/mv-tap/droid/extrinsics",
                        help="Root directory for extrinsics output")
@@ -610,8 +601,6 @@ if __name__ == "__main__":
   print(f"DROID Stage 2: Camera Extrinsics Calibration Pipeline")
   device = get_accelerator()
   serials_db, _, _, extrinsics_db, _ = load_metadata()
-
-
 
   # Discover available episodes from depth output
   depth_abs = os.path.abspath(os.path.expanduser(args.depth_root))
