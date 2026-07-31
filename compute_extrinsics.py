@@ -5,10 +5,10 @@ and point cloud alignment. Reads Stage 1 outputs (depth, calibration,
 robot kinematics, video) and produces optimized 4x4 extrinsic matrices
 for all cameras.
 
-Pipeline:
-  Stage 0: Read dataset extrinsics (required, no fallback)
-  Stage 1: Unified camera-robot alignment (external + wrist in one loop)
-  Stage 2: Global joint optimization (Chamfer + Robot + Wrist)
+Phases:
+  Phase 1: Read dataset extrinsics (required, no fallback)
+  Phase 2: Unified camera-robot alignment (external + wrist in one loop)
+  Phase 3: Global joint optimization (Chamfer + Robot + Wrist)
 """
 
 import argparse
@@ -29,7 +29,7 @@ from core.io import get_accelerator, load_depth_data, load_metadata
 from core.physics import TensorRobotRenderer
 
 
-# Stage 0: Read Dataset Extrinsics
+# Phase 1: Read Dataset Extrinsics
 def init_camera_states(scene_constants, extrinsics_db):
   """Assemble initial 3D camera states from dataset metadata."""
   print("  Initializing camera 3D states...")
@@ -65,7 +65,7 @@ def init_camera_states(scene_constants, extrinsics_db):
   return scene_state
 
 
-def init_extrinsics(scene_constants, extrinsics_db):
+def phase1_init_extrinsics(scene_constants, extrinsics_db):
   """Initialize camera extrinsics from dataset metadata.
 
   Requires pre-calibrated extrinsics for all external cameras.
@@ -153,13 +153,13 @@ def extract_robot_physical_tensors(cam_id, scene_constants, tensor_renderer):
   return torch.stack(cache_X), torch.stack(cache_obs)
 
 
-# Stage 2: Unified Camera-Robot Alignment (external + wrist)
-def run_stage2_alignment(scene_constants, tensor_renderer, stage1_scene_state):
-  """Unified Stage 2: optimize all cameras against robot body/gripper depth."""
-  print("\nStage 2: Unified camera-robot alignment (external + wrist)...")
+# Phase 2: Unified Camera-Robot Alignment (external + wrist)
+def phase2_per_camera_alignment(scene_constants, tensor_renderer, phase1_scene_state):
+  """Unified Phase 2: optimize all cameras against robot body/gripper depth."""
+  print("\nPhase 2: Unified camera-robot alignment (external + wrist)...")
   device = tensor_renderer.device
   wrist_cam = scene_constants['meta']['wrist_serial']
-  stage2_scene_state = copy.deepcopy(stage1_scene_state)
+  phase2_scene_state = copy.deepcopy(phase1_scene_state)
   T_ee_base_all = scene_constants['robot']['T_ee_base_all']
 
   for cam in scene_constants['camera'].keys():
@@ -175,7 +175,7 @@ def run_stage2_alignment(scene_constants, tensor_renderer, stage1_scene_state):
 
     n_frames_total = len(batch_X_base)
     K_t = torch.tensor(scene_constants['camera'][cam]['K_mat'], dtype=torch.float32, device=device)
-    T_init_t = torch.tensor(stage1_scene_state[cam]['base_extrinsic'], dtype=torch.float32, device=device)
+    T_init_t = torch.tensor(phase1_scene_state[cam]['base_extrinsic'], dtype=torch.float32, device=device)
 
     d_ext = torch.zeros(6, requires_grad=True, device=device)
     total_steps = 500
@@ -204,13 +204,13 @@ def run_stage2_alignment(scene_constants, tensor_renderer, stage1_scene_state):
       rot_deg = torch.norm(d_ext[:3]).item() * (180.0 / np.pi)
       print(f"  [{cam}] Alignment done! Loss: {loss_rob.item():.4f} (shift: {shift_mm:.2f}mm, rot: {rot_deg:.2f}°)")
 
-      stage2_scene_state[cam]['base_extrinsic'] = T_final_np
-      stage2_scene_state[cam]['extrinsics'] = (
+      phase2_scene_state[cam]['base_extrinsic'] = T_final_np
+      phase2_scene_state[cam]['extrinsics'] = (
           T_ee_base_all @ T_final_np if is_wrist
           else np.tile(T_final_np, (n_frames_total, 1, 1))
       )
 
-  return stage2_scene_state
+  return phase2_scene_state
 
 
 # Stage 3: Global Joint Optimization (Chamfer + Robot + Wrist)
@@ -255,11 +255,12 @@ def get_cam_points_local_t(t, cam_data, device, n_points=2000):
   return torch.tensor(P_cam[:, idx], dtype=torch.float32, device=device)
 
 
-def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_renderer,
+# Phase 3: Global Joint Optimization (Chamfer + Robot + Wrist)
+def phase3_global_joint_alignment(scene_constants, prev_scene_state, tensor_renderer,
                                 lr=0.001, n_steps=500,
                                 chamfer_weight=1.0, robot_weight=1.0,
                                 chamfer_n_points=2000,
-                                stage_name="Stage 2"):
+                                phase_name="Phase 3"):
   """Global joint optimization: Chamfer + Robot depth + Wrist depth.
 
   Args:
@@ -269,9 +270,9 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
     lr: Learning rate.
     n_steps: Number of optimization steps.
     robot_weight: Weight for robot depth losses.
-    stage_name: Display name for logging.
+    phase_name: Display name for logging.
   """
-  print(f"\n{stage_name}: Global joint optimization "
+  print(f"\n{phase_name}: Global joint optimization "
         f"(Chamfer + Robot + Wrist, lr={lr})...")
   device = tensor_renderer.device
   wrist_cam = scene_constants['meta']['wrist_serial']
@@ -368,7 +369,7 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
     final_p2 = (T2_init_t @ make_T(d2, device)).cpu().numpy()
     final_cam_ee = (Tee_init_t @ make_T(dhe, device)).cpu().numpy()
 
-  print(f"\n{stage_name} complete!")
+  print(f"\n{phase_name} complete!")
 
   ultimate_scene_state = {c: {} for c in scene_constants['camera'].keys()}
   ultimate_scene_state[cam1].update({
@@ -389,13 +390,13 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
 
 def export_extrinsics(scene_constants, scene_state,
                       export_root="~/droid_data/output/mv-tap/droid/extrinsics",
-                      stage_suffix=None):
+                      phase_suffix=None):
   """Save calibrated extrinsics as per-camera JSON files.
 
   Output layout:
     <episode_id>/<cam_id>/extrinsics.json            (final)
-    <episode_id>/<cam_id>/extrinsics_stage1.json     (after dataset init)
-    <episode_id>/<cam_id>/extrinsics_stage2.json     (after robot alignment)
+    <episode_id>/<cam_id>/extrinsics_phase1.json     (after dataset init)
+    <episode_id>/<cam_id>/extrinsics_phase2.json     (after robot alignment)
 
   Each JSON contains:
     base_extrinsic  → (4x4) list-of-lists, static extrinsic matrix
@@ -405,7 +406,7 @@ def export_extrinsics(scene_constants, scene_state,
   ep_str = scene_constants["meta"]["episode_id"]
   wrist_serial = scene_constants["meta"]["wrist_serial"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_str)))
-  fname = f"extrinsics_{stage_suffix}.json" if stage_suffix else "extrinsics.json"
+  fname = f"extrinsics_{phase_suffix}.json" if phase_suffix else "extrinsics.json"
 
   for cam_id, state in scene_state.items():
     if state.get("base_extrinsic") is None or state.get("extrinsics") is None:
@@ -467,37 +468,37 @@ if __name__ == "__main__":
 
     # Pre-initialize for safe cleanup in finally block
     scene_constants = None
-    stage1_scene_state = None
-    stage2_state = None
-    stage3_state = None
+    phase1_scene_state = None
+    phase2_state = None
+    phase3_state = None
 
     try:
-      # Load Stage 1 outputs
+      # Load Stage 1 outputs (depth)
       scene_constants = load_depth_data(ep_id, args.depth_root)
 
-      # Stage 0: Load dataset extrinsics
-      stage1_scene_state = init_extrinsics(scene_constants, extrinsics_db)
+      # Phase 1: Load dataset extrinsics
+      phase1_scene_state = phase1_init_extrinsics(scene_constants, extrinsics_db)
 
-      # Save Stage 1 extrinsics
-      export_extrinsics(scene_constants, stage1_scene_state,
-                        export_root=args.export_root, stage_suffix="stage1")
+      # Save Phase 1 extrinsics
+      export_extrinsics(scene_constants, phase1_scene_state,
+                        export_root=args.export_root, phase_suffix="phase1")
 
-      # Stage 2: Per-camera independent alignment (external + wrist)
-      stage2_state = run_stage2_alignment(
-          scene_constants, tensor_renderer, stage1_scene_state,
+      # Phase 2: Per-camera independent alignment (external + wrist)
+      phase2_state = phase2_per_camera_alignment(
+          scene_constants, tensor_renderer, phase1_scene_state,
       )
-      export_extrinsics(scene_constants, stage2_state,
-                        export_root=args.export_root, stage_suffix="stage2")
+      export_extrinsics(scene_constants, phase2_state,
+                        export_root=args.export_root, phase_suffix="phase2")
 
-      # Stage 3: Global joint optimization (Chamfer + Robot + Wrist)
-      stage3_state = run_global_joint_alignment(
-          scene_constants, stage2_state, tensor_renderer,
-          lr=0.001, n_steps=500, robot_weight=1.0, stage_name="Stage 3",
+      # Phase 3: Global joint optimization (Chamfer + Robot + Wrist)
+      phase3_state = phase3_global_joint_alignment(
+          scene_constants, phase2_state, tensor_renderer,
+          lr=0.001, n_steps=500, robot_weight=1.0, phase_name="Phase 3",
       )
-      export_extrinsics(scene_constants, stage3_state,
-                        export_root=args.export_root, stage_suffix="stage3")
+      export_extrinsics(scene_constants, phase3_state,
+                        export_root=args.export_root, phase_suffix="phase3")
       # Final export (canonical name)
-      export_extrinsics(scene_constants, stage3_state,
+      export_extrinsics(scene_constants, phase3_state,
                         export_root=args.export_root)
       succeeded_eps.append(ep_id)
       print(f"  Episode {ep_id} completed successfully.")
@@ -509,9 +510,9 @@ if __name__ == "__main__":
     finally:
       # Free GPU memory between episodes to prevent OOM from fragmentation
       scene_constants = None
-      stage1_scene_state = None
-      stage2_state = None
-      stage3_state = None
+      phase1_scene_state = None
+      phase2_state = None
+      phase3_state = None
       # Clear the per-joint-config GPU tensor cache (main source of OOM)
       if tensor_renderer is not None:
         tensor_renderer.world_points_cache.clear()
