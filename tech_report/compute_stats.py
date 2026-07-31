@@ -68,8 +68,8 @@ def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):
 
 # Per-Episode Stats (merged I/O + vectorized reproj)
 
-# Reprojection error computation lives in core.metrics
-from core.metrics import compute_reprojection_error
+# Reprojection error computation lives in evaluate_episodes
+from evaluate_episodes import compute_reprojection_error
 
 
 def compute_all_episode_stats(episode_id, tracks_root, depth_root):
