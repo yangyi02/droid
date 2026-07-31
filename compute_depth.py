@@ -5,7 +5,6 @@ stereo video streams, extracting robot kinematics, and inferring metric depth.
 """
 
 import argparse
-import fcntl
 import glob
 import json
 import os
@@ -480,15 +479,5 @@ if __name__ == "__main__":
     except Exception as e:
       print(f"  [FAIL] Episode {ep_id} failed: {e}")
       continue
-
-  # Append successfully processed episodes to episodes_depth.txt (multi-process safe)
-  depth_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes_depth.txt")
-  if succeeded_eps:
-    batch = "".join(ep_id + "\n" for ep_id in succeeded_eps)
-    with open(depth_path, "a") as f:
-      fcntl.flock(f, fcntl.LOCK_EX)
-      f.write(batch)
-      fcntl.flock(f, fcntl.LOCK_UN)
-    print(f"\nAppended {len(succeeded_eps)} episodes to {depth_path}")
 
   print(f"\nPipeline complete! {len(succeeded_eps)}/{len(target_eps)} episodes succeeded.")

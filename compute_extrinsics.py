@@ -13,7 +13,6 @@ Pipeline:
 
 import argparse
 import copy
-import fcntl
 import gc
 import json
 import os
@@ -520,15 +519,5 @@ if __name__ == "__main__":
         tensor_renderer.world_points_cache.clear()
       gc.collect()
       torch.cuda.empty_cache()
-
-  # Multi-process safe append
-  extrinsics_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes_extrinsics.txt")
-  if succeeded_eps:
-    batch = "".join(ep_id + "\n" for ep_id in succeeded_eps)
-    with open(extrinsics_path, "a") as f:
-      fcntl.flock(f, fcntl.LOCK_EX)
-      f.write(batch)
-      fcntl.flock(f, fcntl.LOCK_UN)
-    print(f"\nAppended {len(succeeded_eps)} episodes to {extrinsics_path}")
 
   print(f"\nStage 2 complete! {len(succeeded_eps)}/{len(target_eps)} episodes succeeded.")

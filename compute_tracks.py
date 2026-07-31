@@ -24,7 +24,6 @@ Output format (same as v1 for downstream compatibility):
 """
 
 import argparse
-import fcntl
 import os
 import random
 
@@ -730,8 +729,6 @@ if __name__ == "__main__":
         f"({len(target_eps) - len(todo_eps)} already done)")
 
   succeeded_eps = []
-  tracks_list = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "episodes_tracks.txt")
 
   for idx, ep_id in enumerate(todo_eps):
     print(f"\n[{idx + 1}/{len(todo_eps)}] Episode: {ep_id}")
@@ -742,12 +739,6 @@ if __name__ == "__main__":
           num_static_points=args.num_static_points,
           max_robot_pts_per_cam=args.max_robot_pts_per_cam)
       succeeded_eps.append(ep_id)
-
-      # Append immediately per episode (thread/process safe)
-      with open(tracks_list, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        f.write(ep_id + "\n")
-        fcntl.flock(f, fcntl.LOCK_UN)
     except Exception as e:
       print(f"  [FAIL] Episode {ep_id} failed: {e}")
       import traceback
