@@ -2,9 +2,8 @@
 
 Provides accelerator setup, metadata loading, and Stage 1/2 output reading.
 
-=============================================================================
-DATA CONTRACT — scene_constants
-=============================================================================
+DATA CONTRACT -- scene_constants
+
 The primary in-memory data structure shared across all three pipeline stages.
 All keys are optional unless marked (required).
 
@@ -52,9 +51,8 @@ All keys are optional unless marked (required).
     }
   }
 
-=============================================================================
-DATA CONTRACT — scene_state
-=============================================================================
+DATA CONTRACT -- scene_state
+
 Per-camera extrinsics produced by Stage 2 (compute_extrinsics.py).
 Keyed by camera serial, same as scene_constants['camera'].
 
@@ -65,8 +63,6 @@ Keyed by camera serial, same as scene_constants['camera'].
       'is_wrist':        bool                 True for wrist camera
     }
   }
-
-=============================================================================
 """
 
 import json
@@ -111,7 +107,7 @@ def load_metadata(meta_root="~/droid_data/meta/1.0.1"):
       "cam2base_extrinsic_superset.json",
   ]
 
-  print(f"⬇️  Synchronizing metadata to {root_path}...")
+  print(f"Synchronizing metadata to {root_path}...")
   for f in files:
     dest = os.path.join(root_path, f)
     if not os.path.exists(dest):
@@ -129,7 +125,7 @@ def load_metadata(meta_root="~/droid_data/meta/1.0.1"):
   valid_ids = sorted(
       set(serials_db.keys()) & set(id_to_path.keys()) & set(extrinsics_db.keys())
   )
-  print(f"✅ Metadata ready: {len(valid_ids)} episodes with pre-calibrated extrinsics.")
+  print(f"Metadata ready: {len(valid_ids)} episodes with pre-calibrated extrinsics.")
   return serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids
 
 
@@ -234,7 +230,7 @@ def load_depth_data(episode_id, depth_root="~/droid_data/output/mv-tap/droid/dep
 
   n_frames = len(robot["joint_positions"])
   n_cams = len(camera)
-  print(f"  ✅ Loaded: {n_cams} cameras, {n_frames} frames.")
+  print(f"  Loaded: {n_cams} cameras, {n_frames} frames.")
   return scene_constants
 
 

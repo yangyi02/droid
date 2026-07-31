@@ -28,9 +28,7 @@ from core.io import get_accelerator, load_depth_data, load_metadata
 from core.physics import TensorRobotRenderer
 
 
-# ---------------------------------------------------------------------------
 # Stage 0: Read Dataset Extrinsics
-# ---------------------------------------------------------------------------
 def init_camera_states(scene_constants, extrinsics_db):
   """Assemble initial 3D camera states from dataset metadata."""
   print("  Initializing camera 3D states...")
@@ -52,9 +50,9 @@ def init_camera_states(scene_constants, extrinsics_db):
       ext_vec = ext_data.get("extrinsics", ext_data) if isinstance(ext_data, dict) else ext_data
       base_ext = make_4x4(ext_vec)
       cam_trajectory = np.tile(base_ext, (n_frames, 1, 1))
-      print(f"    ✅ Loaded pre-calibrated extrinsics for camera [{cam_id}] from metadata.")
+      print(f"    Loaded pre-calibrated extrinsics for camera [{cam_id}] from metadata.")
     else:
-      print(f"    ⚠️ No pre-calibrated extrinsics for external camera [{cam_id}], setting to None.")
+      print(f"    [WARN] No pre-calibrated extrinsics for external camera [{cam_id}], setting to None.")
       base_ext = None
       cam_trajectory = None
 
@@ -78,13 +76,11 @@ def init_extrinsics(scene_constants, extrinsics_db):
     raise ValueError(
         f"Missing pre-calibrated extrinsics for cameras: {missing}. "
         f"Only episodes with dataset extrinsics are supported.")
-  print("  ✅ All cameras have pre-calibrated extrinsics.")
+  print("  All cameras have pre-calibrated extrinsics.")
   return scene_state
 
 
-# ---------------------------------------------------------------------------
-# 8. Shared Loss & Data Factory
-# ---------------------------------------------------------------------------
+# Shared Loss & Data Factory
 def compute_robot_loss(batch_X_base, T_cam_to_base, K, batch_obs, depth_tolerance):
   """Unified depth re-projection loss with normals, front-face culling, and tolerance."""
   B, _, h_img, w_img = batch_obs.shape
@@ -156,9 +152,7 @@ def extract_robot_physical_tensors(cam_id, scene_constants, tensor_renderer):
   return torch.stack(cache_X), torch.stack(cache_obs)
 
 
-# ---------------------------------------------------------------------------
-# 9. Stage 2: Unified Camera-Robot Alignment (external + wrist)
-# ---------------------------------------------------------------------------
+# Stage 2: Unified Camera-Robot Alignment (external + wrist)
 def run_stage2_alignment(scene_constants, tensor_renderer, stage1_scene_state):
   """Unified Stage 2: optimize all cameras against robot body/gripper depth."""
   print("\nStage 2: Unified camera-robot alignment (external + wrist)...")
@@ -175,7 +169,7 @@ def run_stage2_alignment(scene_constants, tensor_renderer, stage1_scene_state):
     # Extract physical tensors from shared factory
     batch_X_base, batch_obs = extract_robot_physical_tensors(cam, scene_constants, tensor_renderer)
     if batch_X_base is None:
-      print(f"    ⚠️ No valid physical point cloud extracted! Skipping.")
+      print(f"    [WARN] No valid physical point cloud extracted! Skipping.")
       continue
 
     n_frames_total = len(batch_X_base)
@@ -207,7 +201,7 @@ def run_stage2_alignment(scene_constants, tensor_renderer, stage1_scene_state):
       T_final_np = (T_init_t @ make_T(d_ext, device)).cpu().numpy()
       shift_mm = torch.norm(d_ext[3:]).item() * 1000.0
       rot_deg = torch.norm(d_ext[:3]).item() * (180.0 / np.pi)
-      print(f"  ✅ [{cam}] Alignment done! Loss: {loss_rob.item():.4f} (shift: {shift_mm:.2f}mm, rot: {rot_deg:.2f}°)")
+      print(f"  [{cam}] Alignment done! Loss: {loss_rob.item():.4f} (shift: {shift_mm:.2f}mm, rot: {rot_deg:.2f}°)")
 
       stage2_scene_state[cam]['base_extrinsic'] = T_final_np
       stage2_scene_state[cam]['extrinsics'] = (
@@ -218,9 +212,7 @@ def run_stage2_alignment(scene_constants, tensor_renderer, stage1_scene_state):
   return stage2_scene_state
 
 
-# ---------------------------------------------------------------------------
-# 10. Stage 3: Global Joint Optimization (Chamfer + Robot + Wrist)
-# ---------------------------------------------------------------------------
+# Stage 3: Global Joint Optimization (Chamfer + Robot + Wrist)
 def batched_chamfer_distance(p1, p2, device):
   """Truncated Chamfer distance with 5cm physical cutoff."""
   dist_matrix = torch.cdist(p1, p2)
@@ -326,7 +318,7 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
   T2_init_t = torch.tensor(prev_scene_state[cam2]['base_extrinsic'], dtype=torch.float32, device=device)
   Tee_init_t = torch.tensor(prev_scene_state[wrist_cam]['base_extrinsic'], dtype=torch.float32, device=device)
 
-  print(f"  ✅ Data ready! Launching GPU joint optimization engine ({n_steps} steps)...")
+  print(f"  Data ready! Launching GPU joint optimization engine ({n_steps} steps)...")
   for step in range(n_steps):
     optimizer.zero_grad()
 
@@ -368,7 +360,7 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
       ]
       log_parts.extend([
           f"BG Overlap: {bg_overlap:.1f}%",
-          f"Shift → C1: {shift_c1:.2f}mm, C2: {shift_c2:.2f}mm, W: {shift_w:.2f}mm",
+          f"Shift: C1: {shift_c1:.2f}mm, C2: {shift_c2:.2f}mm, W: {shift_w:.2f}mm",
       ])
       print(f"    {' | '.join(log_parts)}")
 
@@ -377,7 +369,7 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
     final_p2 = (T2_init_t @ make_T(d2, device)).cpu().numpy()
     final_cam_ee = (Tee_init_t @ make_T(dhe, device)).cpu().numpy()
 
-  print(f"\n✅ {stage_name} complete!")
+  print(f"\n{stage_name} complete!")
 
   ultimate_scene_state = {c: {} for c in scene_constants['camera'].keys()}
   ultimate_scene_state[cam1].update({
@@ -396,9 +388,7 @@ def run_global_joint_alignment(scene_constants, prev_scene_state, tensor_rendere
   return ultimate_scene_state
 
 
-# ---------------------------------------------------------------------------
 # Evaluate Extrinsics Quality
-# ---------------------------------------------------------------------------
 @torch.no_grad()
 def evaluate_extrinsics(scene_constants, scene_state, device,
                         tensor_renderer=None):
@@ -520,7 +510,7 @@ def print_metrics(metrics, stage_name=""):
   print(f"  BG overlap:    {overlap:.1f}%")
   if not np.isnan(wrist_bg):
     med_s = f"  median={wrist_bg_med:.2f}" if not np.isnan(wrist_bg_med) else ""
-    print(f"  Track wristBG: mean={wrist_bg:.2f} px{med_s}  ★ primary")
+    print(f"  Track wristBG: mean={wrist_bg:.2f} px{med_s}  primary")
   if not np.isnan(static_robot):
     med_s2 = f"  median={static_robot_med:.2f}" if not np.isnan(static_robot_med) else ""
     print(f"  Track robot:   mean={static_robot:.2f} px{med_s2}")
@@ -576,9 +566,7 @@ def export_extrinsics(scene_constants, scene_state,
   print(f"  Extrinsics saved to {ep_dir}/*/{fname}")
 
 
-# ---------------------------------------------------------------------------
 # Main Execution
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="DROID Stage 2: Camera Extrinsics Calibration")
   parser.add_argument("--rank", type=int, default=0, help="Rank of the process")
@@ -664,10 +652,10 @@ if __name__ == "__main__":
       export_extrinsics(scene_constants, stage3_state,
                         export_root=args.export_root)
       succeeded_eps.append(ep_id)
-      print(f"  ✅ Episode {ep_id} completed successfully.")
+      print(f"  Episode {ep_id} completed successfully.")
 
     except Exception as e:
-      print(f"  ❌ Episode {ep_id} failed: {e}")
+      print(f"  [FAIL] Episode {ep_id} failed: {e}")
       import traceback
       traceback.print_exc()
 

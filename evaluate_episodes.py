@@ -184,9 +184,7 @@ def main():
 
   for idx, ep_id in enumerate(todo_eps):
     t0 = time.time()
-    print(f"\n{'=' * 60}")
-    print(f"[{idx + 1}/{len(todo_eps)}] Episode: {ep_id}")
-    print(f"{'=' * 60}")
+    print(f"\n[{idx + 1}/{len(todo_eps)}] Episode: {ep_id}")
 
     try:
       metrics = evaluate_single_episode(
@@ -194,7 +192,7 @@ def main():
           args.tracks_root, device, pb_renderer)
 
       if metrics is None:
-        print(f"  ⚠️ Skipped (no data)")
+        print(f"  [WARN] Skipped (no data)")
         failed += 1
         continue
 
@@ -215,13 +213,13 @@ def main():
       elapsed = time.time() - t0
       chamfer = metrics.get("chamfer_total", float("nan"))
       depth_res = metrics.get("depth_residual_overall_median_mm", float("nan"))
-      print(f"  ✅ Done in {elapsed:.1f}s | "
+      print(f"  [OK] Done in {elapsed:.1f}s | "
             f"chamfer={chamfer:.4f} | "
             f"depth_residual_median={depth_res:.1f}mm")
       succeeded += 1
 
     except Exception as e:
-      print(f"  ❌ Failed: {e}")
+      print(f"  [FAIL] Failed: {e}")
       traceback.print_exc()
       failed += 1
 
@@ -232,12 +230,10 @@ def main():
         f.write(f"{ep_id}\t{str(e)}\n")
         fcntl.flock(f, fcntl.LOCK_UN)
 
-  print(f"\n{'=' * 60}")
-  print(f"Evaluation complete!")
+  print(f"\nEvaluation complete!")
   print(f"   Succeeded: {succeeded}/{len(todo_eps)}")
   print(f"   Failed:    {failed}/{len(todo_eps)}")
   print(f"   Output:    {csv_path}")
-  print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":

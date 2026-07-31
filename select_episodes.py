@@ -70,7 +70,7 @@ def apply_quality_filter(rows, max_chamfer, max_depth_residual,
 
     filtered.append(row)
 
-  print(f"  ✅ {len(filtered)}/{len(rows)} episodes passed quality filter")
+  print(f"  {len(filtered)}/{len(rows)} episodes passed quality filter")
   return filtered
 
 
@@ -183,7 +183,7 @@ def main():
       args.min_static_points, args.min_frames)
 
   if len(filtered) < args.n:
-    print(f"  ⚠️ Only {len(filtered)} episodes pass filter, "
+    print(f"  [WARN] Only {len(filtered)} episodes pass filter, "
           f"requested {args.n}. Relaxing thresholds...")
     # Relax thresholds progressively
     for mult in [1.5, 2.0, 3.0, 5.0]:
@@ -217,8 +217,7 @@ def main():
   print(f"Detailed CSV: {csv_path}")
 
   # Summary
-  print(f"\n{'=' * 60}")
-  print(f"✅ Selected {len(selected)} episodes")
+  print(f"\nSelected {len(selected)} episodes")
   sites = {}
   for row in selected:
     s = row.get("site", "?")
@@ -236,7 +235,6 @@ def main():
   if travels:
     print(f"   EE travel: median={np.median(travels):.2f}m, "
           f"range=[{min(travels):.2f}, {max(travels):.2f}]m")
-  print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":

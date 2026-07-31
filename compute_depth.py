@@ -24,15 +24,13 @@ from core.depth import (build_universal_gripper_mask, compute_stereo_depth,
 from core.geometry import make_4x4
 from core.io import get_accelerator, load_metadata
 
-# ---------------------------------------------------------------------------
-# 1. Foundation Models
-# ---------------------------------------------------------------------------
+# Foundation Models
 def init_all_models():
   """Load vision foundation models and vendor dependencies dynamically."""
   device = get_accelerator()
   print(f"Launching models onto {device} | CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}")
   if not torch.cuda.is_available():
-    print("⚠️ WARNING: PyTorch cannot find a valid CUDA device. Please ensure your CUDA_VISIBLE_DEVICES index is correct (e.g. 0 or 1) and NVIDIA drivers are running.")
+    print("[WARN] WARNING: PyTorch cannot find a valid CUDA device. Please ensure your CUDA_VISIBLE_DEVICES index is correct (e.g. 0 or 1) and NVIDIA drivers are running.")
 
   # Inject third-party repo paths just-in-time
   vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party")
@@ -58,13 +56,11 @@ def init_all_models():
       checkpoint=os.path.join(vendor_dir, "sam_weights/sam_vit_h_4b8939.pth")
   ).to(device)
 
-  print("  ✅ All foundation models loaded.")
+  print("  All foundation models loaded.")
   return s2m2_model, SamPredictor(sam), run_stereo_matching
 
 
-# ---------------------------------------------------------------------------
-# 2. SVO Decoding & Kinematics Extraction
-# ---------------------------------------------------------------------------
+# SVO Decoding & Kinematics Extraction
 def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
   """Build the hierarchical scene_constants dict for one episode."""
   relative_path = id_to_path[episode_id]
@@ -88,9 +84,9 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
     for start, end in ranges:
       indices.extend(range(start, end))
     valid_indices = np.array(indices)
-    print(f"  ✂️ Loaded action ranges, marked {len(valid_indices)} frames as valid keyframes.")
+    print(f"  Loaded action ranges, marked {len(valid_indices)} frames as valid keyframes.")
   else:
-    print(f"  ⚠️ No idle filter info found for {episode_id}, keeping all frames.")
+    print(f"  [WARN] No idle filter info found for {episode_id}, keeping all frames.")
 
   # Structured into meta, robot, camera core modules
   return {
@@ -127,21 +123,21 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
     init_params.svo_real_time_mode = False
     zed.open(init_params)
 
-    # --- Frame count gate (early exit before expensive decoding) ---
+    # Frame count gate (early exit before expensive decoding)
     n_svo_frames = zed.get_svo_number_of_frames() - 2
     if max_frames > 0 and n_svo_frames > max_frames:
-      print(f"  ⏭️ Skipping SVO [{cam}]: {n_svo_frames} frames exceeds --max_frames={max_frames}.")
+      print(f"  Skipping SVO [{cam}]: {n_svo_frames} frames exceeds --max_frames={max_frames}.")
       zed.close()
       continue
     if min_frames > 0 and n_svo_frames < min_frames:
-      print(f"  ⏭️ Skipping SVO [{cam}]: {n_svo_frames} frames below --min_frames={min_frames}.")
+      print(f"  Skipping SVO [{cam}]: {n_svo_frames} frames below --min_frames={min_frames}.")
       zed.close()
       continue
 
     # Extract ZED native calibration data
     cam_info = zed.get_camera_information()
 
-    # --- Rectified (Calibrated) ---
+    # Rectified (Calibrated)
     calib = cam_info.camera_configuration.calibration_parameters
     K_calib_left = np.array([
         [calib.left_cam.fx, 0, calib.left_cam.cx],
@@ -157,7 +153,7 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
     ], dtype=np.float32)
     disto_calib_right = np.array(calib.right_cam.disto, dtype=np.float32)
 
-    # --- Raw (Distorted) ---
+    # Raw (Distorted)
     calib_raw = cam_info.camera_configuration.calibration_parameters_raw
     K_raw_left = np.array([
         [calib_raw.left_cam.fx, 0, calib_raw.left_cam.cx],
@@ -173,9 +169,7 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
     ], dtype=np.float32)
     disto_raw_right = np.array(calib_raw.right_cam.disto, dtype=np.float32)
 
-    # ==========================================
     # Frame extraction loop (left/right + raw)
-    # ==========================================
     all_left, all_right, all_left_raw, all_right_raw = [], [], [], []
     all_timestamps = []  # list for storing per-frame timestamps
     left_mat, right_mat = sl.Mat(), sl.Mat()
@@ -187,10 +181,10 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
         timestamp_ms = zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_milliseconds()
         all_timestamps.append(timestamp_ms)
 
-        # 1. Extract rectified stereo frames
+        # Extract rectified stereo frames
         zed.retrieve_image(left_mat, sl.VIEW.LEFT)
         zed.retrieve_image(right_mat, sl.VIEW.RIGHT)
-        # 2. Extract raw unrectified stereo frames
+        # Extract raw unrectified stereo frames
         zed.retrieve_image(left_raw_mat, sl.VIEW.LEFT_UNRECTIFIED)
         zed.retrieve_image(right_raw_mat, sl.VIEW.RIGHT_UNRECTIFIED)
 
@@ -262,9 +256,9 @@ def parse_robot_kinematics(scene_constants):
 
 def align_temporal_streams(scene_constants):
   """Truncate all temporal streams to the shortest length for global alignment."""
-  print("  ⏱️ Running global temporal alignment check...")
+  print("  Running global temporal alignment check...")
 
-  # 1. Collect lengths of all temporal streams
+  # Collect lengths of all temporal streams
   lengths = [
       len(scene_constants["robot"]["joint_positions"]),
       len(scene_constants["robot"]["gripper_positions"]),
@@ -274,18 +268,18 @@ def align_temporal_streams(scene_constants):
     lengths.append(len(cam_data["video_rgb"]))
     lengths.append(len(cam_data["video_right"]))
 
-  # 2. Find the shortest stream (bottleneck)
+  # Find the shortest stream (bottleneck)
   min_frames = min(lengths)
   max_frames = max(lengths)
 
   if min_frames == max_frames:
-    print(f"    ✅ Temporal streams perfectly aligned at {min_frames} frames.")
+    print(f"    Temporal streams perfectly aligned at {min_frames} frames.")
     return scene_constants
 
-  print(f"    ⚠️ Temporal mismatch detected (max {max_frames}, min {min_frames})!")
-  print(f"    ✂️ Truncating all streams to {min_frames} frames...")
+  print(f"    [WARN] Temporal mismatch detected (max {max_frames}, min {min_frames})!")
+  print(f"    Truncating all streams to {min_frames} frames...")
 
-  # 3. Truncate all dimensions to min_frames (dynamic traversal)
+  # Truncate all dimensions to min_frames (dynamic traversal)
   for key in ["joint_positions", "gripper_positions", "T_ee_base_all", "timestamps"]:
     if key in scene_constants["robot"]:
       scene_constants["robot"][key] = scene_constants["robot"][key][:min_frames]
@@ -296,7 +290,7 @@ def align_temporal_streams(scene_constants):
       if isinstance(value, (list, np.ndarray)) and len(value) == max_frames:
         cam_data[key] = value[:min_frames]
 
-  print("    ✅ Global alignment complete. All dimensions are now consistent.")
+  print("    Global alignment complete. All dimensions are now consistent.")
   return scene_constants
 
 
@@ -332,7 +326,7 @@ def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droi
 
   print(f"  Exporting multi-view data to {out_dir}...")
 
-  # --- Robot kinematics (episode-level) ---
+  # Robot kinematics (episode-level)
   robot = scene_constants["robot"]
   if robot:
     robot_save = {}
@@ -352,7 +346,7 @@ def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droi
       robot_save["wrist_serial"] = np.array(meta["wrist_serial"])
     np.savez_compressed(os.path.join(out_dir, "robot.npz"), **robot_save)
 
-  # --- Per-camera data ---
+  # Per-camera data
   for cam_id, data in scene_constants["camera"].items():
     cam_dir = os.path.join(out_dir, str(cam_id))
     os.makedirs(cam_dir, exist_ok=True)
@@ -419,9 +413,7 @@ def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droi
   return True
 
 
-# ---------------------------------------------------------------------------
 # Execution & Batched Slicing
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="DROID Flexible Pipeline Extractor")
   parser.add_argument("--rank", type=int, default=0, help="Rank of the process")
@@ -449,7 +441,7 @@ if __name__ == "__main__":
   for idx, ep_id in enumerate(target_eps):
     print(f"\n[{idx + 1}/{len(target_eps)}] Processing Episode: {ep_id}")
     if ep_id not in id_to_path:
-      print(f"  ❌ Invalid episode ID: {ep_id}")
+      print(f"  [FAIL] Invalid episode ID: {ep_id}")
       continue
 
     try:
@@ -462,7 +454,7 @@ if __name__ == "__main__":
       )
       scene_constants = extract_svo_video(scene_constants, min_frames=args.min_frames, max_frames=args.max_frames)
       if not any("video_rgb" in data for data in scene_constants["camera"].values()):
-        print(f"  ⚠️ No valid video streams extracted for [{ep_id}]. Skipping processing.")
+        print(f"  [WARN] No valid video streams extracted for [{ep_id}]. Skipping processing.")
         continue
 
       scene_constants = parse_robot_kinematics(scene_constants)
@@ -470,7 +462,7 @@ if __name__ == "__main__":
       scene_constants = compute_stereo_depth(
           scene_constants, s2m2_model, run_stereo_matching, device)
 
-      # --- Gripper depth refinement (wrist camera only) ---
+      # Gripper depth refinement (wrist camera only)
       # Save original raw depth before injection
       wrist_serial = scene_constants["meta"].get("wrist_serial")
       if wrist_serial and wrist_serial in scene_constants["camera"]:
@@ -484,9 +476,9 @@ if __name__ == "__main__":
 
       export_to_disk(scene_constants)
       succeeded_eps.append(ep_id)
-      print(f"  ✅ Episode {ep_id} completed successfully.")
+      print(f"  Episode {ep_id} completed successfully.")
     except Exception as e:
-      print(f"  ❌ Episode {ep_id} failed: {e}")
+      print(f"  [FAIL] Episode {ep_id} failed: {e}")
       continue
 
   # Append successfully processed episodes to episodes_depth.txt (multi-process safe)

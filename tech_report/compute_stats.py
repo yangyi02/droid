@@ -25,17 +25,14 @@ from functools import partial
 import numpy as np
 from tqdm import tqdm
 
-
-# ============================================================================
-# 1. Pipeline Coverage
-# ============================================================================
+# Pipeline Coverage
 
 def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):
   """Count how many episodes completed each stage."""
   def list_episode_dirs(root):
     root = os.path.abspath(os.path.expanduser(root))
     if not os.path.exists(root):
-      print(f"  ⚠️ Directory not found: {root}")
+      print(f"  [WARN] Directory not found: {root}")
       return []
     return sorted([
         d for d in os.listdir(root)
@@ -69,10 +66,7 @@ def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):
       "all_completed": sorted(depth_eps & ext_eps & track_eps),
   }
 
-
-# ===========================================================================
-# 2. Per-Episode: All Stats in One Pass (merged I/O + vectorized reproj)
-# ===========================================================================
+# Per-Episode Stats (merged I/O + vectorized reproj)
 
 # Reprojection error computation lives in core.metrics
 from core.metrics import compute_reprojection_error
@@ -235,9 +229,7 @@ def _worker(episode_id, tracks_root, depth_root):
     return {"episode_id": episode_id, "_error": str(e)}
 
 
-# ============================================================================
 # Main
-# ============================================================================
 
 def main():
   parser = argparse.ArgumentParser(
@@ -262,26 +254,20 @@ def main():
   if args.workers <= 0:
     args.workers = min(os.cpu_count() or 4, 32)
 
-  print("=" * 60)
   print("DROID Pipeline: Dataset Statistics")
-  print("=" * 60)
 
-  # ------------------------------------------------------------------
-  # 1. Pipeline Coverage
-  # ------------------------------------------------------------------
-  print("\n📊 Stage 1: Pipeline coverage...")
+  # Pipeline Coverage
+  print("\nPipeline coverage...")
   coverage, episode_lists = count_episodes_per_stage(
       args.depth_root, args.extrinsics_root, args.tracks_root)
   print(json.dumps(coverage, indent=2))
 
-  # ------------------------------------------------------------------
-  # 2. Per-Episode Stats (parallel, single-pass)
-  # ------------------------------------------------------------------
+  # Per-Episode Stats
   completed_eps = episode_lists["all_completed"]
   if args.max_episodes > 0:
     completed_eps = completed_eps[:args.max_episodes]
 
-  print(f"\n📊 Stage 2: Per-episode stats "
+  print(f"\nPer-episode stats "
         f"({len(completed_eps)} episodes, {args.workers} workers)...")
 
   all_stats = []
@@ -308,15 +294,13 @@ def main():
 
   n_complete = len(all_stats)
   n_errors = len(errors_list)
-  print(f"\n✅ {n_complete} episodes processed, {n_errors} errors")
+  print(f"\n{n_complete} episodes processed, {n_errors} errors")
 
   if n_complete == 0:
-    print("❌ No episodes with valid tracks found.")
+    print("No episodes with valid tracks found.")
     return
 
-  # ------------------------------------------------------------------
-  # 3. Aggregate Summary
-  # ------------------------------------------------------------------
+  # Aggregate Summary
   summary = {"coverage": coverage}
 
   # Track stats aggregation
@@ -374,13 +358,11 @@ def main():
         "total_tracks_gb": round(float(np.sum(tracks_mbs)) / 1000, 1),
     }
 
-  # ------------------------------------------------------------------
-  # 4. Save Results
-  # ------------------------------------------------------------------
+  # Save Results
   summary_path = os.path.join(output_dir, "dataset_summary.json")
   with open(summary_path, "w") as f:
     json.dump(summary, f, indent=2)
-  print(f"\n💾 Summary → {summary_path}")
+  print(f"\nSummary -> {summary_path}")
 
   # Per-episode CSV
   if all_stats:
@@ -395,7 +377,7 @@ def main():
       writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
       writer.writeheader()
       writer.writerows(all_stats)
-    print(f"💾 Per-episode stats → {csv_path}")
+    print(f"Per-episode stats -> {csv_path}")
 
   # Failure analysis
   failure_path = os.path.join(output_dir, "failure_analysis.json")
@@ -410,12 +392,8 @@ def main():
     }, f, indent=2)
   print(f"Failure analysis -> {failure_path}")
 
-  # ------------------------------------------------------------------
-  # 5. Print Summary Table
-  # ------------------------------------------------------------------
-  print("\n" + "=" * 60)
-  print("SUMMARY")
-  print("=" * 60)
+  # Print Summary Table
+  print("\nSUMMARY")
   print(json.dumps(summary, indent=2))
 
   return summary

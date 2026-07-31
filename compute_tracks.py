@@ -2,7 +2,7 @@
 
 Key design:
   - **Single grid at frame 0**: One uniform grid (e.g., 32×32) per camera at t=0.
-    Points on robot → URDF FK tracking. Points on background → static prior.
+    Points on robot -> URDF FK tracking. Points on background -> static prior.
   - **No tracker model** (CoTracker/TAPNext) needed.
   - **Static prior**: Background points are assumed stationary in world
     coordinates. 2D tracks are obtained by projecting fixed 3D positions
@@ -12,9 +12,9 @@ Key design:
     verified by nearest-neighbor matching between cameras.
 
 Two point types:
-  Track A (Background/Static): Grid at t=0 → cross-view consensus → fixed 3D →
+  Track A (Background/Static): Grid at t=0 -> cross-view consensus -> fixed 3D ->
       project to 2D per-view per-frame.
-  Track B (Robot): Grid at t=0 → URDF forward kinematics.
+  Track B (Robot): Grid at t=0 -> URDF forward kinematics.
 
 Output format (same as v1 for downstream compatibility):
   final_traj_3d:        np.float32 (T, N, 3)   world coordinates
@@ -37,9 +37,7 @@ from core.physics import PyBulletRenderer
 from core.tracking import URDFKinematicsTracker
 
 
-# ===========================================================================
 # Phase 1: Extract static background 3D points at frame 0
-# ===========================================================================
 
 def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
                                   match_radius=0.005,
@@ -80,7 +78,7 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
   # Static cameras used for multi-frame verification only
   static_cams = [c for c in camera_ids if c != wrist_serial]
   if len(camera_ids) < 2:
-    print("  ⚠️ Need at least 2 cameras for consensus.")
+    print("  [WARN] Need at least 2 cameras for consensus.")
     return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
 
   print(f"  Querying at frame 0 on all {len(camera_ids)} cameras (dense)")
@@ -182,7 +180,7 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
       all_verified_rgb.append(rgb[verified])
 
   if not all_verified_pts:
-    print("  ⚠️ No cross-view verified points found.")
+    print("  [WARN] No cross-view verified points found.")
     return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
 
   # Concatenate and dedup (same 3D point may be verified from multiple cameras)
@@ -211,7 +209,7 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
         min_consistent_frames=max(1, len(keyframe_indices) // 2),
         safe_margin=safe_margin)
     print(f"  Multi-frame verification ({len(keyframe_indices)} keyframes): "
-          f"{n_before} → {len(dedup_pts)} points")
+          f"{n_before} -> {len(dedup_pts)} points")
 
   # Subsample to target number of points
   if num_points is not None and len(dedup_pts) > num_points:
@@ -221,7 +219,7 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     dedup_rgb = dedup_rgb[idx]
     print(f"  Subsampled to {num_points} points")
 
-  print(f"  ✅ Found {len(dedup_pts)} static background points")
+  print(f"  Found {len(dedup_pts)} static background points")
   return dedup_pts, dedup_rgb
 
 
@@ -312,10 +310,7 @@ def _verify_static_across_frames(pts, rgb, scene_constants, scene_state,
   keep = consistent_count >= min_consistent_frames
   return pts[keep], rgb[keep]
 
-
-# ===========================================================================
 # Phase 2: Project static 3D points to all views (static prior)
-# ===========================================================================
 
 def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
                                   pb_renderer, depth_tolerance=0.05,
@@ -347,9 +342,7 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
   N = len(static_pts_3d)
 
-  print(f"\n{'=' * 60}")
-  print(f"Phase 2: Project {N} Static Points → {len(camera_ids)} Views × {T_frames} Frames")
-  print(f"{'=' * 60}")
+  print(f"\nPhase 2: Project {N} Static Points -> {len(camera_ids)} Views x {T_frames} Frames")
 
   per_cam_tracks = {cam: np.zeros((T_frames, N, 2), dtype=np.float32) for cam in camera_ids}
   per_cam_vis = {cam: np.zeros((T_frames, N), dtype=bool) for cam in camera_ids}
@@ -381,7 +374,7 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
     for t in range(T_frames):
       ext = scene_state[cam_id]["extrinsics"][t]
 
-      # Project 3D → 2D
+      # Project 3D -> 2D
       u, v, z_pred = project_points(static_pts_3d, K, ext)
       tracks[t, :, 0] = u
       tracks[t, :, 1] = v
@@ -405,14 +398,11 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
     per_cam_vis[cam_id] = vis
 
     vis_rate = vis.mean() * 100
-    print(f"  ✅ [{cam_id}] avg visibility: {vis_rate:.1f}%")
+    print(f"  [{cam_id}] avg visibility: {vis_rate:.1f}%")
 
   return per_cam_tracks, per_cam_vis
 
-
-# ===========================================================================
 # Phase 3: Robot tracks via URDF FK (dense at t=0)
-# ===========================================================================
 
 def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
                         max_robot_pts_per_cam=None):
@@ -437,9 +427,7 @@ def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
 
-  print(f"\n{'=' * 60}")
-  print(f"Phase 3: URDF FK Robot Tracking (max {max_robot_pts_per_cam} pts/cam)")
-  print(f"{'=' * 60}")
+  print(f"\nPhase 3: URDF FK Robot Tracking (max {max_robot_pts_per_cam} pts/cam)")
 
   urdf_tracker = URDFKinematicsTracker(pb_renderer)
   robot_traj_3d_all = []
@@ -488,14 +476,11 @@ def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
         cam: np.zeros((T_frames, 0), dtype=bool)
         for cam in camera_ids}
     n_robot = 0
-    print("  ⚠️ No robot points extracted.")
+    print("  [WARN] No robot points extracted.")
 
   return robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis, n_robot
 
-
-# ===========================================================================
 # Phase 4: Merge static + robot tracks
-# ===========================================================================
 
 def phase4_merge(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
                  robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis,
@@ -513,9 +498,7 @@ def phase4_merge(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
   n_static = len(static_pts_3d)
   n_robot = robot_traj_3d.shape[1]
 
-  print(f"\n{'=' * 60}")
-  print("Phase 4: Merging Static Background + Robot Tracks")
-  print(f"{'=' * 60}")
+  print("\nPhase 4: Merging Static Background + Robot Tracks")
   print(f"  Static: {n_static} | Robot: {n_robot} | Total: {n_static + n_robot}")
 
   # Static 3D trajectory: constant across all frames
@@ -558,10 +541,7 @@ def phase4_merge(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
   return (final_traj_3d, final_vis_global, final_per_cam_tracks,
           final_per_cam_vis, n_static, n_robot)
 
-
-# ===========================================================================
 # Export (same format as compute_tracks.py)
-# ===========================================================================
 
 def export_tracks(scene_constants, scene_state, final_traj_3d,
                   final_vis_global, final_per_cam_tracks, final_per_cam_vis,
@@ -623,10 +603,7 @@ def export_tracks(scene_constants, scene_state, final_traj_3d,
   print(f"  Exported {N} tracks × {T} frames to {ep_dir}")
   return ep_dir
 
-
-# ===========================================================================
 # Full Pipeline
-# ===========================================================================
 
 def process_episode(episode_id, pb_renderer, device,
                     depth_root, extrinsics_root, export_root,
@@ -643,9 +620,7 @@ def process_episode(episode_id, pb_renderer, device,
     max_robot_pts_per_cam: Max robot surface points per source camera.
         Matches pipeline.ipynb default.
   """
-  print(f"\n{'=' * 60}")
-  print(f"Processing Episode: {episode_id}")
-  print(f"{'=' * 60}")
+  print(f"\nProcessing Episode: {episode_id}")
 
   # Load data (full video, no truncation)
   scene_constants = load_depth_data(episode_id, depth_root, load_video="full")
@@ -656,9 +631,7 @@ def process_episode(episode_id, pb_renderer, device,
   print(f"  {len(camera_ids)} cameras × {T_frames} frames (full video)")
 
   # Phase 1: Find static background points (t=0 only, dense)
-  print(f"\n{'=' * 60}")
-  print(f"Phase 1: Dense at t=0 -> Cross-View Consensus -> Static Points")
-  print(f"{'=' * 60}")
+  print(f"\nPhase 1: Dense at t=0 -> Cross-View Consensus -> Static Points")
   static_pts_3d, static_rgb = phase1_find_static_candidates(
       scene_constants, scene_state, pb_renderer,
       num_points=num_static_points)
@@ -693,14 +666,13 @@ def process_episode(episode_id, pb_renderer, device,
                 final_per_cam_tracks, final_per_cam_vis,
                 n_static, n_robot, export_root)
 
-  print(f"\n  ✅ Episode {episode_id}: {n_static} static + {n_robot} robot "
+  print(f"\n  Episode {episode_id}: {n_static} static + {n_robot} robot "
         f"= {n_static + n_robot} tracks exported.")
   return n_static + n_robot
 
 
-# ===========================================================================
 # Standalone CLI
-# ===========================================================================
+
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(
@@ -777,7 +749,7 @@ if __name__ == "__main__":
         f.write(ep_id + "\n")
         fcntl.flock(f, fcntl.LOCK_UN)
     except Exception as e:
-      print(f"  ❌ Episode {ep_id} failed: {e}")
+      print(f"  [FAIL] Episode {ep_id} failed: {e}")
       import traceback
       traceback.print_exc()
 
