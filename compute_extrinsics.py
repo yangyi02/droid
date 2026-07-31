@@ -16,6 +16,8 @@ import copy
 import gc
 import json
 import os
+import random
+import traceback
 
 import numpy as np
 import torch
@@ -448,7 +450,6 @@ if __name__ == "__main__":
       d for d in os.listdir(depth_abs)
       if os.path.isdir(os.path.join(depth_abs, d))
   ])
-  import random
   random.seed(42)
   random.shuffle(available_eps)
   if args.limit > 0:
@@ -503,7 +504,6 @@ if __name__ == "__main__":
 
     except Exception as e:
       print(f"  [FAIL] Episode {ep_id} failed: {e}")
-      import traceback
       traceback.print_exc()
 
     finally:

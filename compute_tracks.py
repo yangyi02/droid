@@ -26,6 +26,7 @@ Output format (same as v1 for downstream compatibility):
 import argparse
 import os
 import random
+import traceback
 
 import cv2
 import numpy as np
@@ -741,7 +742,6 @@ if __name__ == "__main__":
       succeeded_eps.append(ep_id)
     except Exception as e:
       print(f"  [FAIL] Episode {ep_id} failed: {e}")
-      import traceback
       traceback.print_exc()
 
   print(f"\nStage 3 v2 complete! "
