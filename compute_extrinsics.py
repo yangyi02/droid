@@ -231,8 +231,6 @@ def batched_chamfer_distance(p1, p2, device):
   return loss, overlap_ratio.item()
 
 
-
-
 def get_cam_points_local_t(t, cam_data, device, n_points=2000):
   """Extract downsampled scene point cloud from a single depth frame."""
   depth = cam_data["raw_depth"][t].astype(np.float32)

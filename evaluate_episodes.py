@@ -36,6 +36,8 @@ import pybullet as p
 import torch
 import torch.nn.functional as F
 
+from compute_extrinsics import (batched_chamfer_distance,
+                                get_cam_points_local_t)
 from core.geometry import project_points
 from core.io import load_depth_data, load_extrinsics, get_accelerator
 from core.physics import PyBulletRenderer
@@ -240,56 +242,6 @@ def compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K, batch_obs):
 
   diff = torch.abs(Z_obs_raw[valid_mask] - Z_pred[valid_mask])
   return torch.nan_to_num(diff.mean(), nan=0.0)
-
-
-# ===========================================================================
-# Chamfer environment point cloud helpers
-# ===========================================================================
-
-def batched_chamfer_distance(p1, p2, device):
-  """Truncated Chamfer distance with 5cm physical cutoff."""
-  dist_matrix = torch.cdist(p1, p2)
-  min_dist_12 = torch.min(dist_matrix, dim=2)[0]
-  min_dist_21 = torch.min(dist_matrix, dim=1)[0]
-
-  valid_12 = min_dist_12 < 0.05
-  valid_21 = min_dist_21 < 0.05
-
-  loss = torch.tensor(0.0, device=device)
-  if valid_12.any():
-    loss += min_dist_12[valid_12].mean()
-  if valid_21.any():
-    loss += min_dist_21[valid_21].mean()
-
-  overlap_ratio = (
-      (valid_12.sum() + valid_21.sum()) /
-      (p1.shape[0] * (p1.shape[1] + p2.shape[1]) + 1e-6)
-  )
-  return loss, overlap_ratio.item()
-
-
-def get_cam_points_local_t(t, cam_data, device, n_points=2000):
-  """Extract downsampled scene point cloud from a single depth frame."""
-  depth = cam_data["raw_depth"][t].astype(np.float32)
-  K_mat_np = cam_data["K_mat"]
-
-  valid_mask = (depth > 0.) & (depth < 1.5)
-  vs, us = np.where(valid_mask)
-  if len(us) < 100:
-    return None
-
-  zs_obs = depth[vs, us]
-  x_c = (us - K_mat_np[0, 2]) * zs_obs / K_mat_np[0, 0]
-  y_c = (vs - K_mat_np[1, 2]) * zs_obs / K_mat_np[1, 1]
-
-  P_cam = np.stack([x_c, y_c, zs_obs, np.ones_like(zs_obs)], axis=0)
-  if P_cam.shape[1] < 100:
-    return None
-
-  idx = np.random.choice(
-      P_cam.shape[1], n_points, replace=(P_cam.shape[1] <= n_points),
-  )
-  return torch.tensor(P_cam[:, idx], dtype=torch.float32, device=device)
 
 
 # ===========================================================================
