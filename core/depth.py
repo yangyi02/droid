@@ -134,18 +134,18 @@ def build_universal_gripper_mask(scene_constants, sam_predictor):
   """Build a universal static gripper mask from closed-gripper frames using SAM."""
   wrist_cam = scene_constants["meta"].get("wrist_serial")
   if wrist_cam is None or wrist_cam not in scene_constants["camera"]:
-    print("  ⚠️ No wrist camera found, skipping gripper mask extraction.")
+    print("  [WARN] No wrist camera found, skipping gripper mask extraction.")
     return scene_constants
 
   cam_data = scene_constants["camera"][wrist_cam]
   gripper_states = scene_constants["robot"].get("gripper_positions")
   if gripper_states is None:
-    print("  ⚠️ No gripper positions found, skipping gripper mask extraction.")
+    print("  [WARN] No gripper positions found, skipping gripper mask extraction.")
     return scene_constants
 
   closed_indices = np.where(gripper_states < 0.05)[0]
   if len(closed_indices) == 0:
-    print("  ⚠️ No closed-gripper frames found, skipping mask extraction.")
+    print("  [WARN] No closed-gripper frames found, skipping mask extraction.")
     return scene_constants
 
   print(f"  Building consensus gripper mask from {len(closed_indices)} closed-gripper frames...")
@@ -164,7 +164,7 @@ def build_universal_gripper_mask(scene_constants, sam_predictor):
       (n_frames, *final_mask.shape), dtype=bool
   )
   cam_data["sam_real_masks"][closed_indices] = final_mask
-  print(f"  ✅ Gripper consensus mask built and broadcast to {len(closed_indices)} frames.")
+  print(f"  Gripper consensus mask built and broadcast to {len(closed_indices)} frames.")
 
   return scene_constants
 
@@ -186,11 +186,11 @@ def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
 
   closed_indices = np.where(gripper_states < 0.05)[0]
   if len(closed_indices) == 0:
-    print("  ⚠️ No closed-gripper frames for depth distillation.")
+    print("  [WARN] No closed-gripper frames for depth distillation.")
     return scene_constants
 
   if "sam_real_masks" not in cam_data:
-    print("  ⚠️ No SAM masks found, skipping depth distillation.")
+    print("  [WARN] No SAM masks found, skipping depth distillation.")
     return scene_constants
 
   h, w = cam_data["video_rgb"][0].shape[:2]
@@ -212,7 +212,7 @@ def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
 
   median_depth = np.nan_to_num(median_depth, nan=0.0).astype(np.float32)
   cam_data["empirical_gripper_depth"] = median_depth
-  print("  ✅ Gripper depth distillation complete.")
+  print("  Gripper depth distillation complete.")
 
   return scene_constants
 
@@ -245,6 +245,6 @@ def inject_gripper_depth(scene_constants):
 
   replaced_pixels_per_frame = int(np.sum(valid_mask))
   total_replaced = len(closed_indices) * replaced_pixels_per_frame
-  print(f"  ✅ Injection complete! {total_replaced} noisy depth pixels replaced.")
+  print(f"  Injection complete! {total_replaced} noisy depth pixels replaced.")
 
   return scene_constants

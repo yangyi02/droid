@@ -126,7 +126,7 @@ def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
   """2D inspection of wrist gripper mask and depth refinement."""
   wrist_serial = scene_constants['meta'].get('wrist_serial')
   if not wrist_serial or wrist_serial not in scene_constants['camera']:
-    print("⚠️ No wrist camera found in scene_constants.")
+    print("[WARN] No wrist camera found in scene_constants.")
     return
 
   cam_data = scene_constants['camera'][wrist_serial]

@@ -35,7 +35,7 @@ class TensorRobotRenderer:
     self.device = device
     self.dtype = torch.float32
     self.total_samples = total_samples
-    print(f"⚡ [TensorRobotRenderer] Loading yourdfpy model from {urdf_path}...")
+    print(f"[TensorRobotRenderer] Loading yourdfpy model from {urdf_path}...")
     self.robot = yourdfpy.URDF.load(urdf_path)
 
     self.mesh_points = {}

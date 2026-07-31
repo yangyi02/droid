@@ -91,7 +91,7 @@ class URDFKinematicsTracker:
     robot_indices = np.where(is_robot_safe[v0, u0])[0]
 
     if len(robot_indices) == 0:
-      print("      ⚠️ No robot points found at t=0.")
+      print("      [WARN] No robot points found at t=0.")
       return None, None, None, None
 
     # Subsample if too many robot points

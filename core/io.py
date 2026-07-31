@@ -257,5 +257,5 @@ def load_extrinsics(scene_constants,
         "extrinsics": np.array(payload["extrinsics"], dtype=np.float32),
     }
 
-  print(f"  ✅ Loaded extrinsics for {len(scene_state)} cameras.")
+  print(f"  Loaded extrinsics for {len(scene_state)} cameras.")
   return scene_state
