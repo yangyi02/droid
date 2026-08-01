@@ -402,6 +402,9 @@ def export_extrinsics(scene_constants, scene_state,
     base_extrinsic  → (4x4) list-of-lists, static extrinsic matrix
     extrinsics      → (Nx4x4) list-of-lists, per-frame trajectory
     is_wrist        → bool
+
+  Returns:
+    ep_dir: Absolute path to the created episode output directory.
   """
   ep_str = scene_constants["meta"]["episode_id"]
   wrist_serial = scene_constants["meta"]["wrist_serial"]
@@ -426,6 +429,7 @@ def export_extrinsics(scene_constants, scene_state,
       json.dump(payload, f, indent=2)
 
   print(f"  Extrinsics saved to {ep_dir}/*/{fname}")
+  return ep_dir
 
 
 # Main Execution

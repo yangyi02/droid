@@ -303,7 +303,7 @@ def _write_mp4(path, frames, fps=10.0):
   writer.release()
 
 
-def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droid/depth"):
+def export_depth(scene_constants, export_root="~/droid_data/output/mv-tap/droid/depth"):
   """Export all videos, depth maps, calibration, and robot kinematics to disk.
 
   Episode directory layout:
@@ -318,12 +318,15 @@ def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droi
       gripper_mask.npz                - bool consensus SAM mask (wrist only)
       gripper_depth.npz               - uint16 distilled gripper surface depth (wrist only)
       calibration.npz                 - Full intrinsics: calibrated & raw K + distortion
-  """
-  ep_str = scene_constants["meta"]["episode_id"]
-  out_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_str)))
-  os.makedirs(out_dir, exist_ok=True)
 
-  print(f"  Exporting multi-view data to {out_dir}...")
+  Returns:
+    ep_dir: Absolute path to the created episode output directory.
+  """
+  ep_id = scene_constants["meta"]["episode_id"]
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_id)))
+  os.makedirs(ep_dir, exist_ok=True)
+
+  print(f"  Exporting multi-view data to {ep_dir}...")
 
   # Robot kinematics (episode-level)
   robot = scene_constants["robot"]
@@ -343,11 +346,11 @@ def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droi
       robot_save["valid_indices"] = meta["valid_indices"]
     if meta.get("wrist_serial") is not None:
       robot_save["wrist_serial"] = np.array(meta["wrist_serial"])
-    np.savez_compressed(os.path.join(out_dir, "robot.npz"), **robot_save)
+    np.savez_compressed(os.path.join(ep_dir, "robot.npz"), **robot_save)
 
   # Per-camera data
   for cam_id, data in scene_constants["camera"].items():
-    cam_dir = os.path.join(out_dir, str(cam_id))
+    cam_dir = os.path.join(ep_dir, str(cam_id))
     os.makedirs(cam_dir, exist_ok=True)
 
     # Videos: save all 4 streams (rectified + raw, left + right)
@@ -409,7 +412,7 @@ def export_to_disk(scene_constants, export_root="~/droid_data/output/mv-tap/droi
           baseline=np.array(data["baseline"], dtype=np.float32),
       )
 
-  return True
+  return ep_dir
 
 
 # Execution & Batched Slicing
@@ -473,7 +476,7 @@ if __name__ == "__main__":
       scene_constants = distill_empirical_gripper_depth(scene_constants)
       scene_constants = inject_gripper_depth(scene_constants)
 
-      export_to_disk(scene_constants)
+      export_depth(scene_constants)
       succeeded_eps.append(ep_id)
       print(f"  Episode {ep_id} completed successfully.")
     except Exception as e:

@@ -547,7 +547,11 @@ def export_tracks(scene_constants, scene_state, final_traj_3d,
                   final_vis_global, final_per_cam_tracks, final_per_cam_vis,
                   n_static, n_robot,
                   export_root="~/droid_data/output/mv-tap/droid/tracks"):
-  """Serialize tracking results to disk."""
+  """Serialize tracking results to disk.
+
+  Returns:
+    ep_dir: Absolute path to the created episode output directory.
+  """
   ep_id = scene_constants["meta"]["episode_id"]
   camera_ids = list(scene_constants["camera"].keys())
   ep_dir = os.path.abspath(
