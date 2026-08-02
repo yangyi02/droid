@@ -33,6 +33,12 @@ def init_all_models():
 
   # Inject third-party repo paths just-in-time
   vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party")
+  s2m2_src = os.path.join(vendor_dir, "s2m2/src")
+  if not os.path.exists(s2m2_src):
+    print(f"  [WARN] s2m2 source not found, initializing git submodule...")
+    root_dir = os.path.dirname(os.path.abspath(__file__))
+    os.system(f"cd '{root_dir}' && git submodule update --init --recursive")
+
   for pkg in ["s2m2/src"]:
     path = os.path.join(vendor_dir, pkg)
     if path not in sys.path:
