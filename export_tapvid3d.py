@@ -21,14 +21,14 @@ Usage (standalone):
   python export_tapvid3d.py \\
       --episode_id "ILIAD+5e938e3b+2023-07-20" \\
       --split_name droid \\
-      --output_root ~/tapvid3d_output
+      --output_root ~/droid_data/output/mv-tap/droid/tapvidmv
 
 Usage (from pipeline.ipynb / Python):
   from export_tapvid3d import export_to_tapvid3d
   export_to_tapvid3d(
       scene_constants, scene_state,
       final_traj_3d, final_per_cam_tracks, final_per_cam_vis,
-      output_root="~/tapvid3d_output", split_name="droid",
+      output_root="~/droid_data/output/mv-tap/droid/tapvidmv", split_name="droid",
       include_depth=True, include_foreground_mask=True)
 """
 
@@ -133,7 +133,7 @@ def export_to_tapvid3d(
     final_traj_3d,
     final_per_cam_tracks,
     final_per_cam_vis,
-    output_root="~/tapvid3d_output",
+    output_root="~/droid_data/output/mv-tap/droid/tapvidmv",
     split_name="droid",
     include_depth=True,
     include_foreground_mask=True,
@@ -323,7 +323,7 @@ if __name__ == "__main__":
   parser.add_argument("--split_name", type=str, default="droid",
                       help="Dataset split name (top-level directory)")
   parser.add_argument("--output_root", type=str,
-                      default="~/tapvid3d_output",
+                      default="~/droid_data/output/mv-tap/droid/tapvidmv",
                       help="Root output directory")
   parser.add_argument("--depth_root", type=str,
                       default="~/droid_data/output/mv-tap/droid/depth")
