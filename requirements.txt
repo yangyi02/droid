@@ -11,4 +11,5 @@ mediapy
 yourdfpy
 plotly
 pyrender
+open3d
 segment-anything @ git+https://github.com/facebookresearch/segment-anything.git
