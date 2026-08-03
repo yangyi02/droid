@@ -4,6 +4,7 @@
 #   bash run_parallel.sh                              # Compute depth, all episodes
 #   bash run_parallel.sh --mode extrinsics            # Compute extrinsics, all episodes
 #   bash run_parallel.sh --mode tracks                # Compute tracks, all episodes
+#   bash run_parallel.sh --mode export                # Export to TAPVid-3D format, all episodes
 #   bash run_parallel.sh --mode metrics               # Evaluate quality metrics, all episodes
 #   bash run_parallel.sh --limit 32                   # Limit to 32 episodes
 
@@ -35,8 +36,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$MODE" != "depth" && "$MODE" != "extrinsics" && "$MODE" != "tracks" && "$MODE" != "metrics" ]]; then
-    echo "❌ Invalid mode: $MODE (must be 'depth', 'extrinsics', 'tracks', or 'metrics')"
+if [[ "$MODE" != "depth" && "$MODE" != "extrinsics" && "$MODE" != "tracks" && "$MODE" != "metrics" && "$MODE" != "export" ]]; then
+    echo "❌ Invalid mode: $MODE (must be 'depth', 'extrinsics', 'tracks', 'metrics', or 'export')"
     exit 1
 fi
 
@@ -52,6 +53,9 @@ elif [[ "$MODE" == "extrinsics" ]]; then
 elif [[ "$MODE" == "metrics" ]]; then
     SCRIPT="evaluate_episodes.py"
     OP_NAME="evaluate_metrics"
+elif [[ "$MODE" == "export" ]]; then
+    SCRIPT="export_tapvid3d.py"
+    OP_NAME="export_tapvid3d"
 else
     SCRIPT="compute_tracks.py"
     OP_NAME="compute_tracks"
@@ -67,8 +71,8 @@ NUM_CPUS=$(nproc 2>/dev/null || echo 16)
 
 if [ -n "$JOBS" ]; then
     PARALLEL_JOBS="$JOBS"
-elif [[ "$MODE" == "tracks" ]]; then
-    # tracks is CPU-only, use 75% of available CPU cores (leaving headroom for IO)
+elif [[ "$MODE" == "tracks" || "$MODE" == "export" ]]; then
+    # tracks and export are CPU-only, use 75% of available CPU cores (leaving headroom for IO)
     PARALLEL_JOBS=$(( NUM_CPUS * 3 / 4 ))
     if [ "$PARALLEL_JOBS" -lt 1 ]; then PARALLEL_JOBS=1; fi
 else
