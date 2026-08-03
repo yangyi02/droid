@@ -144,9 +144,6 @@ def load_depth_data(episode_id, depth_root="~/droid_data/output/mv-tap/droid/dep
   ep_dir = os.path.abspath(
       os.path.expanduser(os.path.join(depth_root, episode_id))
   )
-  if not os.path.isdir(ep_dir):
-    raise FileNotFoundError(f"Depth output not found: {ep_dir}")
-
   print(f"  Loading depth data from {ep_dir}...")
 
   # --- Robot kinematics ---
@@ -165,56 +162,65 @@ def load_depth_data(episode_id, depth_root="~/droid_data/output/mv-tap/droid/dep
 
   valid_indices = robot_data.get("valid_indices")
 
-  # --- Per-camera data ---
-  camera = {}
+  # Discover camera subdirectories.
+  # Avoid per-entry os.path.isdir (slow on gcsfuse); filter by known
+  # non-directory filenames instead.
+  _NON_DIR_NAMES = {"robot.npz"}
   cam_dirs = [
       d for d in os.listdir(ep_dir)
-      if os.path.isdir(os.path.join(ep_dir, d))
+      if d not in _NON_DIR_NAMES and not d.endswith((".npz", ".json", ".txt"))
   ]
 
+  camera = {}
   for cam_id in sorted(cam_dirs):
     cam_path = os.path.join(ep_dir, cam_id)
     cam_data = {}
 
+    # Load files optimistically (try/except is faster than os.path.exists
+    # on gcsfuse mounts where each stat is a GCS API call).
+
     # Calibration
-    calib_path = os.path.join(cam_path, "calibration.npz")
-    if os.path.exists(calib_path):
-      calib = np.load(calib_path)
+    try:
+      calib = np.load(os.path.join(cam_path, "calibration.npz"))
       cam_data["K_mat"] = calib["K_calib_left"].astype(np.float32)
       if "baseline" in calib:
         cam_data["baseline"] = float(calib["baseline"])
+    except FileNotFoundError:
+      pass
 
     # Depth (uint16 mm → float32 meters)
-    depth_path = os.path.join(cam_path, "raw_depth.npz")
-    if os.path.exists(depth_path):
-      depth_uint16 = np.load(depth_path)["depth"]
+    try:
+      depth_uint16 = np.load(os.path.join(cam_path, "raw_depth.npz"))["depth"]
       cam_data["raw_depth"] = depth_uint16.astype(np.float32) / 1000.0
+    except FileNotFoundError:
+      pass
 
     # SAM gripper mask (wrist camera only, bool (T, H, W))
-    mask_path = os.path.join(cam_path, "gripper_mask.npz")
-    if os.path.exists(mask_path):
-      cam_data["sam_real_masks"] = np.load(mask_path)["mask"]
+    try:
+      cam_data["sam_real_masks"] = np.load(
+          os.path.join(cam_path, "gripper_mask.npz"))["mask"]
+    except FileNotFoundError:
+      pass
 
     # Video loading
     video_path = os.path.join(cam_path, "video_left.mp4")
-    if os.path.exists(video_path):
-      if load_video == "first_frame":
-        cap = cv2.VideoCapture(video_path)
+    if load_video == "first_frame":
+      cap = cv2.VideoCapture(video_path)
+      ret, frame = cap.read()
+      cap.release()
+      if ret:
+        cam_data["first_frame_rgb"] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    elif load_video == "full":
+      cap = cv2.VideoCapture(video_path)
+      frames = []
+      while True:
         ret, frame = cap.read()
-        cap.release()
-        if ret:
-          cam_data["first_frame_rgb"] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-      elif load_video == "full":
-        cap = cv2.VideoCapture(video_path)
-        frames = []
-        while True:
-          ret, frame = cap.read()
-          if not ret:
-            break
-          frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        cap.release()
-        if frames:
-          cam_data["video_rgb"] = np.array(frames, dtype=np.uint8)
+        if not ret:
+          break
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+      cap.release()
+      if frames:
+        cam_data["video_rgb"] = np.array(frames, dtype=np.uint8)
 
     camera[cam_id] = cam_data
 
@@ -245,8 +251,6 @@ def load_extrinsics(scene_constants,
   scene_state = {}
   for cam_id in scene_constants["camera"]:
     cam_ext_path = os.path.join(ep_dir, cam_id, "extrinsics.json")
-    if not os.path.exists(cam_ext_path):
-      raise FileNotFoundError(f"Extrinsics not found: {cam_ext_path}")
 
     with open(cam_ext_path, "r") as f:
       payload = json.load(f)

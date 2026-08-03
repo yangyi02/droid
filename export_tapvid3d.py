@@ -367,14 +367,14 @@ if __name__ == "__main__":
     # on episodes assigned to other ranks)
     target_eps = available_eps[args.rank::args.world_size]
 
-    # Skip episodes that already have output (resume-friendly)
-    todo_eps = []
-    for ep_id in target_eps:
-      ep_out = os.path.join(output_abs, args.split_name, ep_id,
-                            "tracks_xyz.npy")
-      if os.path.exists(ep_out):
-        continue
-      todo_eps.append(ep_id)
+    # Skip episodes that already have output (resume-friendly).
+    # Use a single listdir instead of per-episode os.path.exists (gcsfuse).
+    done_dir = os.path.join(output_abs, args.split_name)
+    if os.path.isdir(done_dir):
+      done_eps = set(os.listdir(done_dir))
+    else:
+      done_eps = set()
+    todo_eps = [ep for ep in target_eps if ep not in done_eps]
 
     print(f"Rank {args.rank}/{args.world_size}: "
           f"{len(todo_eps)} episodes to export "
