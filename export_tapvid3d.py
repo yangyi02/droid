@@ -347,13 +347,14 @@ if __name__ == "__main__":
     process_episode(args.episode_id, args)
   else:
     # Batch mode: discover episodes from tracks output
+    # NOTE: avoid per-entry os.path.isdir / os.path.exists here — on gcsfuse
+    # mounts each call is a GCS API request and thousands of them stall.
+    # Instead, just list directory names and handle missing files in
+    # process_episode.
     tracks_abs = os.path.abspath(os.path.expanduser(args.tracks_root))
     output_abs = os.path.abspath(os.path.expanduser(args.output_root))
-    available_eps = sorted([
-        d for d in os.listdir(tracks_abs)
-        if os.path.isdir(os.path.join(tracks_abs, d))
-        and os.path.exists(os.path.join(tracks_abs, d, "tracks_3d.npz"))
-    ])
+    available_eps = sorted(os.listdir(tracks_abs))
+    print(f"Discovered {len(available_eps)} episodes in {tracks_abs}")
 
     # Deterministic shuffle for load balancing across ranks
     random.seed(42)
@@ -362,7 +363,8 @@ if __name__ == "__main__":
     if args.limit > 0:
       available_eps = available_eps[:args.limit]
 
-    # Shard across ranks
+    # Shard across ranks (shard BEFORE resume check to avoid slow stat calls
+    # on episodes assigned to other ranks)
     target_eps = available_eps[args.rank::args.world_size]
 
     # Skip episodes that already have output (resume-friendly)
