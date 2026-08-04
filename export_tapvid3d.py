@@ -20,7 +20,6 @@ pixel). Projection: x = fx * X/Z + cx, y = fy * Y/Z + cy.
 Usage (standalone):
   python export_tapvid3d.py \\
       --episode_id "ILIAD+5e938e3b+2023-07-20" \\
-      --split_name droid \\
       --output_root ~/droid_data/output/mv-tap/droid/tapvidmv
 
 Usage (from pipeline.ipynb / Python):
@@ -28,7 +27,7 @@ Usage (from pipeline.ipynb / Python):
   export_to_tapvid3d(
       scene_constants, scene_state,
       final_traj_3d, final_per_cam_tracks, final_per_cam_vis,
-      output_root="~/droid_data/output/mv-tap/droid/tapvidmv", split_name="droid",
+      output_root="~/droid_data/output/mv-tap/droid/tapvidmv",
       include_depth=True, include_foreground_mask=True)
 """
 
@@ -134,7 +133,6 @@ def export_to_tapvid3d(
     final_per_cam_tracks,
     final_per_cam_vis,
     output_root="~/droid_data/output/mv-tap/droid/tapvidmv",
-    split_name="droid",
     include_depth=True,
     include_foreground_mask=True,
     jpeg_quality=95,
@@ -150,7 +148,6 @@ def export_to_tapvid3d(
     final_per_cam_tracks: {cam_id: (F, P, 2) float32} per-view 2D tracks.
     final_per_cam_vis: {cam_id: (F, P) bool} per-view visibility.
     output_root: Root directory for output.
-    split_name: Dataset split name (top-level directory).
     include_depth: Whether to export depth.npy per view.
     include_foreground_mask: Whether to export foreground_mask.npy per view
         (only for wrist camera where SAM masks are available).
@@ -180,7 +177,7 @@ def export_to_tapvid3d(
 
   # --- Output directory ---
   seq_dir = os.path.abspath(os.path.expanduser(
-      os.path.join(output_root, split_name, episode_id)))
+      os.path.join(output_root, episode_id)))
   os.makedirs(seq_dir, exist_ok=True)
 
   # --- Shared files (sequence level) ---
@@ -291,7 +288,6 @@ def process_episode(episode_id, args):
       final_per_cam_tracks=final_per_cam_tracks,
       final_per_cam_vis=final_per_cam_vis,
       output_root=args.output_root,
-      split_name=args.split_name,
       include_depth=not args.no_depth,
       include_foreground_mask=not args.no_foreground_mask,
       jpeg_quality=args.jpeg_quality,
@@ -320,8 +316,6 @@ if __name__ == "__main__":
   parser.add_argument("--episode_id", type=str, default=None,
                       help="Process a single episode (overrides discovery)")
   # Paths
-  parser.add_argument("--split_name", type=str, default="droid",
-                      help="Dataset split name (top-level directory)")
   parser.add_argument("--output_root", type=str,
                       default="~/droid_data/output/mv-tap/droid/tapvidmv",
                       help="Root output directory")
@@ -369,7 +363,7 @@ if __name__ == "__main__":
 
     # Skip episodes that already have output (resume-friendly).
     # Use a single listdir instead of per-episode os.path.exists (gcsfuse).
-    done_dir = os.path.join(output_abs, args.split_name)
+    done_dir = output_abs
     if os.path.isdir(done_dir):
       done_eps = set(os.listdir(done_dir))
     else:
