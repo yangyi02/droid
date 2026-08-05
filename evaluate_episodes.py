@@ -1008,16 +1008,14 @@ def main():
   output_dir = os.path.abspath(os.path.expanduser(args.output_dir))
   os.makedirs(output_dir, exist_ok=True)
 
-  # Find episodes that have both depth and extrinsics
-  depth_eps = set(d for d in os.listdir(depth_abs)
-                  if os.path.isdir(os.path.join(depth_abs, d)))
-  ext_eps = set(d for d in os.listdir(ext_abs)
-                if os.path.isdir(os.path.join(ext_abs, d)))
+  # Find episodes that have both depth and extrinsics.
+  # Avoid per-entry os.path.isdir (slow on gcsfuse); just use listdir.
+  depth_eps = set(os.listdir(depth_abs))
+  ext_eps = set(os.listdir(ext_abs))
   available_eps = sorted(depth_eps & ext_eps)
 
   if args.require_tracks and os.path.exists(tracks_abs):
-    tracks_eps = set(d for d in os.listdir(tracks_abs)
-                     if os.path.isdir(os.path.join(tracks_abs, d)))
+    tracks_eps = set(os.listdir(tracks_abs))
     available_eps = sorted(set(available_eps) & tracks_eps)
 
   print(f"Found {len(available_eps)} episodes with depth + extrinsics")
