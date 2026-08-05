@@ -175,7 +175,7 @@ def main():
   args = parser.parse_args()
 
   # Load
-  rows = load_metrics(args.input)
+  rows = load_metrics(os.path.expanduser(args.input))
 
   # Filter
   filtered = apply_quality_filter(
@@ -199,16 +199,16 @@ def main():
   # Select
   selected = stratified_sample(filtered, args.n, seed=args.seed)
 
-  # Write episode list
-  os.makedirs(args.output_dir, exist_ok=True)
-  list_path = os.path.join(args.output_dir, f"episodes_eval{args.n}.txt")
+  output_dir = os.path.expanduser(args.output_dir)
+  os.makedirs(output_dir, exist_ok=True)
+  list_path = os.path.join(output_dir, f"episodes_eval{args.n}.txt")
   with open(list_path, "w") as f:
     for row in selected:
       f.write(row["episode_id"] + "\n")
   print(f"\nEpisode list: {list_path}")
 
   # Write detailed CSV
-  csv_path = os.path.join(args.output_dir, f"episodes_eval{args.n}_details.csv")
+  csv_path = os.path.join(output_dir, f"episodes_eval{args.n}_details.csv")
   with open(csv_path, "w", newline="") as f:
     writer = csv.DictWriter(f, fieldnames=sorted(selected[0].keys()))
     writer.writeheader()
