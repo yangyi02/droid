@@ -65,17 +65,15 @@ def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):
       "all_completed": sorted(depth_eps & ext_eps & track_eps),
   }
 
-# Per-Episode Stats (merged I/O + vectorized reproj)
 
-# Reprojection error computation lives in evaluate_episodes
-from evaluate_episodes import compute_reprojection_error
+# Per-Episode Stats (merged I/O)
 
 
 def compute_all_episode_stats(episode_id, tracks_root, depth_root):
   """Compute ALL statistics for a single episode in one pass.
 
-  Merges track stats, reprojection error, and multi-view consistency
-  into a single function to avoid redundant file I/O.
+  Merges track stats and multi-view consistency into a single function
+  to avoid redundant file I/O.
   """
   tracks_dir = os.path.abspath(
       os.path.expanduser(os.path.join(tracks_root, episode_id)))
@@ -149,15 +147,11 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
   ])
   stats["n_cameras"] = len(cam_dirs)
 
-  cam_vis_list = []       # for multi-view consistency
-  all_reproj_errors = []  # for reprojection error
+  cam_vis_list = []  # for multi-view consistency
 
   for cam_dir_name in cam_dirs:
     cam_dir = os.path.join(tracks_dir, cam_dir_name)
-
     tracks_2d_path = os.path.join(cam_dir, "tracks_2d.npz")
-    intrinsics_path = os.path.join(cam_dir, "intrinsics.npy")
-    extrinsics_path = os.path.join(cam_dir, "extrinsics_w2c.npy")
 
     if not os.path.exists(tracks_2d_path):
       continue
@@ -165,17 +159,6 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
     cam_data = np.load(tracks_2d_path)
     vis_2d = cam_data["vis_2d"]  # (T, N)
     cam_vis_list.append(vis_2d)
-
-    # Reprojection error (vectorized)
-    if os.path.exists(intrinsics_path) and os.path.exists(extrinsics_path):
-      traj_2d = cam_data["traj_2d"]
-      intrinsics = np.load(intrinsics_path)
-      extrinsics_w2c = np.load(extrinsics_path)
-
-      errs = compute_reprojection_error(
-          traj_3d, traj_2d, vis_2d, intrinsics, extrinsics_w2c)
-      if len(errs) > 0:
-        all_reproj_errors.append(errs)
 
   # ---- Multi-view consistency ----
   if cam_vis_list:
@@ -197,15 +180,6 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
       stats["avg_cameras_per_visible_obs"] = 0.0
       stats["pct_multi_view"] = 0.0
 
-  # ---- Reprojection error ----
-  if all_reproj_errors:
-    all_errs = np.concatenate(all_reproj_errors)
-    stats["reproj_mean_px"] = float(np.mean(all_errs))
-    stats["reproj_median_px"] = float(np.median(all_errs))
-    stats["reproj_p95_px"] = float(np.percentile(all_errs, 95))
-    stats["reproj_p99_px"] = float(np.percentile(all_errs, 99))
-    stats["reproj_n_measurements"] = int(len(all_errs))
-
   # ---- Disk usage ----
   total_bytes = 0
   n_files = 0
@@ -223,7 +197,8 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
 def _worker(episode_id, tracks_root, depth_root):
   """Subprocess-safe wrapper."""
   try:
-    return compute_all_episode_stats(episode_id, tracks_root, depth_root)
+    return compute_all_episode_stats(
+        episode_id, tracks_root, depth_root)
   except Exception as e:
     return {"episode_id": episode_id, "_error": str(e)}
 
@@ -245,6 +220,9 @@ def main():
                       help="Max episodes to analyze (-1 = all)")
   parser.add_argument("--workers", type=int, default=0,
                       help="Parallel workers (0 = auto = num CPUs)")
+  parser.add_argument("--metrics_csv", type=str, default="",
+                      help="Optional path to metrics.csv from evaluate_episodes.py "
+                           "to integrate depth residual and extrinsics quality into summary.")
   args = parser.parse_args()
 
   output_dir = os.path.abspath(args.output_dir)
@@ -319,23 +297,6 @@ def main():
       }
   summary["track_stats"] = agg
 
-  # Reprojection error summary
-  reproj_means = [s["reproj_mean_px"] for s in all_stats
-                   if "reproj_mean_px" in s]
-  reproj_medians = [s["reproj_median_px"] for s in all_stats
-                     if "reproj_median_px" in s]
-  reproj_p95s = [s["reproj_p95_px"] for s in all_stats
-                  if "reproj_p95_px" in s]
-  if reproj_means:
-    summary["reprojection_error"] = {
-        "mean_of_means_px": round(float(np.mean(reproj_means)), 2),
-        "mean_of_medians_px": round(float(np.mean(reproj_medians)), 2),
-        "mean_of_p95_px": round(float(np.mean(reproj_p95s)), 2),
-        "worst_episode_mean_px": round(float(np.max(reproj_means)), 2),
-        "best_episode_mean_px": round(float(np.min(reproj_means)), 2),
-        "n_episodes": len(reproj_means),
-    }
-
   # Multi-view consistency summary
   pcts = [s["pct_multi_view"] for s in all_stats
           if "pct_multi_view" in s]
@@ -347,6 +308,57 @@ def main():
         "avg_cameras_per_visible_point": round(float(np.mean(avg_cams)), 2),
         "n_episodes": len(pcts),
     }
+
+  # Depth residual and extrinsics quality from metrics.csv (if provided)
+  metrics_csv_path = os.path.abspath(os.path.expanduser(args.metrics_csv)) if args.metrics_csv else ""
+  if metrics_csv_path and os.path.exists(metrics_csv_path):
+    print(f"\nIntegrating metrics from {metrics_csv_path}...")
+    try:
+      with open(metrics_csv_path, "r") as f:
+        reader = csv.DictReader(f)
+        metric_rows = list(reader)
+
+      def _extract_metric(key):
+        vals = []
+        for r in metric_rows:
+          v = r.get(key, "")
+          if v and v != "nan":
+            try:
+              vals.append(float(v))
+            except ValueError:
+              pass
+        return vals
+
+      s_med = _extract_metric("depth_residual_static_median_mm")
+      s_mean = _extract_metric("depth_residual_static_mean_mm")
+      r_med = _extract_metric("depth_residual_robot_median_mm")
+      r_mean = _extract_metric("depth_residual_robot_mean_mm")
+      o_med = _extract_metric("depth_residual_overall_median_mm")
+      o_mean = _extract_metric("depth_residual_overall_mean_mm")
+
+      if o_med or s_med or r_med:
+        summary["depth_residual_mm"] = {
+            "description": "Predicted 3D depth vs raw sensor depth (primary self-consistency metric).",
+            "static_median": round(float(np.median(s_med)), 2) if s_med else None,
+            "static_mean": round(float(np.mean(s_mean)), 2) if s_mean else None,
+            "robot_median": round(float(np.median(r_med)), 2) if r_med else None,
+            "robot_mean": round(float(np.mean(r_mean)), 2) if r_mean else None,
+            "overall_median": round(float(np.median(o_med)), 2) if o_med else None,
+            "overall_mean": round(float(np.mean(o_mean)), 2) if o_mean else None,
+            "n_episodes": len(o_med) if o_med else len(s_med),
+        }
+
+      chamfer = _extract_metric("chamfer_total")
+      overlap = _extract_metric("bg_overlap_pct")
+      if chamfer:
+        summary["extrinsics_quality"] = {
+            "chamfer_total_mean": round(float(np.mean(chamfer)), 4),
+            "chamfer_total_median": round(float(np.median(chamfer)), 4),
+            "bg_overlap_pct_mean": round(float(np.mean(overlap)), 2) if overlap else None,
+            "n_episodes": len(chamfer),
+        }
+    except Exception as e:
+      print(f"  [WARN] Failed to parse metrics_csv: {e}")
 
   # Disk usage summary
   tracks_mbs = [s["tracks_size_mb"] for s in all_stats
