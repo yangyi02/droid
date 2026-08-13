@@ -334,26 +334,8 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
       except Exception as e:
         metrics[f"robot_loss_{key_prefix}"] = float("nan")
 
-  # --- Chamfer losses ---
+  # --- Chamfer losses (per-frame loop to avoid OOM on torch.cdist) ---
   try:
-    cache_Pc1, cache_Pc2, cache_Pcw, cache_Tee = [], [], [], []
-    for t in range(n_frames):
-      pc1 = get_cam_points_local_t(t, scene_constants["camera"][cam1], device, n_points=5000)
-      pc2 = get_cam_points_local_t(t, scene_constants["camera"][cam2], device, n_points=5000)
-      pcw = get_cam_points_local_t(
-          t, scene_constants["camera"][wrist_cam], device, n_points=5000)
-      if pc1 is not None and pc2 is not None and pcw is not None:
-        cache_Pc1.append(pc1)
-        cache_Pc2.append(pc2)
-        cache_Pcw.append(pcw)
-        cache_Tee.append(
-            torch.tensor(T_ee_all[t], dtype=torch.float32, device=device))
-
-    batch_Pc1 = torch.stack(cache_Pc1)
-    batch_Pc2 = torch.stack(cache_Pc2)
-    batch_Pcw = torch.stack(cache_Pcw)
-    batch_Tee = torch.stack(cache_Tee)
-
     T1 = torch.tensor(
         scene_state[cam1]["base_extrinsic"],
         dtype=torch.float32, device=device)
@@ -364,19 +346,45 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
         scene_state[wrist_cam]["base_extrinsic"],
         dtype=torch.float32, device=device)
 
-    bc1 = (T1 @ batch_Pc1)[:, :3, :].transpose(1, 2)
-    bc2 = (T2 @ batch_Pc2)[:, :3, :].transpose(1, 2)
-    bcw = torch.bmm(batch_Tee @ Tw, batch_Pcw)[:, :3, :].transpose(1, 2)
+    sum_l12, sum_l1w, sum_l2w = 0.0, 0.0, 0.0
+    sum_o12, sum_o1w, sum_o2w = 0.0, 0.0, 0.0
+    n_valid = 0
 
-    l12, o12 = batched_chamfer_distance(bc1, bc2, device)
-    l1w, o1w = batched_chamfer_distance(bc1, bcw, device)
-    l2w, o2w = batched_chamfer_distance(bc2, bcw, device)
+    for t in range(n_frames):
+      pc1 = get_cam_points_local_t(t, scene_constants["camera"][cam1], device, n_points=5000)
+      pc2 = get_cam_points_local_t(t, scene_constants["camera"][cam2], device, n_points=5000)
+      pcw = get_cam_points_local_t(
+          t, scene_constants["camera"][wrist_cam], device, n_points=5000)
+      if pc1 is None or pc2 is None or pcw is None:
+        continue
 
-    metrics["chamfer_12"] = l12.item()
-    metrics["chamfer_1w"] = l1w.item()
-    metrics["chamfer_2w"] = l2w.item()
-    metrics["chamfer_total"] = (l12 + l1w + l2w).item()
-    metrics["bg_overlap_pct"] = (o12 + o1w + o2w) / 3.0 * 100
+      T_ee_t = torch.tensor(T_ee_all[t], dtype=torch.float32, device=device)
+
+      # Transform to world frame: (4,4) @ (4, N) -> take xyz -> (N, 3)
+      w1 = (T1 @ pc1)[:3, :].T.unsqueeze(0)    # (1, N, 3)
+      w2 = (T2 @ pc2)[:3, :].T.unsqueeze(0)
+      ww = ((T_ee_t @ Tw) @ pcw)[:3, :].T.unsqueeze(0)
+
+      l12, o12 = batched_chamfer_distance(w1, w2, device)
+      l1w, o1w = batched_chamfer_distance(w1, ww, device)
+      l2w, o2w = batched_chamfer_distance(w2, ww, device)
+
+      sum_l12 += l12.item()
+      sum_l1w += l1w.item()
+      sum_l2w += l2w.item()
+      sum_o12 += o12
+      sum_o1w += o1w
+      sum_o2w += o2w
+      n_valid += 1
+
+    if n_valid == 0:
+      raise ValueError("No valid frames for Chamfer evaluation")
+
+    metrics["chamfer_12"] = sum_l12 / n_valid
+    metrics["chamfer_1w"] = sum_l1w / n_valid
+    metrics["chamfer_2w"] = sum_l2w / n_valid
+    metrics["chamfer_total"] = (sum_l12 + sum_l1w + sum_l2w) / n_valid
+    metrics["bg_overlap_pct"] = (sum_o12 + sum_o1w + sum_o2w) / (3.0 * n_valid) * 100
   except Exception as e:
     metrics["chamfer_total"] = float("nan")
     metrics["bg_overlap_pct"] = float("nan")
