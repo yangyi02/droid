@@ -41,7 +41,6 @@ from core.tracking import URDFKinematicsTracker
 
 def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
                                   match_radius=0.005,
-                                  num_verify_keyframes=5,
                                   num_points=None,
                                   safe_margin=15):
   """Find reliable static background 3D points via cross-view depth consensus.
@@ -55,17 +54,16 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
   across views. A point is verified if at least one other camera's depth map
   agrees with its predicted depth.
 
-  Finally, candidate points are verified across multiple keyframes: a point
-  is kept only if its projected depth matches the observed depth in at least
-  one static camera for enough keyframes (proving it is truly static).
+  Finally, candidate points are verified across ALL frames: a point is kept
+  only if its projected depth matches the observed depth in at least one
+  static camera for every single frame. This filters out objects that appear
+  static at t=0 but later move (e.g. grasped objects).
 
   Args:
     scene_constants: Scene data dict.
     scene_state: Extrinsics dict.
     pb_renderer: PyBulletRenderer instance.
     match_radius: Max depth discrepancy (m) for cross-view agreement.
-    num_verify_keyframes: Number of keyframes for multi-frame static
-        verification (not for querying new points).
     safe_margin: Dilation kernel size for robot mask.
 
   Returns:
@@ -193,23 +191,18 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
   if len(dedup_pts) < len(all_pts):
     print(f"  After dedup: {len(dedup_pts)}")
 
-  # Multi-frame static verification (query is still only t=0, but we
-  # verify that each candidate 3D point has consistent depth across
-  # multiple keyframes to filter out non-static objects)
+  # Full-video static verification: check EVERY frame, require ALL frames
+  # to pass. A point must be depth-consistent in at least one static camera
+  # at every frame to be considered truly static.
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
-  if num_verify_keyframes > 1 and T_frames > 1:
-    keyframe_indices = np.linspace(0, T_frames - 1, num_verify_keyframes,
-                                   dtype=int).tolist()
-    keyframe_indices = sorted(set(keyframe_indices))
-    n_before = len(dedup_pts)
-    dedup_pts, dedup_rgb = _verify_static_across_frames(
-        dedup_pts, dedup_rgb, scene_constants, scene_state,
-        static_cams, keyframe_indices, pb_renderer,
-        depth_tolerance=0.03,
-        min_consistent_frames=max(1, len(keyframe_indices) // 2),
-        safe_margin=safe_margin)
-    print(f"  Multi-frame verification ({len(keyframe_indices)} keyframes): "
-          f"{n_before} -> {len(dedup_pts)} points")
+  n_before = len(dedup_pts)
+  dedup_pts, dedup_rgb = _verify_static_across_frames(
+      dedup_pts, dedup_rgb, scene_constants, scene_state,
+      static_cams, list(range(T_frames)), pb_renderer,
+      depth_tolerance=0.05,
+      safe_margin=safe_margin)
+  print(f"  Static verification (all {T_frames} frames required): "
+        f"{n_before} -> {len(dedup_pts)} points")
 
   # Subsample to target number of points
   if num_points is not None and len(dedup_pts) > num_points:
@@ -251,15 +244,14 @@ def _voxel_dedup(pts, rgb, voxel_size=0.01):
 
 def _verify_static_across_frames(pts, rgb, scene_constants, scene_state,
                                   static_cams, keyframe_indices, pb_renderer,
-                                  depth_tolerance=0.03,
-                                  min_consistent_frames=2,
+                                  depth_tolerance=0.05,
                                   safe_margin=15):
   """Verify that candidate static points are depth-consistent across frames.
 
   For each candidate 3D point (discovered at t=0), project it into every
-  static camera at every keyframe and check whether the observed depth matches
+  static camera at every frame and check whether the observed depth matches
   the predicted depth. A point is kept only if it passes this check in at
-  least one camera for at least min_consistent_frames keyframes.
+  least one camera for every single frame.
 
   This filters out objects that appeared static at t=0 but later moved.
   No new query points are generated — this is purely a verification step.
@@ -268,6 +260,7 @@ def _verify_static_across_frames(pts, rgb, scene_constants, scene_state,
   if N == 0:
     return pts, rgb
 
+  n_frames = len(keyframe_indices)
   consistent_count = np.zeros(N, dtype=int)
 
   for t_k in keyframe_indices:
@@ -307,7 +300,7 @@ def _verify_static_across_frames(pts, rgb, scene_constants, scene_state,
 
     consistent_count += any_cam_ok.astype(int)
 
-  keep = consistent_count >= min_consistent_frames
+  keep = consistent_count >= n_frames
   return pts[keep], rgb[keep]
 
 # Phase 2: Project static 3D points to all views (static prior)
