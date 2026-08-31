@@ -1,12 +1,15 @@
 #!/bin/bash
 # Multi-GPU parallel runner for DROID processing pipeline
 # Usage:
-#   bash run_parallel.sh                              # Compute depth, all episodes
-#   bash run_parallel.sh --mode extrinsics            # Compute extrinsics, all episodes
-#   bash run_parallel.sh --mode tracks                # Compute tracks, all episodes
-#   bash run_parallel.sh --mode export                # Export to TAPVid-3D format, all episodes
-#   bash run_parallel.sh --mode metrics               # Evaluate quality metrics, all episodes
-#   bash run_parallel.sh --limit 32                   # Limit to 32 episodes
+#   bash scripts/run_parallel.sh                              # Compute depth, all episodes
+#   bash scripts/run_parallel.sh --mode extrinsics            # Compute extrinsics, all episodes
+#   bash scripts/run_parallel.sh --mode tracks                # Compute tracks, all episodes
+#   bash scripts/run_parallel.sh --mode export                # Export to TAPVid-3D format, all episodes
+#   bash scripts/run_parallel.sh --mode metrics               # Evaluate quality metrics, all episodes
+#   bash scripts/run_parallel.sh --limit 32                   # Limit to 32 episodes
+
+# Run from the repo root so the pipeline scripts and joblog resolve there.
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # ---------------------------------------------------------
 # 1. Parse arguments

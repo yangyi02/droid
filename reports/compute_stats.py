@@ -2,13 +2,13 @@
 """Compute dataset statistics and evaluation metrics for the DROID tech report.
 
 Usage (from the droid/ directory):
-  python tech_report/compute_stats.py                          # default paths
-  python tech_report/compute_stats.py --tracks_root /path/to   # custom paths
-  python tech_report/compute_stats.py --max_episodes 200       # quick subset
-  python tech_report/compute_stats.py --workers 16             # parallelism
+  python reports/compute_stats.py                          # default paths
+  python reports/compute_stats.py --tracks_root /path/to   # custom paths
+  python reports/compute_stats.py --max_episodes 200       # quick subset
+  python reports/compute_stats.py --workers 16             # parallelism
 
 Outputs:
-  tech_report/stats_output/
+  reports/stats_output/
     dataset_summary.json        — aggregate statistics
     per_episode_stats.csv       — per-episode breakdown
     failure_analysis.json       — failure analysis
@@ -24,8 +24,8 @@ from functools import partial
 import numpy as np
 from tqdm import tqdm
 
-# tech_report/ sits one level below the repo root and this script runs as
-# `python tech_report/compute_stats.py`, which puts tech_report/ — not the repo
+# reports/ sits one level below the repo root and this script runs as
+# `python reports/compute_stats.py`, which puts reports/ — not the repo
 # root — on sys.path. So resolve the data root here instead of importing the
 # canonical one from core.io; keep it in step with core.io.DATA_ROOT.
 OUTPUT_ROOT = os.path.join(
@@ -223,7 +223,9 @@ def main():
   parser.add_argument("--tracks_root", type=str,
                       default=os.path.join(OUTPUT_ROOT, "tracks"))
   parser.add_argument("--output_dir", type=str,
-                      default="tech_report/stats_output")
+                      default=os.path.join(
+                          os.path.dirname(os.path.abspath(__file__)),
+                          "stats_output"))
   parser.add_argument("--max_episodes", type=int, default=-1,
                       help="Max episodes to analyze (-1 = all)")
   parser.add_argument("--workers", type=int, default=0,

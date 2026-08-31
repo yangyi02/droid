@@ -11,18 +11,18 @@ git clone --recurse-submodules https://github.com/yangyi02/droid.git
 cd droid
 
 # 2. Install dependencies + download model weights
-bash setup.sh
+bash scripts/setup.sh
 
 # 3. Mount GCS input/output buckets
-bash mount_gcs.sh
+bash scripts/mount_gcs.sh
 
 # 4. Run pipeline (3 stages)
-bash run_parallel.sh                    # Stage 1: depth
-bash run_parallel.sh --mode extrinsics  # Stage 2: extrinsics
-bash run_parallel.sh --mode tracks      # Stage 3: tracks
+bash scripts/run_parallel.sh                    # Stage 1: depth
+bash scripts/run_parallel.sh --mode extrinsics  # Stage 2: extrinsics
+bash scripts/run_parallel.sh --mode tracks      # Stage 3: tracks
 ```
 
-> If you cloned **without** `--recurse-submodules`, run `bash setup.sh` —
+> If you cloned **without** `--recurse-submodules`, run `bash scripts/setup.sh` —
 > it calls `git submodule update --init --recursive` automatically.
 
 ## Pipeline Overview
@@ -110,10 +110,15 @@ droid/
 │   ├── physics.py             #   TensorRobotRenderer + PyBulletRenderer
 │   ├── tracking.py            #   URDFKinematicsTracker (FK propagation + visibility)
 │   └── visualization.py       #   Visualization helpers (point clouds, tracking videos, 4D orbit)
-├── pipeline.ipynb             # Interactive Colab notebook (flag-based execution flow)
-├── run_parallel.sh            # Multi-GPU parallel runner
-├── setup.sh                   # One-shot dependency + weights setup
-├── mount_gcs.sh               # GCS bucket mount helper
+├── notebooks/                 # Jupyter/Colab notebooks
+│   ├── pipeline.ipynb         #   Interactive pipeline (flag-based execution flow)
+│   └── ...                    #   Archived experiment notebooks
+├── scripts/                   # Shell entry points (run from the repo root)
+│   ├── run_parallel.sh        #   Multi-GPU parallel runner
+│   ├── setup.sh               #   One-shot dependency + weights setup
+│   ├── mount_gcs.sh           #   GCS bucket mount helper
+│   ├── download_episodes.sh   #   Fetch exported episodes
+│   └── verify_downloads.sh    #   Size-check downloads, delete corrupt files
 ├── episodes_success.txt       # Filtered successful episode IDs
 ├── assets/                    # Local assets (Franka + Robotiq URDF)
 └── third_party/               # Dependencies (git submodules + downloaded weights)
@@ -124,10 +129,10 @@ droid/
 ## Data Setup
 
 The pipeline reads raw DROID data from a GCS bucket and writes outputs to another.
-Use `mount_gcs.sh` to mount both via [gcsfuse](https://cloud.google.com/storage/docs/gcsfuse-cli):
+Use `scripts/mount_gcs.sh` to mount both via [gcsfuse](https://cloud.google.com/storage/docs/gcsfuse-cli):
 
 ```bash
-bash mount_gcs.sh
+bash scripts/mount_gcs.sh
 ```
 
 | Mount | GCS Bucket / Prefix | Local Path |
@@ -144,11 +149,11 @@ bash mount_gcs.sh
 ## Running Options
 
 ```bash
-bash run_parallel.sh                          # depth, all episodes
-bash run_parallel.sh --mode extrinsics        # extrinsics, all episodes
-bash run_parallel.sh --mode tracks            # tracks, all episodes
-bash run_parallel.sh --mode metrics           # quality metrics, all episodes
-bash run_parallel.sh --mode depth --limit 32  # depth, first 32 episodes
+bash scripts/run_parallel.sh                          # depth, all episodes
+bash scripts/run_parallel.sh --mode extrinsics        # extrinsics, all episodes
+bash scripts/run_parallel.sh --mode tracks            # tracks, all episodes
+bash scripts/run_parallel.sh --mode metrics           # quality metrics, all episodes
+bash scripts/run_parallel.sh --mode depth --limit 32  # depth, first 32 episodes
 ```
 
 | Flag | Short | Values | Default | Description |
@@ -165,7 +170,7 @@ After running all 3 stages, compute quality metrics across episodes and select a
 ### Step 1: Batch Metrics (on GCP)
 
 ```bash
-bash run_parallel.sh --mode metrics
+bash scripts/run_parallel.sh --mode metrics
 ```
 
 Auto-detects GPUs and runs `evaluate_episodes.py` in parallel across all of them.
@@ -192,7 +197,7 @@ site-proportional quotas, and within-site motion diversity (evenly spaced by EE 
 
 ## Interactive Notebook
 
-Open [`pipeline.ipynb`](https://colab.research.google.com/github/yangyi02/droid/blob/main/pipeline.ipynb) in Colab for single-episode debugging.
+Open [`notebooks/pipeline.ipynb`](https://colab.research.google.com/github/yangyi02/droid/blob/main/notebooks/pipeline.ipynb) in Colab for single-episode debugging.
 
 The notebook uses **3 global boolean flags** at the top (`COMPUTE_DEPTH`, `COMPUTE_EXTRINSICS`, `COMPUTE_TRACKS`):
 - `True` — Compute stage from scratch
@@ -215,7 +220,7 @@ find /usr/local/zed/ -name "pyzed*.whl" -exec pip install {} \;
 |-----------|------|-------|
 | `third_party/s2m2` | [junhong-3dv/s2m2](https://github.com/junhong-3dv/s2m2) | Stereo depth |
 
-### Model Weights (downloaded by `setup.sh`)
+### Model Weights (downloaded by `scripts/setup.sh`)
 
 | Model | Source | Path |
 |-------|--------|------|

@@ -76,8 +76,11 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     min_run_frames: Consecutive frames a camera must keep seeing past a point
         before its support is called gone.
     flicker: Drop a point whose line-of-sight flag flips on more than this
-        fraction of frames. None disables the test — read
-        `_filter_visibility_flicker` before relying on it.
+        fraction of frames. None disables the test.
+
+  The defaults for tau, min_run_frames and flicker are the validated settings
+  from `notebooks/droid_remove_moved_points_minimal.ipynb`; change them only
+  against a comparable check.
 
   Returns:
     static_pts_3d: (N, 3) world coordinates of static points.
@@ -405,12 +408,12 @@ def _filter_visibility_flicker(stats, flicker=0.10):
   times as the arm sweeps past. One whose clear-line-of-sight flag flips on more
   than `flicker` of the frames is not sitting on anything stable.
 
-  Caveat worth knowing before you turn this on: measured over eight exported
-  episodes, 51-96% of these flips have the "occluder" only 15-30mm nearer than the
-  point — the depth reading wobbling across the +-tau band rather than anything
-  actually passing in front. It behaves like a per-pixel noise test whose
-  threshold is coupled to tau, and it removes roughly ten times as many points as
-  `_filter_support_left`. Pass flicker=None in phase 1 to leave it off.
+  This is a confidence filter rather than a moved-support detector, and it is the
+  broader of the two: many of the flips it catches are the depth reading wobbling
+  across the +-tau band, so its threshold is effectively coupled to tau. That is
+  the intent — a point whose depth will not hold still does not make usable
+  ground truth either way. flicker=0.10 is the validated setting; pass None to
+  leave the test off.
 
   Returns:
     (N,) bool, True = remove.

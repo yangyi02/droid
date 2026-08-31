@@ -13,10 +13,7 @@ logs/
 *.ckpt
 *.svo
 *.svo2
-weights/
-
-# SAM weights (downloaded by setup.sh)
-third_party/sam_weights/
+checkpoints/
 
 # Jupyter
 .ipynb_checkpoints/

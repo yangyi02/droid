@@ -1,6 +1,9 @@
 #!/bin/bash
 set -uo pipefail
 
+# episodes_eval50.txt lives at the repo root.
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
 URL="https://storage.googleapis.com/dm-tapnet/mv-tap/droid/tapvidmv"
 DEST=~/Desktop/droid
 FILES="tracks_xyz.npy queries_xytv.npy"
@@ -37,4 +40,4 @@ while read ep; do
   done
 done < episodes_eval50.txt
 
-echo "Found $bad bad files (deleted). Re-run download_episodes.sh to re-download."
+echo "Found $bad bad files (deleted). Re-run scripts/download_episodes.sh to re-download."

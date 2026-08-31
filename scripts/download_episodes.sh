@@ -1,6 +1,9 @@
 #!/bin/bash
 set -uo pipefail
 
+# episodes_eval50.txt lives at the repo root.
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
 URL="https://storage.googleapis.com/dm-tapnet/mv-tap/droid/tapvidmv"
 DEST=~/Desktop/droid
 FILES="tracks_xyz.npy queries_xytv.npy"
