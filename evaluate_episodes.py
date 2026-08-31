@@ -39,7 +39,7 @@ import torch.nn.functional as F
 from compute_extrinsics import (batched_chamfer_distance,
                                 get_cam_points_local_t)
 from core.geometry import project_points
-from core.io import load_depth_data, load_extrinsics, get_accelerator
+from core.io import OUTPUT_ROOT, load_depth_data, load_extrinsics, get_accelerator
 from core.physics import PyBulletRenderer
 
 
@@ -998,13 +998,13 @@ def main():
   parser.add_argument("--limit", type=int, default=-1,
                       help="Limit total episodes to process (-1 = all)")
   parser.add_argument("--depth_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/depth")
+                      default=os.path.join(OUTPUT_ROOT, "depth"))
   parser.add_argument("--extrinsics_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/extrinsics")
+                      default=os.path.join(OUTPUT_ROOT, "extrinsics"))
   parser.add_argument("--tracks_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/tracks")
+                      default=os.path.join(OUTPUT_ROOT, "tracks"))
   parser.add_argument("--output_dir", type=str,
-                      default="~/droid_data/output/mv-tap/droid/metrics")
+                      default=os.path.join(OUTPUT_ROOT, "metrics"))
   parser.add_argument("--require_tracks", action="store_true",
                       help="Only evaluate episodes with track data")
   args = parser.parse_args()

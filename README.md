@@ -46,7 +46,7 @@ Decodes raw ZED SVO stereo video, extracts robot kinematics, and infers metric d
 | Depth distillation | Temporal median filtering within gripper mask |
 | Depth injection | Inject clean gripper depth into raw stereo stream |
 
-**Output** (`~/droid_data/output/mv-tap/droid/depth/<episode_id>/`):
+**Output** (`droid_data/output/mv-tap/droid/depth/<episode_id>/`):
 ```
 robot.npz                      # joint_positions, T_ee_base_all, T_cam_ee_init, ...
 <cam_serial>/
@@ -68,7 +68,7 @@ Multi-stage camera extrinsics calibration using differentiable rendering and poi
 | Stage 1 | Per-camera independent depth & robot alignment |
 | Stage 2 | Global joint optimization (Chamfer + Robot + Wrist) |
 
-**Output** (`~/droid_data/output/mv-tap/droid/extrinsics/<episode_id>/`):
+**Output** (`droid_data/output/mv-tap/droid/extrinsics/<episode_id>/`):
 ```
 <cam_serial>/
   extrinsics.json              # base_extrinsic (4x4), extrinsics (Nx4x4), is_wrist
@@ -85,7 +85,7 @@ Dense multi-view 3D point tracking via static background prior + URDF forward ki
 | Phase 3 | Sample robot CAD surface points + URDF FK forward propagation |
 | Phase 4 | Merge static background & robot tracks with global visibility masks |
 
-**Output** (`~/droid_data/output/mv-tap/droid/tracks/<episode_id>/`):
+**Output** (`droid_data/output/mv-tap/droid/tracks/<episode_id>/`):
 ```
 tracks_3d.npz                  # traj_3d, vis_global
 track_metadata.npz             # n_static, n_robot
@@ -132,13 +132,13 @@ bash mount_gcs.sh
 
 | Mount | GCS Bucket / Prefix | Local Path |
 |-------|---------------------|------------|
-| Input (DROID raw) | `gs://gresearch/robotics/droid_raw` | `~/droid_data/input/robotics/droid_raw` |
-| Output | `gs://dm-tapnet/mv-tap` | `~/droid_data/output/mv-tap` |
+| Input (DROID raw) | `gs://gresearch/robotics/droid_raw` | `droid_data/input/robotics/droid_raw` |
+| Output | `gs://dm-tapnet/mv-tap` | `droid_data/output/mv-tap` |
 
 > To manually unmount:
 > ```bash
-> fusermount -u ~/droid_data/input/robotics/droid_raw
-> fusermount -u ~/droid_data/output/mv-tap
+> fusermount -u droid_data/input/robotics/droid_raw
+> fusermount -u droid_data/output/mv-tap
 > ```
 
 ## Running Options

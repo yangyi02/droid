@@ -20,14 +20,14 @@ pixel). Projection: x = fx * X/Z + cx, y = fy * Y/Z + cy.
 Usage (standalone):
   python export_tapvid3d.py \\
       --episode_id "ILIAD+5e938e3b+2023-07-20" \\
-      --output_root ~/droid_data/output/mv-tap/droid/tapvidmv
+      --output_root droid_data/output/mv-tap/droid/tapvidmv   # default; repo-relative
 
 Usage (from pipeline.ipynb / Python):
   from export_tapvid3d import export_to_tapvid3d
   export_to_tapvid3d(
       scene_constants, scene_state,
       final_traj_3d, final_per_cam_tracks, final_per_cam_vis,
-      output_root="~/droid_data/output/mv-tap/droid/tapvidmv",
+      output_root=os.path.join(OUTPUT_ROOT, "tapvidmv"),
       include_depth=True, include_foreground_mask=True)
 """
 
@@ -37,7 +37,7 @@ import os
 import cv2
 import numpy as np
 
-from core.io import load_depth_data, load_extrinsics
+from core.io import OUTPUT_ROOT, load_depth_data, load_extrinsics
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ def export_to_tapvid3d(
     final_traj_3d,
     final_per_cam_tracks,
     final_per_cam_vis,
-    output_root="~/droid_data/output/mv-tap/droid/tapvidmv",
+    output_root=os.path.join(OUTPUT_ROOT, "tapvidmv"),
     include_depth=True,
     include_foreground_mask=True,
     jpeg_quality=95,
@@ -317,14 +317,14 @@ if __name__ == "__main__":
                       help="Process a single episode (overrides discovery)")
   # Paths
   parser.add_argument("--output_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/tapvidmv",
+                      default=os.path.join(OUTPUT_ROOT, "tapvidmv"),
                       help="Root output directory")
   parser.add_argument("--depth_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/depth")
+                      default=os.path.join(OUTPUT_ROOT, "depth"))
   parser.add_argument("--extrinsics_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/extrinsics")
+                      default=os.path.join(OUTPUT_ROOT, "extrinsics"))
   parser.add_argument("--tracks_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/tracks")
+                      default=os.path.join(OUTPUT_ROOT, "tracks"))
   # Options
   parser.add_argument("--no_depth", action="store_true",
                       help="Skip depth.npy export")

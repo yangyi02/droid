@@ -24,6 +24,14 @@ from functools import partial
 import numpy as np
 from tqdm import tqdm
 
+# tech_report/ sits one level below the repo root and this script runs as
+# `python tech_report/compute_stats.py`, which puts tech_report/ — not the repo
+# root — on sys.path. So resolve the data root here instead of importing the
+# canonical one from core.io; keep it in step with core.io.DATA_ROOT.
+OUTPUT_ROOT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "droid_data", "output", "mv-tap", "droid")
+
 # Pipeline Coverage
 
 def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):
@@ -209,11 +217,11 @@ def main():
   parser = argparse.ArgumentParser(
       description="Compute DROID dataset statistics for tech report")
   parser.add_argument("--depth_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/depth")
+                      default=os.path.join(OUTPUT_ROOT, "depth"))
   parser.add_argument("--extrinsics_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/extrinsics")
+                      default=os.path.join(OUTPUT_ROOT, "extrinsics"))
   parser.add_argument("--tracks_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/tracks")
+                      default=os.path.join(OUTPUT_ROOT, "tracks"))
   parser.add_argument("--output_dir", type=str,
                       default="tech_report/stats_output")
   parser.add_argument("--max_episodes", type=int, default=-1,

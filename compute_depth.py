@@ -21,7 +21,7 @@ from tqdm import tqdm
 from core.depth import (build_universal_gripper_mask, compute_stereo_depth,
                         distill_empirical_gripper_depth, inject_gripper_depth)
 from core.geometry import make_4x4
-from core.io import get_accelerator, load_metadata
+from core.io import INPUT_ROOT, OUTPUT_ROOT, get_accelerator, load_metadata
 
 # Foundation Models
 def init_all_models():
@@ -309,7 +309,7 @@ def _write_mp4(path, frames, fps=10.0):
   writer.release()
 
 
-def export_depth(scene_constants, export_root="~/droid_data/output/mv-tap/droid/depth"):
+def export_depth(scene_constants, export_root=os.path.join(OUTPUT_ROOT, "depth")):
   """Export all videos, depth maps, calibration, and robot kinematics to disk.
 
   Episode directory layout:
@@ -455,7 +455,7 @@ if __name__ == "__main__":
     try:
       scene_constants = init_episode(
           ep_id,
-          os.path.expanduser("~/droid_data/input/robotics/droid_raw/1.0.1"),
+          os.path.expanduser(os.path.join(INPUT_ROOT, "robotics", "droid_raw", "1.0.1")),
           id_to_path,
           serials_db,
           keep_ranges,

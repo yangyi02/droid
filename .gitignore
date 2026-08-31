@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 
 # Logs
+logs/
 *.log
 
 # Model weights & large binaries
@@ -30,5 +31,6 @@ parallel_*_status.log
 # Separate paper repositories
 TAPVIDMV_3DV2026/
 
-# Locally generated metadata
-metadata/
+# Local data & virtualenv
+droid_data/
+droid_env/

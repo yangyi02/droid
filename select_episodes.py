@@ -24,6 +24,8 @@ import random
 
 import numpy as np
 
+from core.io import OUTPUT_ROOT
+
 
 def load_metrics(csv_path):
   """Load metrics CSV into list of dicts."""
@@ -156,7 +158,7 @@ def main():
   parser = argparse.ArgumentParser(
       description="Select evaluation episodes from metrics CSV")
   parser.add_argument("--input", type=str,
-                      default="~/droid_data/output/mv-tap/droid/metrics/metrics.csv",
+                      default=os.path.join(OUTPUT_ROOT, "metrics", "metrics.csv"),
                       help="Path to metrics CSV")
   parser.add_argument("--n", type=int, default=50,
                       help="Number of episodes to select")

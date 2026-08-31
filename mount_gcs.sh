@@ -1,11 +1,14 @@
 #!/bin/bash
-# Mount GCS buckets for DROID pipeline
+# Mount GCS buckets for DROID pipeline.
+# Mount points live under the repo's droid_data/, matching core.io.DATA_ROOT.
 sudo modprobe fuse
 
-fusermount -uz ~/droid_data/input/robotics/droid_raw 2>/dev/null
-mkdir -p ~/droid_data/input/robotics/droid_raw
-gcsfuse --implicit-dirs --only-dir robotics/droid_raw gresearch ~/droid_data/input/robotics/droid_raw
+DATA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/droid_data"
 
-fusermount -uz ~/droid_data/output/mv-tap 2>/dev/null
-mkdir -p ~/droid_data/output/mv-tap
-gcsfuse --implicit-dirs --only-dir mv-tap dm-tapnet ~/droid_data/output/mv-tap
+fusermount -uz "$DATA_ROOT/input/robotics/droid_raw" 2>/dev/null
+mkdir -p "$DATA_ROOT/input/robotics/droid_raw"
+gcsfuse --implicit-dirs --only-dir robotics/droid_raw gresearch "$DATA_ROOT/input/robotics/droid_raw"
+
+fusermount -uz "$DATA_ROOT/output/mv-tap" 2>/dev/null
+mkdir -p "$DATA_ROOT/output/mv-tap"
+gcsfuse --implicit-dirs --only-dir mv-tap dm-tapnet "$DATA_ROOT/output/mv-tap"

@@ -25,7 +25,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from core.geometry import make_4x4, make_T
-from core.io import get_accelerator, load_depth_data, load_metadata
+from core.io import OUTPUT_ROOT, get_accelerator, load_depth_data, load_metadata
 from core.physics import TensorRobotRenderer
 
 
@@ -389,7 +389,7 @@ def phase3_global_joint_alignment(scene_constants, prev_scene_state, tensor_rend
 
 
 def export_extrinsics(scene_constants, scene_state,
-                      export_root="~/droid_data/output/mv-tap/droid/extrinsics",
+                      export_root=os.path.join(OUTPUT_ROOT, "extrinsics"),
                       phase_suffix=None):
   """Save calibrated extrinsics as per-camera JSON files.
 
@@ -438,10 +438,10 @@ if __name__ == "__main__":
   parser.add_argument("--rank", type=int, default=0, help="Rank of the process")
   parser.add_argument("--world_size", type=int, default=1, help="Total number of processes")
   parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
-  parser.add_argument("--depth_root", type=str, default="~/droid_data/output/mv-tap/droid/depth",
+  parser.add_argument("--depth_root", type=str, default=os.path.join(OUTPUT_ROOT, "depth"),
                        help="Root directory of depth outputs")
   parser.add_argument("--export_root", type=str,
-                       default="~/droid_data/output/mv-tap/droid/extrinsics",
+                       default=os.path.join(OUTPUT_ROOT, "extrinsics"),
                        help="Root directory for extrinsics output")
   args = parser.parse_args()
 

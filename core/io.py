@@ -72,6 +72,15 @@ import cv2
 import numpy as np
 import torch
 
+# Repository-relative data root. Every default path in the pipeline hangs off
+# this, so a clone carries its own data layout and nothing depends on the
+# invoking user's home directory. Override any individual root via the CLI.
+DATA_ROOT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "droid_data")
+META_ROOT = os.path.join(DATA_ROOT, "meta", "1.0.1")
+INPUT_ROOT = os.path.join(DATA_ROOT, "input")
+OUTPUT_ROOT = os.path.join(DATA_ROOT, "output", "mv-tap", "droid")
+
 
 def get_accelerator(force_egl=True):
   """Configure headless GPU hardware acceleration and return active device."""
@@ -80,7 +89,7 @@ def get_accelerator(force_egl=True):
   return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def load_metadata(meta_root="~/droid_data/meta/1.0.1"):
+def load_metadata(meta_root=META_ROOT):
   """Download (if needed) and load all global DROID dataset JSON mappings.
 
   This is the single canonical implementation shared by all pipeline stages.
@@ -129,7 +138,7 @@ def load_metadata(meta_root="~/droid_data/meta/1.0.1"):
   return serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids
 
 
-def load_depth_data(episode_id, depth_root="~/droid_data/output/mv-tap/droid/depth",
+def load_depth_data(episode_id, depth_root=os.path.join(OUTPUT_ROOT, "depth"),
                     load_video="first_frame"):
   """Reconstruct scene_constants from Stage 1 disk outputs.
 
@@ -241,7 +250,7 @@ def load_depth_data(episode_id, depth_root="~/droid_data/output/mv-tap/droid/dep
 
 
 def load_extrinsics(scene_constants,
-                    extrinsics_root="~/droid_data/output/mv-tap/droid/extrinsics"):
+                    extrinsics_root=os.path.join(OUTPUT_ROOT, "extrinsics")):
   """Load Stage 2 extrinsics outputs."""
   ep_id = scene_constants["meta"]["episode_id"]
   ep_dir = os.path.abspath(

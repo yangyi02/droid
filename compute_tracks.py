@@ -32,7 +32,7 @@ import cv2
 import numpy as np
 
 from core.geometry import project_points, unproject_points
-from core.io import get_accelerator, load_depth_data, load_extrinsics
+from core.io import OUTPUT_ROOT, get_accelerator, load_depth_data, load_extrinsics
 from core.physics import PyBulletRenderer
 from core.tracking import URDFKinematicsTracker
 
@@ -42,7 +42,10 @@ from core.tracking import URDFKinematicsTracker
 def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
                                   match_radius=0.005,
                                   num_points=None,
-                                  safe_margin=15):
+                                  safe_margin=15,
+                                  tau=0.015,
+                                  min_run_frames=30,
+                                  flicker=0.10):
   """Find reliable static background 3D points via cross-view depth consensus.
 
   All queries happen at frame 0 only. For each camera (including wrist):
@@ -54,10 +57,13 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
   across views. A point is verified if at least one other camera's depth map
   agrees with its predicted depth.
 
-  Finally, candidate points are verified across ALL frames: a point is kept
-  only if its projected depth matches the observed depth in at least one
-  static camera for every single frame. This filters out objects that appear
-  static at t=0 but later move (e.g. grasped objects).
+  Finally, candidates are verified across ALL frames with the signed depth gap
+  (see `_measure_depth_gaps`). One measurement feeds two independent verdicts:
+  a point goes if its support left (some camera saw it on the surface on the
+  query frame, then saw past it for `min_run_frames` consecutive frames), or if
+  its visibility never settles (`flicker`). Only a *positive* gap — the camera
+  seeing past the point — is evidence against it; being occluded says nothing,
+  and an absolute-value test cannot tell the two apart.
 
   Args:
     scene_constants: Scene data dict.
@@ -65,6 +71,13 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     pb_renderer: PyBulletRenderer instance.
     match_radius: Max depth discrepancy (m) for cross-view agreement.
     safe_margin: Dilation kernel size for robot mask.
+    tau: Metres. Surface tolerance and the size of gap that counts as seeing
+        past a point; set by the thinnest object worth catching.
+    min_run_frames: Consecutive frames a camera must keep seeing past a point
+        before its support is called gone.
+    flicker: Drop a point whose line-of-sight flag flips on more than this
+        fraction of frames. None disables the test — read
+        `_filter_visibility_flicker` before relying on it.
 
   Returns:
     static_pts_3d: (N, 3) world coordinates of static points.
@@ -191,18 +204,27 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
   if len(dedup_pts) < len(all_pts):
     print(f"  After dedup: {len(dedup_pts)}")
 
-  # Full-video static verification: check EVERY frame, require ALL frames
-  # to pass. A point must be depth-consistent in at least one static camera
-  # at every frame to be considered truly static.
-  T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
+  # Full-video signed-gap verification. One pass over the video measures the
+  # gap in every static camera; the two filters below read it independently.
   n_before = len(dedup_pts)
-  dedup_pts, dedup_rgb = _verify_static_across_frames(
-      dedup_pts, dedup_rgb, scene_constants, scene_state,
-      static_cams, list(range(T_frames)), pb_renderer,
-      depth_tolerance=0.05,
-      safe_margin=safe_margin)
-  print(f"  Static verification (all {T_frames} frames required): "
-        f"{n_before} -> {len(dedup_pts)} points")
+  stats = _measure_depth_gaps(dedup_pts, scene_constants, scene_state,
+                              static_cams, pb_renderer, tau=tau,
+                              safe_margin=safe_margin)
+  gone = _filter_support_left(stats, min_run_frames=min_run_frames)
+  jitters = (_filter_visibility_flicker(stats, flicker=flicker)
+             if flicker is not None else np.zeros(n_before, dtype=bool))
+  keep = ~(gone | jitters)
+  dedup_pts, dedup_rgb = dedup_pts[keep], dedup_rgb[keep]
+  print(f"  Static verification ({stats['n_frames']} frames, tau "
+        f"{tau * 1000:.0f}mm): {n_before} -> {len(dedup_pts)} points")
+  print(f"    support left ({min_run_frames}+ consecutive frames past the "
+        f"surface): {int(gone.sum())}")
+  if flicker is None:
+    print("    visibility flicker: disabled")
+  else:
+    print(f"    visibility flicker (>{flicker:.0%} of frames): "
+          f"{int(jitters.sum())} ({int((jitters & ~gone).sum())} for this "
+          f"reason alone)")
 
   # Subsample to target number of points
   if num_points is not None and len(dedup_pts) > num_points:
@@ -242,66 +264,158 @@ def _voxel_dedup(pts, rgb, voxel_size=0.01):
   return out_pts, out_rgb
 
 
-def _verify_static_across_frames(pts, rgb, scene_constants, scene_state,
-                                  static_cams, keyframe_indices, pb_renderer,
-                                  depth_tolerance=0.05,
-                                  safe_margin=15):
-  """Verify that candidate static points are depth-consistent across frames.
+def _measure_depth_gaps(pts, scene_constants, scene_state, static_cams,
+                        pb_renderer, tau=0.015, safe_margin=15, patch=5):
+  """Measure the signed depth gap for every candidate point in every static camera.
 
-  For each candidate 3D point (discovered at t=0), project it into every
-  static camera at every frame and check whether the observed depth matches
-  the predicted depth. A point is kept only if it passes this check in at
-  least one camera for every single frame.
+  Project a point into a camera and compare its own depth `z` against the depth
+  map at that pixel, `d`:
 
-  This filters out objects that appeared static at t=0 but later moved.
-  No new query points are generated — this is purely a verification step.
+      gap = d - z
+        gap ~ 0    the point is on the surface the camera sees   consistent
+        gap < 0    something nearer is in the way                occluded
+        gap > 0    the camera sees PAST the point                its support is gone
+
+  A present, unoccluded surface point *is* the surface the camera reports, so a
+  positive gap cannot happen for a correct point; occlusion only ever pushes the
+  gap negative. That asymmetry is what the two filters below are built on, and it
+  is why the sign is kept instead of an absolute value being taken.
+
+  The depth is read as a median over a `patch` x `patch` window so that one bad
+  pixel cannot decide anything, and pixels covered by the (dilated) robot mask are
+  treated as having no reading at all — they carry the arm's depth, not the
+  scene's.
+
+  The full (S, T, N) gap array is never materialised: only the running per-camera
+  statistics the filters need are carried from frame to frame.
+
+  Args:
+    pts: (N, 3) candidate world coordinates.
+    static_cams: Camera ids to measure in (the wrist camera moves, so its
+        extrinsics carry FK error and it is deliberately excluded).
+    tau: Metres. What counts as "on the surface", and how far past the surface a
+        camera must see before it is believed. Note that the gap a vanished
+        support opens up is the object's local *thickness*, so tau is set by the
+        thinnest object worth catching, not by the noise floor: a teapot lid gives
+        ~60mm at the knob and ~20mm across the dome. Below ~10mm stereo noise
+        starts coming through.
+    patch: Side of the median window used to read the depth map.
+
+  Returns:
+    Dict of (S, N) arrays, S = len(static_cams), plus n_frames:
+      streak:  longest run of CONSECUTIVE frames on which the camera saw past it
+      onquery: the camera saw it on the surface on the query frame
+      flips:   how many times the camera's clear-line-of-sight flag changed
+      seen:    frames on which the camera had a usable depth reading at all
   """
   N = len(pts)
-  if N == 0:
-    return pts, rgb
+  S = len(static_cams)
+  T_frames = len(scene_constants["camera"][static_cams[0]]["video_rgb"])
 
-  n_frames = len(keyframe_indices)
-  consistent_count = np.zeros(N, dtype=int)
+  streak = np.zeros((S, N), dtype=np.int32)
+  run = np.zeros((S, N), dtype=np.int32)
+  onquery = np.zeros((S, N), dtype=bool)
+  flips = np.zeros((S, N), dtype=np.int32)
+  seen = np.zeros((S, N), dtype=np.int32)
+  prev_vis = np.zeros((S, N), dtype=bool)
 
-  for t_k in keyframe_indices:
-    # Any-cam depth consistency at this frame
-    any_cam_ok = np.zeros(N, dtype=bool)
+  kernel = np.ones((safe_margin, safe_margin), np.uint8)
+  rad = patch // 2
+  dy, dx = np.mgrid[-rad:rad + 1, -rad:rad + 1].reshape(2, -1)
+  min_valid = max(1, (patch * patch) // 6)      # enough of the window to trust it
 
+  for t in range(T_frames):
     pb_renderer.update_robot_pose(
-        scene_constants["robot"]["joint_positions"][t_k],
-        gripper_state=scene_constants["robot"]["gripper_positions"][t_k])
+        scene_constants["robot"]["joint_positions"][t],
+        gripper_state=scene_constants["robot"]["gripper_positions"][t])
 
-    for cam_id in static_cams:
+    for s, cam_id in enumerate(static_cams):
       cam_data = scene_constants["camera"][cam_id]
-      ext = scene_state[cam_id]["extrinsics"][t_k]
+      ext = scene_state[cam_id]["extrinsics"][t]
       K = cam_data["K_mat"]
       h_img, w_img = cam_data["video_rgb"][0].shape[:2]
 
-      # Robot mask
       robot_mask = pb_renderer.render_mask(ext, K, w_img, h_img)
-      kernel = np.ones((safe_margin, safe_margin), np.uint8)
       robot_mask_dilated = cv2.dilate(
           robot_mask.astype(np.uint8), kernel, iterations=1) > 0
 
-      # Project points
       u, v, z_pred = project_points(pts, K, ext)
-      ui = np.clip(np.round(u).astype(int), 0, w_img - 1)
-      vi = np.clip(np.round(v).astype(int), 0, h_img - 1)
+      ok = np.isfinite(u) & np.isfinite(v) & (z_pred > 0)
+      ui = np.round(np.where(ok, u, 0)).astype(int)   # round BEFORE bound-checking
+      vi = np.round(np.where(ok, v, 0)).astype(int)
+      # the whole median window has to be inside the image
+      ok &= ((ui >= rad) & (ui < w_img - rad) &
+             (vi >= rad) & (vi < h_img - rad))
+      ok &= ~robot_mask_dilated[np.clip(vi, 0, h_img - 1),
+                                np.clip(ui, 0, w_img - 1)]
 
-      in_bounds = ((u >= 0) & (u < w_img) &
-                   (v >= 0) & (v < h_img) & (z_pred > 0))
-      not_robot = ~robot_mask_dilated[vi, ui]
+      gap = np.full(N, np.nan, dtype=np.float32)
+      if ok.any():
+        idx = np.flatnonzero(ok)
+        window = cam_data["raw_depth"][t][vi[idx, None] + dy, ui[idx, None] + dx]
+        window = np.where(window > 0.05, window, np.nan)
+        good = np.isfinite(window).sum(axis=1) >= min_valid
+        surface = np.full(len(idx), np.nan, dtype=np.float32)
+        if good.any():
+          surface[good] = np.nanmedian(window[good], axis=1)
+        gap[idx] = surface - z_pred[idx]
 
-      z_obs = cam_data["raw_depth"][t_k, vi, ui]
-      depth_ok = (z_obs > 0.05) & (np.abs(z_pred - z_obs) < depth_tolerance)
+      measurable = np.isfinite(gap)
+      # NaN comparisons are False, so a frame with no reading breaks the run —
+      # which is what we want: a run only counts while the camera keeps looking.
+      run[s] = np.where(measurable & (gap > tau), run[s] + 1, 0)
+      streak[s] = np.maximum(streak[s], run[s])
+      vis = measurable & (gap >= -tau)          # this camera has a clear line to it
+      if t == 0:
+        onquery[s] = measurable & (np.abs(gap) <= tau)
+      else:
+        flips[s] += vis != prev_vis[s]
+      prev_vis[s] = vis
+      seen[s] += measurable
 
-      cam_ok = in_bounds & not_robot & depth_ok
-      any_cam_ok |= cam_ok
+  return dict(streak=streak, onquery=onquery, flips=flips, seen=seen,
+              n_frames=T_frames)
 
-    consistent_count += any_cam_ok.astype(int)
 
-  keep = consistent_count >= n_frames
-  return pts[keep], rgb[keep]
+def _filter_support_left(stats, min_run_frames=30):
+  """Its support left: the point is still where it was, the thing under it is not.
+
+  A camera fires if it saw the point on the surface on the query frame and then
+  saw past it for `min_run_frames` **consecutive** frames. Consecutive is what
+  separates a support that left from a pixel that is merely unreliable: a point
+  straddling a depth edge crosses the threshold and comes back all episode, while
+  a carried-away support opens a gap that stays open.
+
+  Any one camera firing is enough — once an object is gone only some viewpoints
+  have a clear line to the space it vacated, and a camera looking along the
+  surface sees almost no gap at all. For the same reason the query-frame test is
+  per camera and must stay that way: pooling it lets a camera that never had a
+  clear view of the point vouch for one that did.
+
+  Returns:
+    (N,) bool, True = remove.
+  """
+  return ((stats["streak"] >= min_run_frames) & stats["onquery"]).any(axis=0)
+
+
+def _filter_visibility_flicker(stats, flicker=0.10):
+  """Its visibility will not settle, so its ground truth is not worth trusting.
+
+  A static point seen by a fixed camera should go in and out of view a handful of
+  times as the arm sweeps past. One whose clear-line-of-sight flag flips on more
+  than `flicker` of the frames is not sitting on anything stable.
+
+  Caveat worth knowing before you turn this on: measured over eight exported
+  episodes, 51-96% of these flips have the "occluder" only 15-30mm nearer than the
+  point — the depth reading wobbling across the +-tau band rather than anything
+  actually passing in front. It behaves like a per-pixel noise test whose
+  threshold is coupled to tau, and it removes roughly ten times as many points as
+  `_filter_support_left`. Pass flicker=None in phase 1 to leave it off.
+
+  Returns:
+    (N,) bool, True = remove.
+  """
+  return (stats["flips"] / max(stats["n_frames"] - 1, 1) > flicker).any(axis=0)
 
 # Phase 2: Project static 3D points to all views (static prior)
 
@@ -539,7 +653,7 @@ def phase4_merge(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
 def export_tracks(scene_constants, scene_state, final_traj_3d,
                   final_vis_global, final_per_cam_tracks, final_per_cam_vis,
                   n_static, n_robot,
-                  export_root="~/droid_data/output/mv-tap/droid/tracks"):
+                  export_root=os.path.join(OUTPUT_ROOT, "tracks")):
   """Serialize tracking results to disk.
 
   Returns:
@@ -681,11 +795,11 @@ if __name__ == "__main__":
   parser.add_argument("--limit", type=int, default=-1,
                       help="Limit total number of episodes to process")
   parser.add_argument("--depth_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/depth")
+                      default=os.path.join(OUTPUT_ROOT, "depth"))
   parser.add_argument("--extrinsics_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/extrinsics")
+                      default=os.path.join(OUTPUT_ROOT, "extrinsics"))
   parser.add_argument("--export_root", type=str,
-                      default="~/droid_data/output/mv-tap/droid/tracks")
+                      default=os.path.join(OUTPUT_ROOT, "tracks"))
   parser.add_argument("--num_static_points", type=int, default=300,
                       help="Target number of static background points")
   parser.add_argument("--max_robot_pts_per_cam", type=int, default=100,
