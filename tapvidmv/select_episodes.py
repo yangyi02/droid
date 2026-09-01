@@ -6,10 +6,10 @@ applies stratified sampling to select a diverse, high-quality subset.
 
 Usage:
   # Select 50 episodes (reads from default metrics output directory)
-  python select_episodes.py --n 50
+  python tapvidmv/select_episodes.py --n 50
 
   # Select with stricter quality thresholds
-  python select_episodes.py --n 50 \
+  python tapvidmv/select_episodes.py --n 50 \
     --max_chamfer 0.05 --max_depth_residual 20
 
 Output:
@@ -21,8 +21,14 @@ import argparse
 import csv
 import os
 import random
+import sys
 
 import numpy as np
+
+# tapvidmv/ sits one level below the repo root, so running this file directly
+# puts tapvidmv/ — not the repo root — on sys.path. Prepend the repo root so
+# `core` resolves the same way it does for the top-level pipeline scripts.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.io import OUTPUT_ROOT
 
@@ -172,8 +178,9 @@ def main():
                       help="Min number of frames")
   parser.add_argument("--seed", type=int, default=42,
                       help="Random seed for sampling")
-  parser.add_argument("--output_dir", type=str, default=".",
-                      help="Output directory")
+  parser.add_argument("--output_dir", type=str,
+                      default=os.path.dirname(os.path.abspath(__file__)),
+                      help="Output directory (default: tapvidmv/, next to this script)")
   args = parser.parse_args()
 
   # Load

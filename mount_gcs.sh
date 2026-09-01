@@ -1,7 +1,7 @@
 #!/bin/bash
-# Mount GCS buckets for DROID pipeline. Usage: bash scripts/mount_gcs.sh
+# Mount GCS buckets for DROID pipeline. Usage: bash mount_gcs.sh
 # Mount points live under the repo's droid_data/, matching core.io.DATA_ROOT.
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")"
 
 sudo modprobe fuse
 

@@ -18,12 +18,12 @@ Pixel centre convention: integer-centre (pixel (0,0) = centre of top-left
 pixel). Projection: x = fx * X/Z + cx, y = fy * Y/Z + cy.
 
 Usage (standalone):
-  python export_tapvid3d.py \\
+  python tapvidmv/export_tapvid3d.py \\
       --episode_id "ILIAD+5e938e3b+2023-07-20" \\
       --output_root droid_data/output/mv-tap/droid/tapvidmv   # default; repo-relative
 
 Usage (from pipeline.ipynb / Python):
-  from export_tapvid3d import export_to_tapvid3d
+  from tapvidmv.export_tapvid3d import export_to_tapvid3d
   export_to_tapvid3d(
       scene_constants, scene_state,
       final_traj_3d, final_per_cam_tracks, final_per_cam_vis,
@@ -33,9 +33,15 @@ Usage (from pipeline.ipynb / Python):
 
 import argparse
 import os
+import sys
 
 import cv2
 import numpy as np
+
+# tapvidmv/ sits one level below the repo root, so running this file directly
+# puts tapvidmv/ — not the repo root — on sys.path. Prepend the repo root so
+# `core` resolves the same way it does for the top-level pipeline scripts.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.io import OUTPUT_ROOT, load_depth_data, load_extrinsics
 

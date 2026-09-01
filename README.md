@@ -11,18 +11,18 @@ git clone --recurse-submodules https://github.com/yangyi02/droid.git
 cd droid
 
 # 2. Install dependencies + download model weights
-bash scripts/setup.sh
+bash setup.sh
 
 # 3. Mount GCS input/output buckets
-bash scripts/mount_gcs.sh
+bash mount_gcs.sh
 
 # 4. Run pipeline (3 stages)
-bash scripts/run_parallel.sh                    # Stage 1: depth
-bash scripts/run_parallel.sh --mode extrinsics  # Stage 2: extrinsics
-bash scripts/run_parallel.sh --mode tracks      # Stage 3: tracks
+bash run_parallel.sh                    # Stage 1: depth
+bash run_parallel.sh --mode extrinsics  # Stage 2: extrinsics
+bash run_parallel.sh --mode tracks      # Stage 3: tracks
 ```
 
-> If you cloned **without** `--recurse-submodules`, run `bash scripts/setup.sh` —
+> If you cloned **without** `--recurse-submodules`, run `bash setup.sh` —
 > it calls `git submodule update --init --recursive` automatically.
 
 ## Pipeline Overview
@@ -101,24 +101,31 @@ droid/
 ├── compute_extrinsics.py      # Stage 2: Dataset init + camera-robot alignment
 ├── compute_tracks.py          # Stage 3: Static prior + URDF FK dense 3D tracking
 ├── evaluate_episodes.py       # Batch quality metrics evaluation (GCP)
-├── select_episodes.py         # Stratified episode selection from metrics CSV
+├── run_parallel.sh            # Multi-GPU parallel runner for the stages above
+├── setup.sh                   # One-shot dependency + weights setup
+├── mount_gcs.sh               # GCS bucket mount helper
 ├── core/                      # Shared algorithmic modules
 │   ├── geometry.py            #   3D math: unproject, project, make_4x4, rodrigues
 │   ├── io.py                  #   Data loading: get_accelerator, load_depth/extrinsics
 │   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
-│   ├── metrics.py             #   Quality metrics: depth consistency, motion, visibility
 │   ├── physics.py             #   TensorRobotRenderer + PyBulletRenderer
 │   ├── tracking.py            #   URDFKinematicsTracker (FK propagation + visibility)
 │   └── visualization.py       #   Visualization helpers (point clouds, tracking videos, 4D orbit)
-├── notebooks/                 # Jupyter/Colab notebooks
+├── tapvidmv/                  # Everything specific to the TAPVid-MV release
+│   ├── export_tapvid3d.py     #   Pipeline outputs → TAPVid-3D format
+│   ├── select_episodes.py     #   Stratified episode selection from metrics CSV
+│   ├── episodes_eval50.txt    #   The 50 selected evaluation episodes
+│   ├── droid_file_list.txt    #   Raw DROID files backing the release
+│   ├── download_episodes.sh   #   Fetch the released episodes
+│   ├── verify_downloads.sh    #   Size-check downloads, delete corrupt files
+│   ├── visualize_groundtruth_colab.ipynb   # Self-contained ground-truth viewer
+│   └── visualize_tracks_groundtruth.ipynb  # 3D/2D track inspection, all episodes
+├── notebooks/                 # Jupyter/Colab notebooks for the pipeline
 │   ├── pipeline.ipynb         #   Interactive pipeline (flag-based execution flow)
-│   └── ...                    #   Archived experiment notebooks
-├── scripts/                   # Shell entry points (run from the repo root)
-│   ├── run_parallel.sh        #   Multi-GPU parallel runner
-│   ├── setup.sh               #   One-shot dependency + weights setup
-│   ├── mount_gcs.sh           #   GCS bucket mount helper
-│   ├── download_episodes.sh   #   Fetch exported episodes
-│   └── verify_downloads.sh    #   Size-check downloads, delete corrupt files
+│   └── filter_points.ipynb    #   Dropping background points carried away by the gripper
+├── reports/                   # Tech-report statistics and figures
+│   ├── compute_stats.py       #   Dataset-level statistics
+│   └── figures.ipynb          #   Qualitative figure generation
 ├── episodes_success.txt       # Filtered successful episode IDs
 ├── assets/                    # Local assets (Franka + Robotiq URDF)
 └── third_party/               # Dependencies (git submodules + downloaded weights)
@@ -129,10 +136,10 @@ droid/
 ## Data Setup
 
 The pipeline reads raw DROID data from a GCS bucket and writes outputs to another.
-Use `scripts/mount_gcs.sh` to mount both via [gcsfuse](https://cloud.google.com/storage/docs/gcsfuse-cli):
+Use `mount_gcs.sh` to mount both via [gcsfuse](https://cloud.google.com/storage/docs/gcsfuse-cli):
 
 ```bash
-bash scripts/mount_gcs.sh
+bash mount_gcs.sh
 ```
 
 | Mount | GCS Bucket / Prefix | Local Path |
@@ -149,17 +156,19 @@ bash scripts/mount_gcs.sh
 ## Running Options
 
 ```bash
-bash scripts/run_parallel.sh                          # depth, all episodes
-bash scripts/run_parallel.sh --mode extrinsics        # extrinsics, all episodes
-bash scripts/run_parallel.sh --mode tracks            # tracks, all episodes
-bash scripts/run_parallel.sh --mode metrics           # quality metrics, all episodes
-bash scripts/run_parallel.sh --mode depth --limit 32  # depth, first 32 episodes
+bash run_parallel.sh                          # depth, all episodes
+bash run_parallel.sh --mode extrinsics        # extrinsics, all episodes
+bash run_parallel.sh --mode tracks            # tracks, all episodes
+bash run_parallel.sh --mode metrics           # quality metrics, all episodes
+bash run_parallel.sh --mode export            # TAPVid-3D export, all episodes
+bash run_parallel.sh --mode depth --limit 32  # depth, first 32 episodes
 ```
 
 | Flag | Short | Values | Default | Description |
 |------|-------|--------|---------|-------------|
-| `--mode` | `-m` | `depth`, `extrinsics`, `tracks`, `metrics` | `depth` | Pipeline stage |
+| `--mode` | `-m` | `depth`, `extrinsics`, `tracks`, `metrics`, `export` | `depth` | Pipeline stage |
 | `--limit` | `-l` | integer | all | Max episodes to process |
+| `--jobs` | `-j` | integer | auto | Override the auto-detected worker count |
 
 Jobs auto-scale to the number of GPUs detected by `nvidia-smi`.
 
@@ -170,7 +179,7 @@ After running all 3 stages, compute quality metrics across episodes and select a
 ### Step 1: Batch Metrics (on GCP)
 
 ```bash
-bash scripts/run_parallel.sh --mode metrics
+bash run_parallel.sh --mode metrics
 ```
 
 Auto-detects GPUs and runs `evaluate_episodes.py` in parallel across all of them.
@@ -189,7 +198,7 @@ Outputs `metrics.csv` (shared across all ranks via file locking) with 30+ qualit
 
 ```bash
 # Select 50 episodes (stratified by site + motion diversity)
-python select_episodes.py --n 50
+python tapvidmv/select_episodes.py --n 50
 ```
 
 Selection applies quality filtering (chamfer, depth residual thresholds),
@@ -220,7 +229,7 @@ find /usr/local/zed/ -name "pyzed*.whl" -exec pip install {} \;
 |-----------|------|-------|
 | `third_party/s2m2` | [junhong-3dv/s2m2](https://github.com/junhong-3dv/s2m2) | Stereo depth |
 
-### Model Weights (downloaded by `scripts/setup.sh`)
+### Model Weights (downloaded by `setup.sh`)
 
 | Model | Source | Path |
 |-------|--------|------|

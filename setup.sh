@@ -1,6 +1,6 @@
 #!/bin/bash
-# DROID Pipeline — one-time setup. Usage: bash scripts/setup.sh
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# DROID Pipeline — one-time setup. Usage: bash setup.sh
+cd "$(dirname "${BASH_SOURCE[0]}")"
 
 # 1. Submodules
 echo "📦 [1/4] Submodules"
