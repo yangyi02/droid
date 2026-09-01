@@ -79,7 +79,7 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
         fraction of frames. None disables the test.
 
   The defaults for tau, min_run_frames and flicker are the validated settings
-  from `notebooks/filter_points.ipynb`; change them only against a
+  from `filter_points.ipynb`; change them only against a
   comparable check.
 
   Returns:

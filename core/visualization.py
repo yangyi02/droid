@@ -193,79 +193,6 @@ def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
 
 
 # ===========================================================================
-# Animated 4D Point Cloud (Plotly)
-# ===========================================================================
-
-def show_animated_plotly_point_cloud(traj_3d, colors_rgb,
-                                    title="Animated 3D Tracks",
-                                    eye_pos=(0, -0.8, -1.5),
-                                    renderer=None):
-  """Dynamic interactive 3D point cloud player with timeline slider."""
-  import plotly.graph_objects as go  # lazy import
-  T, N, _ = traj_3d.shape
-  hex_colors = [f'rgb({int(r)},{int(g)},{int(b)})' for r, g, b in colors_rgb]
-
-  x_min, x_max = np.nanmin(traj_3d[:, :, 0]), np.nanmax(traj_3d[:, :, 0])
-  y_min, y_max = np.nanmin(traj_3d[:, :, 1]), np.nanmax(traj_3d[:, :, 1])
-  z_min, z_max = np.nanmin(traj_3d[:, :, 2]), np.nanmax(traj_3d[:, :, 2])
-
-  fig = go.Figure(
-      data=[go.Scatter3d(
-          x=traj_3d[0, :, 0], y=traj_3d[0, :, 1], z=traj_3d[0, :, 2],
-          mode='markers', marker=dict(size=2.0, color=hex_colors))])
-
-  frames = []
-  for t in range(T):
-    frames.append(go.Frame(
-        data=[go.Scatter3d(
-            x=traj_3d[t, :, 0], y=traj_3d[t, :, 1],
-            z=traj_3d[t, :, 2])],
-        name=str(t)))
-  fig.frames = frames
-
-  sliders = [dict(
-      steps=[dict(
-          method='animate',
-          args=[[str(t)], dict(
-              mode='immediate',
-              frame=dict(duration=80, redraw=True),
-              transition=dict(duration=0))],
-          label=f"F{t}") for t in range(T)],
-      active=0, transition=dict(duration=0), x=0, y=0)]
-
-  fig.update_layout(
-      title=title,
-      margin=dict(l=0, r=0, b=0, t=40),
-      height=600, showlegend=False,
-      scene=dict(
-          aspectmode='data',
-          xaxis=dict(range=[x_min, x_max], autorange=False),
-          yaxis=dict(range=[y_min, y_max], autorange=False),
-          zaxis=dict(range=[z_min, z_max], autorange=False),
-          camera=dict(eye=dict(x=eye_pos[0], y=eye_pos[1],
-                               z=eye_pos[2]))),
-      updatemenus=[dict(
-          type="buttons", showactive=False, x=0.05, y=1.1,
-          buttons=[
-              dict(label="▶ Play", method="animate",
-                   args=[None, dict(
-                       frame=dict(duration=80, redraw=True),
-                       transition=dict(duration=0),
-                       fromcurrent=True)]),
-              dict(label="⏸ Pause", method="animate",
-                   args=[[None], dict(
-                       frame=dict(duration=0, redraw=False),
-                       mode="immediate",
-                       transition=dict(duration=0))])])],
-      sliders=sliders)
-  if renderer is not None:
-    fig.show(renderer=renderer)
-  else:
-    fig.show()
-
-
-
-# ===========================================================================
 # Disparity & Depth Visualization
 # ===========================================================================
 
@@ -303,58 +230,6 @@ def render_multicam_disparity_video(scene_constants, tgt_size=(128, 228),
     camera_rows.append(np.concatenate(
         [left_video, right_video, disp_video], axis=2))
   return np.concatenate(camera_rows, axis=1)
-
-
-def render_distortion_comparison_video(scene_constants, tgt_width=1280):
-  """Render a 2x2 grid comparing raw vs rectified stereo images."""
-  print("Rendering stereo distortion comparison video...")
-  wrist_cam = scene_constants['meta']['wrist_serial']
-  cam_data = scene_constants['camera'][wrist_cam]
-  video_rect_l = cam_data['video_rgb']
-  video_raw_l = cam_data['video_raw_rgb']
-  video_rect_r = cam_data['video_right']
-  video_raw_r = cam_data['video_raw_right']
-  n_frames, h, w, _ = video_rect_l.shape
-  comparison_frames = []
-
-  fx_raw_l = cam_data['zed_calibration']['raw']['K'][0, 0]
-  fx_rect_l = cam_data['zed_calibration']['calibrated']['K'][0, 0]
-  fx_raw_r = cam_data['zed_calibration']['raw']['K_right'][0, 0]
-  fx_rect_r = cam_data['zed_calibration']['calibrated']['K_right'][0, 0]
-
-  for t in tqdm(range(n_frames), desc="Stitching frames"):
-    img_raw_l = video_raw_l[t].copy()
-    img_rect_l = video_rect_l[t].copy()
-    img_raw_r = video_raw_r[t].copy()
-    img_rect_r = video_rect_r[t].copy()
-
-    step_y, step_x = h // 6, w // 8
-    for img in [img_raw_l, img_rect_l, img_raw_r, img_rect_r]:
-      for y in range(0, h, step_y):
-        cv2.line(img, (0, y), (w, y), (255, 0, 0), 1)
-      for x in range(0, w, step_x):
-        cv2.line(img, (x, 0), (x, h), (255, 0, 0), 1)
-
-    def add_label(img, text, color):
-      cv2.putText(img, text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX,
-                  1.0, (0, 0, 0), 4)
-      cv2.putText(img, text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX,
-                  1.0, color, 2)
-
-    add_label(img_raw_l, f"LEFT RAW - Fx: {fx_raw_l:.1f}", (0, 255, 255))
-    add_label(img_rect_l, f"LEFT RECTIFIED - Fx: {fx_rect_l:.1f}",
-              (0, 255, 0))
-    add_label(img_raw_r, f"RIGHT RAW - Fx: {fx_raw_r:.1f}", (0, 255, 255))
-    add_label(img_rect_r, f"RIGHT RECTIFIED - Fx: {fx_rect_r:.1f}",
-              (0, 255, 0))
-
-    top_row = np.concatenate([img_raw_l, img_rect_l], axis=1)
-    bottom_row = np.concatenate([img_raw_r, img_rect_r], axis=1)
-    combined = np.concatenate([top_row, bottom_row], axis=0)
-    tgt_h = int(combined.shape[0] * tgt_width / combined.shape[1])
-    comparison_frames.append(cv2.resize(combined, (tgt_width, tgt_h)))
-
-  return comparison_frames
 
 
 # ===========================================================================

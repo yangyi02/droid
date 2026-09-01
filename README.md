@@ -116,18 +116,15 @@ droid/
 │   ├── run_export.sh          #   Parallel runner for the export
 │   ├── select_episodes.py     #   Stratified episode selection from metrics CSV
 │   ├── episodes_eval50.txt    #   The 50 selected evaluation episodes
-│   ├── droid_file_list.txt    #   Raw DROID files backing the release
 │   ├── download_episodes.sh   #   Fetch the released episodes
 │   ├── verify_downloads.sh    #   Size-check downloads, delete corrupt files
 │   ├── visualize_groundtruth_colab.ipynb   # Self-contained ground-truth viewer
 │   └── visualize_tracks_groundtruth.ipynb  # 3D/2D track inspection, all episodes
-├── notebooks/                 # Jupyter/Colab notebooks for the pipeline
-│   ├── pipeline.ipynb         #   Interactive pipeline (flag-based execution flow)
-│   └── filter_points.ipynb    #   Dropping background points carried away by the gripper
+├── pipeline.ipynb             # Interactive pipeline notebook (flag-based execution flow)
+├── filter_points.ipynb        # Dropping background points carried away by the gripper
 ├── reports/                   # Tech-report statistics and figures
 │   ├── compute_stats.py       #   Dataset-level statistics
 │   └── figures.ipynb          #   Qualitative figure generation
-├── episodes_success.txt       # Filtered successful episode IDs
 ├── assets/                    # Local assets (Franka + Robotiq URDF)
 └── third_party/               # Gitignored: submodule source + downloaded weights
     ├── s2m2/                  #   Stereo matching model (submodule)
@@ -221,7 +218,7 @@ separate runner from `run_parallel.sh` rather than another `--mode`.
 
 ## Interactive Notebook
 
-Open [`notebooks/pipeline.ipynb`](https://colab.research.google.com/github/yangyi02/droid/blob/main/notebooks/pipeline.ipynb) in Colab for single-episode debugging.
+Open [`pipeline.ipynb`](https://colab.research.google.com/github/yangyi02/droid/blob/main/pipeline.ipynb) in Colab for single-episode debugging.
 
 The notebook uses **3 global boolean flags** at the top (`COMPUTE_DEPTH`, `COMPUTE_EXTRINSICS`, `COMPUTE_TRACKS`):
 - `True` — Compute stage from scratch
