@@ -1,6 +1,20 @@
 #!/bin/bash
 # DROID Pipeline — one-time setup. Usage: bash setup.sh
-cd "$(dirname "${BASH_SOURCE[0]}")"
+# Find the repo root by walking up from this script to the directory holding
+# core/io.py — the very file core.io.DATA_ROOT anchors on, so the shell and
+# Python can never disagree about where droid_data/ is. Anchoring on a marker
+# instead of a fixed "../" also means this keeps working if the script is moved
+# into a subdirectory. (Inlined rather than shared: bootstrap code that locates
+# the repo cannot itself live inside the repo it has yet to locate.)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+while [ ! -f "$REPO_ROOT/core/io.py" ] && [ "$REPO_ROOT" != "/" ]; do
+    REPO_ROOT="$(dirname "$REPO_ROOT")"
+done
+if [ ! -f "$REPO_ROOT/core/io.py" ]; then
+    echo "❌ Not inside the droid repo: no core/io.py found above ${BASH_SOURCE[0]}" >&2
+    exit 1
+fi
+cd "$REPO_ROOT"
 
 # 1. Submodules
 echo "📦 [1/4] Submodules"
