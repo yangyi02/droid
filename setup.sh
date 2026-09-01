@@ -6,18 +6,6 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 echo "📦 [1/4] Submodules"
 git submodule update --init --recursive
 
-# s2m2 is imported in place and given its weights in place, so both the
-# bytecode caches and the 1.6 GB checkpoint land inside the submodule. Upstream
-# ships no .gitignore, so they show up as untracked in the submodule's OWN
-# status -- which is what editors colour, and what the parent's .gitignore
-# cannot reach, since ignore rules do not cross into a submodule. Exclude them
-# where the submodule itself reads them, touching nothing upstream tracks.
-# --git-path resolves whether .git there is a directory or a gitdir pointer.
-exclude="third_party/s2m2/$(git -C third_party/s2m2 rev-parse --git-path info/exclude)"
-for rule in '__pycache__/' '/weights/'; do
-    grep -qxF "$rule" "$exclude" 2>/dev/null || echo "$rule" >> "$exclude"
-done
-
 # 2. Python packages
 echo "🐍 [2/4] Python packages"
 pip install -r requirements.txt
