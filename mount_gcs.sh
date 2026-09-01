@@ -2,7 +2,6 @@
 # Mount GCS buckets for DROID pipeline. Usage: bash mount_gcs.sh
 # Mount points live under the repo's droid_data/, matching core.io.DATA_ROOT.
 cd "$(dirname "${BASH_SOURCE[0]}")"
-[ -f core/io.py ] || { echo "❌ Expected the repo root, got $(pwd)" >&2; exit 1; }
 
 sudo modprobe fuse
 
