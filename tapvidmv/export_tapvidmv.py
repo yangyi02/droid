@@ -44,6 +44,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.io import OUTPUT_ROOT, load_depth_data, load_extrinsics
+from core.runner import (add_sharding_args, list_episode_dirs,
+                         run_episodes, shard_episodes)
 
 
 # ---------------------------------------------------------------------------
@@ -306,18 +308,9 @@ def process_episode(episode_id, args):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-  import random
-  import traceback
-
   parser = argparse.ArgumentParser(
       description="Export DROID pipeline outputs to TAPVid-3D format")
-  # Parallel sharding args (same as compute_tracks.py / compute_extrinsics.py)
-  parser.add_argument("--rank", type=int, default=0,
-                      help="Rank of the process (for multi-worker sharding)")
-  parser.add_argument("--world_size", type=int, default=1,
-                      help="Total number of parallel workers")
-  parser.add_argument("--limit", type=int, default=-1,
-                      help="Limit total number of episodes to process")
+  add_sharding_args(parser)
   # Single-episode mode (optional, overrides discovery)
   parser.add_argument("--episode_id", type=str, default=None,
                       help="Process a single episode (overrides discovery)")
@@ -340,56 +333,16 @@ if __name__ == "__main__":
   parser.add_argument("--query_seed", type=int, default=42)
   args = parser.parse_args()
 
-  print("DROID → TAPVid-3D Export")
+  print("DROID \u2192 TAPVid-3D Export")
 
   if args.episode_id:
-    # Single-episode mode
     process_episode(args.episode_id, args)
   else:
-    # Batch mode: discover episodes from tracks output
-    # NOTE: avoid per-entry os.path.isdir / os.path.exists here — on gcsfuse
-    # mounts each call is a GCS API request and thousands of them stall.
-    # Instead, just list directory names and handle missing files in
-    # process_episode.
-    tracks_abs = os.path.abspath(os.path.expanduser(args.tracks_root))
-    output_abs = os.path.abspath(os.path.expanduser(args.output_root))
-    available_eps = sorted(os.listdir(tracks_abs))
-    print(f"Discovered {len(available_eps)} episodes in {tracks_abs}")
-
-    # Deterministic shuffle for load balancing across ranks
-    random.seed(42)
-    random.shuffle(available_eps)
-
-    if args.limit > 0:
-      available_eps = available_eps[:args.limit]
-
-    # Shard across ranks (shard BEFORE resume check to avoid slow stat calls
-    # on episodes assigned to other ranks)
-    target_eps = available_eps[args.rank::args.world_size]
-
-    # Skip episodes that already have output (resume-friendly).
-    # Use a single listdir instead of per-episode os.path.exists (gcsfuse).
-    done_dir = output_abs
-    if os.path.isdir(done_dir):
-      done_eps = set(os.listdir(done_dir))
-    else:
-      done_eps = set()
-    todo_eps = [ep for ep in target_eps if ep not in done_eps]
-
-    print(f"Rank {args.rank}/{args.world_size}: "
-          f"{len(todo_eps)} episodes to export "
-          f"({len(target_eps) - len(todo_eps)} already done)")
-
-    succeeded_eps = []
-
-    for idx, ep_id in enumerate(todo_eps):
-      print(f"\n[{idx + 1}/{len(todo_eps)}] Episode: {ep_id}")
-      try:
-        process_episode(ep_id, args)
-        succeeded_eps.append(ep_id)
-      except Exception as e:
-        print(f"  [FAIL] Episode {ep_id} failed: {e}")
-        traceback.print_exc()
-
-    print(f"\nExport complete! "
-          f"{len(succeeded_eps)}/{len(todo_eps)} episodes succeeded.")
+    available = list_episode_dirs(args.tracks_root)
+    print(f"Discovered {len(available)} episodes in {args.tracks_root}")
+    run_episodes(
+        shard_episodes(available, args.rank, args.world_size, args.limit),
+        lambda ep_id: process_episode(ep_id, args),
+        rank=args.rank, world_size=args.world_size,
+        done=list_episode_dirs(args.output_root),
+        stage="Export")

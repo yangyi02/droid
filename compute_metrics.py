@@ -27,9 +27,7 @@ import argparse
 import csv
 import fcntl
 import os
-import random
 import time
-import traceback
 
 import numpy as np
 import pybullet as p
@@ -41,6 +39,8 @@ from compute_extrinsics import (batched_chamfer_distance,
 from core.geometry import project_points
 from core.io import OUTPUT_ROOT, load_depth_data, load_extrinsics, get_accelerator
 from core.physics import PyBulletRenderer
+from core.runner import (add_sharding_args, list_episode_dirs,
+                         run_episodes, shard_episodes)
 
 
 # ===========================================================================
@@ -988,15 +988,41 @@ def evaluate_single_episode(episode_id, depth_root, extrinsics_root,
   return metrics
 
 
+def _read_done(csv_path):
+  """Episode ids already present in the shared metrics CSV."""
+  if not (os.path.exists(csv_path) and os.path.getsize(csv_path) > 0):
+    return set()
+  with open(csv_path, "r") as f:
+    return {row.get("episode_id", "") for row in csv.DictReader(f)}
+
+
+def _append_row(csv_path, metrics):
+  """Append one row under an exclusive lock, writing the header if first.
+
+  Every rank appends to the same file, so the lock is what keeps two rows from
+  interleaving and the header from being written twice.
+  """
+  with open(csv_path, "a", newline="") as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    f.seek(0, 2)
+    writer = csv.DictWriter(f, fieldnames=sorted(metrics.keys()))
+    if f.tell() == 0:
+      writer.writeheader()
+    writer.writerow(metrics)
+    fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _log_failure(path, ep_id, err):
+  with open(path, "a") as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    f.write(f"{ep_id}\t{err}\n")
+    fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def main():
   parser = argparse.ArgumentParser(
       description="Batch quality metrics evaluation for DROID episodes")
-  parser.add_argument("--rank", type=int, default=0,
-                      help="Rank of this process (for multi-GPU sharding)")
-  parser.add_argument("--world_size", type=int, default=1,
-                      help="Total number of processes")
-  parser.add_argument("--limit", type=int, default=-1,
-                      help="Limit total episodes to process (-1 = all)")
+  add_sharding_args(parser)
   parser.add_argument("--depth_root", type=str,
                       default=os.path.join(OUTPUT_ROOT, "depth"))
   parser.add_argument("--extrinsics_root", type=str,
@@ -1009,110 +1035,45 @@ def main():
                       help="Only evaluate episodes with track data")
   args = parser.parse_args()
 
-  # Discover available episodes (from depth output, the first pipeline stage)
-  depth_abs = os.path.abspath(os.path.expanduser(args.depth_root))
-  ext_abs = os.path.abspath(os.path.expanduser(args.extrinsics_root))
-  tracks_abs = os.path.abspath(os.path.expanduser(args.tracks_root))
   output_dir = os.path.abspath(os.path.expanduser(args.output_dir))
   os.makedirs(output_dir, exist_ok=True)
+  csv_path = os.path.join(output_dir, "metrics.csv")
+  fail_path = os.path.join(output_dir, "failures.txt")
 
-  # Find episodes that have both depth and extrinsics.
-  # Avoid per-entry os.path.isdir (slow on gcsfuse); just use listdir.
-  depth_eps = set(os.listdir(depth_abs))
-  ext_eps = set(os.listdir(ext_abs))
-  available_eps = sorted(depth_eps & ext_eps)
+  # An episode is evaluable once it has both depth and extrinsics.
+  available = list_episode_dirs(args.depth_root) & list_episode_dirs(
+      args.extrinsics_root)
+  if args.require_tracks:
+    available &= list_episode_dirs(args.tracks_root)
+  print(f"Found {len(available)} episodes with depth + extrinsics")
 
-  if args.require_tracks and os.path.exists(tracks_abs):
-    tracks_eps = set(os.listdir(tracks_abs))
-    available_eps = sorted(set(available_eps) & tracks_eps)
-
-  print(f"Found {len(available_eps)} episodes with depth + extrinsics")
-
-  # Deterministic shuffle for load balancing
-  random.seed(42)
-  random.shuffle(available_eps)
-
-  if args.limit > 0:
-    available_eps = available_eps[:args.limit]
-
-  # Shard across ranks
-  target_eps = available_eps[args.rank::args.world_size]
-  print(f"Rank {args.rank}/{args.world_size}: "
-        f"{len(target_eps)} episodes assigned")
-
-  # Setup
   device = get_accelerator()
   pb_renderer = PyBulletRenderer()
 
-  # Output CSV (shared across all ranks, file-locked)
-  csv_path = os.path.join(output_dir, "metrics.csv")
-
-  # Check which episodes are already evaluated (resume-friendly)
-  done_eps = set()
-  if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
-    with open(csv_path, "r") as f:
-      reader = csv.DictReader(f)
-      for row in reader:
-        done_eps.add(row.get("episode_id", ""))
-
-  todo_eps = [ep for ep in target_eps if ep not in done_eps]
-  print(f"{len(todo_eps)} remaining ({len(done_eps)} already done)")
-
-  succeeded = 0
-  failed = 0
-
-  for idx, ep_id in enumerate(todo_eps):
+  def evaluate(ep_id):
     t0 = time.time()
-    print(f"\n[{idx + 1}/{len(todo_eps)}] Episode: {ep_id}")
-
     try:
       metrics = evaluate_single_episode(
           ep_id, args.depth_root, args.extrinsics_root,
           args.tracks_root, device, pb_renderer)
-
-      if metrics is None:
-        print(f"  [WARN] Skipped (no data)")
-        failed += 1
-        continue
-
-      # Write to CSV (append mode, file-locked, header-safe)
-      with open(csv_path, "a", newline="") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        # Check if header exists (another rank may have written it)
-        needs_header = (f.tell() == 0)
-        if not needs_header:
-          f.seek(0, 2)  # seek to end
-          needs_header = (f.tell() == 0)
-        writer = csv.DictWriter(f, fieldnames=sorted(metrics.keys()))
-        if needs_header:
-          writer.writeheader()
-        writer.writerow(metrics)
-        fcntl.flock(f, fcntl.LOCK_UN)
-
-      elapsed = time.time() - t0
-      chamfer = metrics.get("chamfer_total", float("nan"))
-      depth_res = metrics.get("depth_residual_overall_median_mm", float("nan"))
-      print(f"  [OK] Done in {elapsed:.1f}s | "
-            f"chamfer={chamfer:.4f} | "
-            f"depth_residual_median={depth_res:.1f}mm")
-      succeeded += 1
-
     except Exception as e:
-      print(f"  [FAIL] Failed: {e}")
-      traceback.print_exc()
-      failed += 1
+      _log_failure(fail_path, ep_id, e)
+      raise
+    if metrics is None:
+      _log_failure(fail_path, ep_id, "no data")
+      raise RuntimeError("no data")
+    _append_row(csv_path, metrics)
+    print(f"  [OK] Done in {time.time() - t0:.1f}s | "
+          f"chamfer={metrics.get('chamfer_total', float('nan')):.4f} | "
+          f"depth_residual_median="
+          f"{metrics.get('depth_residual_overall_median_mm', float('nan')):.1f}mm")
 
-      # Log failure
-      fail_path = os.path.join(output_dir, "failures.txt")
-      with open(fail_path, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        f.write(f"{ep_id}\t{str(e)}\n")
-        fcntl.flock(f, fcntl.LOCK_UN)
-
-  print(f"\nEvaluation complete!")
-  print(f"   Succeeded: {succeeded}/{len(todo_eps)}")
-  print(f"   Failed:    {failed}/{len(todo_eps)}")
-  print(f"   Output:    {csv_path}")
+  run_episodes(
+      shard_episodes(available, args.rank, args.world_size, args.limit),
+      evaluate,
+      rank=args.rank, world_size=args.world_size,
+      done=_read_done(csv_path), stage="Evaluation")
+  print(f"   Output: {csv_path}")
 
 
 if __name__ == "__main__":

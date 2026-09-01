@@ -16,8 +16,6 @@ import copy
 import gc
 import json
 import os
-import random
-import traceback
 
 import numpy as np
 import torch
@@ -27,6 +25,8 @@ import torch.optim as optim
 from core.geometry import make_4x4, make_T
 from core.io import OUTPUT_ROOT, get_accelerator, load_depth_data, load_metadata
 from core.physics import TensorRobotRenderer
+from core.runner import (add_sharding_args, list_episode_dirs,
+                         run_episodes, shard_episodes)
 
 
 # Phase 1: Read Dataset Extrinsics
@@ -432,95 +432,85 @@ def export_extrinsics(scene_constants, scene_state,
   return ep_dir
 
 
+def _has_final_extrinsics(ep_dir):
+  """True once some camera under `ep_dir` has the canonical extrinsics.json.
+
+  The directory existing is not enough: phase 1 writes extrinsics_phase1.json
+  within seconds of an episode starting, so a run killed during phase 2 or 3
+  leaves a directory that looks finished and is not.
+  """
+  try:
+    return any(os.path.exists(os.path.join(ep_dir, cam, "extrinsics.json"))
+               for cam in os.listdir(ep_dir))
+  except OSError:
+    return False
+
+
 # Main Execution
+def process_episode(ep_id, tensor_renderer, extrinsics_db, depth_root, export_root):
+  """Phase 1-3 for one episode, then free the GPU memory it held.
+
+  The cleanup has to run whether or not the phases succeed: the per-joint-config
+  tensor cache is the main source of fragmentation-driven OOM once a rank has
+  worked through a few hundred episodes.
+  """
+  scene_constants = phase1_state = phase2_state = phase3_state = None
+  try:
+    scene_constants = load_depth_data(ep_id, depth_root)
+
+    phase1_state = phase1_init_extrinsics(scene_constants, extrinsics_db)
+    export_extrinsics(scene_constants, phase1_state,
+                      export_root=export_root, phase_suffix="phase1")
+
+    phase2_state = phase2_per_camera_alignment(
+        scene_constants, tensor_renderer, phase1_state)
+    export_extrinsics(scene_constants, phase2_state,
+                      export_root=export_root, phase_suffix="phase2")
+
+    phase3_state = phase3_global_joint_alignment(
+        scene_constants, phase2_state, tensor_renderer,
+        lr=0.001, n_steps=500, robot_weight=1.0, phase_name="Phase 3")
+    export_extrinsics(scene_constants, phase3_state,
+                      export_root=export_root, phase_suffix="phase3")
+    # Final export (canonical name)
+    export_extrinsics(scene_constants, phase3_state, export_root=export_root)
+  finally:
+    scene_constants = phase1_state = phase2_state = phase3_state = None
+    tensor_renderer.world_points_cache.clear()
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
 if __name__ == "__main__":
-  parser = argparse.ArgumentParser(description="DROID Stage 2: Camera Extrinsics Calibration")
-  parser.add_argument("--rank", type=int, default=0, help="Rank of the process")
-  parser.add_argument("--world_size", type=int, default=1, help="Total number of processes")
-  parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
-  parser.add_argument("--depth_root", type=str, default=os.path.join(OUTPUT_ROOT, "depth"),
-                       help="Root directory of depth outputs")
+  parser = argparse.ArgumentParser(
+      description="DROID Stage 2: Camera Extrinsics Calibration")
+  add_sharding_args(parser)
+  parser.add_argument("--depth_root", type=str,
+                      default=os.path.join(OUTPUT_ROOT, "depth"),
+                      help="Root directory of depth outputs")
   parser.add_argument("--export_root", type=str,
-                       default=os.path.join(OUTPUT_ROOT, "extrinsics"),
-                       help="Root directory for extrinsics output")
+                      default=os.path.join(OUTPUT_ROOT, "extrinsics"),
+                      help="Root directory for extrinsics output")
   args = parser.parse_args()
 
-  print(f"DROID Stage 2: Camera Extrinsics Calibration Pipeline")
+  print("DROID Stage 2: Camera Extrinsics Calibration Pipeline")
   device = get_accelerator()
   serials_db, _, _, extrinsics_db, _ = load_metadata()
-
-  # Discover available episodes from depth output
-  depth_abs = os.path.abspath(os.path.expanduser(args.depth_root))
-  available_eps = sorted([
-      d for d in os.listdir(depth_abs)
-      if os.path.isdir(os.path.join(depth_abs, d))
-  ])
-  random.seed(42)
-  random.shuffle(available_eps)
-  if args.limit > 0:
-    available_eps = available_eps[:args.limit]
-  target_eps = available_eps[args.rank::args.world_size]
-  print(f"Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
-
   tensor_renderer = TensorRobotRenderer(device=device)
   print("  Using TensorRobotRenderer (yourdfpy)")
 
-  succeeded_eps = []
+  target = shard_episodes(list_episode_dirs(args.depth_root),
+                          args.rank, args.world_size, args.limit)
+  # Completion is checked only for this rank's share: each check reads a couple
+  # of directories, and on a gcsfuse mount those are GCS requests.
+  export_abs = os.path.abspath(os.path.expanduser(args.export_root))
+  done = {ep for ep in target
+          if _has_final_extrinsics(os.path.join(export_abs, ep))}
 
-  for idx, ep_id in enumerate(target_eps):
-    print(f"\n[{idx + 1}/{len(target_eps)}] Processing Episode: {ep_id}")
-
-    # Pre-initialize for safe cleanup in finally block
-    scene_constants = None
-    phase1_scene_state = None
-    phase2_state = None
-    phase3_state = None
-
-    try:
-      # Load Stage 1 outputs (depth)
-      scene_constants = load_depth_data(ep_id, args.depth_root)
-
-      # Phase 1: Load dataset extrinsics
-      phase1_scene_state = phase1_init_extrinsics(scene_constants, extrinsics_db)
-
-      # Save Phase 1 extrinsics
-      export_extrinsics(scene_constants, phase1_scene_state,
-                        export_root=args.export_root, phase_suffix="phase1")
-
-      # Phase 2: Per-camera independent alignment (external + wrist)
-      phase2_state = phase2_per_camera_alignment(
-          scene_constants, tensor_renderer, phase1_scene_state,
-      )
-      export_extrinsics(scene_constants, phase2_state,
-                        export_root=args.export_root, phase_suffix="phase2")
-
-      # Phase 3: Global joint optimization (Chamfer + Robot + Wrist)
-      phase3_state = phase3_global_joint_alignment(
-          scene_constants, phase2_state, tensor_renderer,
-          lr=0.001, n_steps=500, robot_weight=1.0, phase_name="Phase 3",
-      )
-      export_extrinsics(scene_constants, phase3_state,
-                        export_root=args.export_root, phase_suffix="phase3")
-      # Final export (canonical name)
-      export_extrinsics(scene_constants, phase3_state,
-                        export_root=args.export_root)
-      succeeded_eps.append(ep_id)
-      print(f"  Episode {ep_id} completed successfully.")
-
-    except Exception as e:
-      print(f"  [FAIL] Episode {ep_id} failed: {e}")
-      traceback.print_exc()
-
-    finally:
-      # Free GPU memory between episodes to prevent OOM from fragmentation
-      scene_constants = None
-      phase1_scene_state = None
-      phase2_state = None
-      phase3_state = None
-      # Clear the per-joint-config GPU tensor cache (main source of OOM)
-      if tensor_renderer is not None:
-        tensor_renderer.world_points_cache.clear()
-      gc.collect()
-      torch.cuda.empty_cache()
-
-  print(f"\nStage 2 complete! {len(succeeded_eps)}/{len(target_eps)} episodes succeeded.")
+  run_episodes(
+      target,
+      lambda ep_id: process_episode(
+          ep_id, tensor_renderer, extrinsics_db,
+          args.depth_root, args.export_root),
+      rank=args.rank, world_size=args.world_size,
+      done=done, stage="Stage 2")

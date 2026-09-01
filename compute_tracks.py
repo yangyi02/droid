@@ -25,8 +25,6 @@ Output format (same as v1 for downstream compatibility):
 
 import argparse
 import os
-import random
-import traceback
 
 import cv2
 import numpy as np
@@ -34,6 +32,8 @@ import numpy as np
 from core.geometry import project_points, unproject_points
 from core.io import OUTPUT_ROOT, get_accelerator, load_depth_data, load_extrinsics
 from core.physics import PyBulletRenderer
+from core.runner import (add_sharding_args, list_episode_dirs,
+                         run_episodes, shard_episodes)
 from core.tracking import URDFKinematicsTracker
 
 
@@ -790,74 +790,42 @@ def process_episode(episode_id, pb_renderer, device,
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(
-      description="DROID Stage 3 v2: Static Background + Robot Tracks")
-  parser.add_argument("--rank", type=int, default=0,
-                      help="Rank of the process (for multi-GPU sharding)")
-  parser.add_argument("--world_size", type=int, default=1,
-                      help="Total number of processes")
-  parser.add_argument("--limit", type=int, default=-1,
-                      help="Limit total number of episodes to process")
+      description="DROID Stage 3: Static Background + Robot Tracks")
+  add_sharding_args(parser)
   parser.add_argument("--depth_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "depth"))
+                      default=os.path.join(OUTPUT_ROOT, "depth"),
+                      help="Root directory of depth outputs")
   parser.add_argument("--extrinsics_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "extrinsics"))
+                      default=os.path.join(OUTPUT_ROOT, "extrinsics"),
+                      help="Root directory of extrinsics outputs")
   parser.add_argument("--export_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "tracks"))
+                      default=os.path.join(OUTPUT_ROOT, "tracks"),
+                      help="Root directory for tracks output")
   parser.add_argument("--num_static_points", type=int, default=300,
-                      help="Target number of static background points")
+                      help="Number of static background points to sample")
   parser.add_argument("--max_robot_pts_per_cam", type=int, default=100,
-                      help="Max robot surface points per source camera")
+                      help="Max robot surface points per camera")
   args = parser.parse_args()
 
-  print("DROID Stage 3 v2: Static Background + Robot Tracks")
+  print("DROID Stage 3: Static Background + Robot Tracks")
   device = get_accelerator()
   pb_renderer = PyBulletRenderer()
 
-  # Discover available episodes from extrinsics output
-  ext_abs = os.path.abspath(os.path.expanduser(args.extrinsics_root))
+  target = shard_episodes(list_episode_dirs(args.extrinsics_root),
+                          args.rank, args.world_size, args.limit)
+  # An episode counts as done only once tracks_3d.npz is there: a run killed
+  # mid-episode leaves the directory behind without it. Checked for this rank's
+  # share only, since each check is a stat against a gcsfuse mount.
   export_abs = os.path.abspath(os.path.expanduser(args.export_root))
-  available_eps = sorted([
-      d for d in os.listdir(ext_abs)
-      if os.path.isdir(os.path.join(ext_abs, d))
-  ])
+  done = {ep for ep in target
+          if os.path.exists(os.path.join(export_abs, ep, "tracks_3d.npz"))}
 
-  # Deterministic shuffle for load balancing across ranks
-  random.seed(42)
-  random.shuffle(available_eps)
-
-  if args.limit > 0:
-    available_eps = available_eps[:args.limit]
-
-  # Shard across ranks
-  target_eps = available_eps[args.rank::args.world_size]
-
-  # Skip episodes that already have output (resume-friendly)
-  todo_eps = []
-  for ep_id in target_eps:
-    ep_out = os.path.join(export_abs, ep_id, "tracks_3d.npz")
-    if os.path.exists(ep_out):
-      continue
-    todo_eps.append(ep_id)
-
-  print(f"Rank {args.rank}/{args.world_size}: "
-        f"{len(todo_eps)} episodes to process "
-        f"({len(target_eps) - len(todo_eps)} already done)")
-
-  succeeded_eps = []
-
-  for idx, ep_id in enumerate(todo_eps):
-    print(f"\n[{idx + 1}/{len(todo_eps)}] Episode: {ep_id}")
-    try:
-      process_episode(
+  run_episodes(
+      target,
+      lambda ep_id: process_episode(
           ep_id, pb_renderer, device,
           args.depth_root, args.extrinsics_root, args.export_root,
           num_static_points=args.num_static_points,
-          max_robot_pts_per_cam=args.max_robot_pts_per_cam)
-      succeeded_eps.append(ep_id)
-    except Exception as e:
-      print(f"  [FAIL] Episode {ep_id} failed: {e}")
-      traceback.print_exc()
-
-  print(f"\nStage 3 v2 complete! "
-        f"{len(succeeded_eps)}/{len(todo_eps)} episodes succeeded.")
-
+          max_robot_pts_per_cam=args.max_robot_pts_per_cam),
+      rank=args.rank, world_size=args.world_size,
+      done=done, stage="Stage 3")

@@ -8,7 +8,6 @@ import argparse
 import glob
 import json
 import os
-import random
 import sys
 
 import cv2
@@ -22,6 +21,7 @@ from core.depth import (build_universal_gripper_mask, compute_stereo_depth,
                         distill_empirical_gripper_depth, inject_gripper_depth)
 from core.geometry import make_4x4
 from core.io import INPUT_ROOT, OUTPUT_ROOT, get_accelerator, load_metadata
+from core.runner import add_sharding_args, run_episodes, shard_episodes
 
 # Foundation Models
 def init_all_models():
@@ -337,25 +337,6 @@ def export_depth(scene_constants, export_root=os.path.join(OUTPUT_ROOT, "depth")
   print(f"  Exporting multi-view data to {ep_dir}...")
 
   # Robot kinematics (episode-level)
-  robot = scene_constants["robot"]
-  if robot:
-    robot_save = {}
-    if "joint_positions" in robot:
-      robot_save["joint_positions"] = robot["joint_positions"].astype(np.float32)
-    if "gripper_positions" in robot:
-      robot_save["gripper_positions"] = robot["gripper_positions"].astype(np.float32)
-    if "T_ee_base_all" in robot:
-      robot_save["T_ee_base_all"] = robot["T_ee_base_all"].astype(np.float32)
-    if "T_cam_ee_init" in robot:
-      robot_save["T_cam_ee_init"] = robot["T_cam_ee_init"].astype(np.float32)
-    # Include metadata
-    meta = scene_constants["meta"]
-    if meta.get("valid_indices") is not None:
-      robot_save["valid_indices"] = meta["valid_indices"]
-    if meta.get("wrist_serial") is not None:
-      robot_save["wrist_serial"] = np.array(meta["wrist_serial"])
-    np.savez_compressed(os.path.join(ep_dir, "robot.npz"), **robot_save)
-
   # Per-camera data
   for cam_id, data in scene_constants["camera"].items():
     cam_dir = os.path.join(ep_dir, str(cam_id))
@@ -420,75 +401,99 @@ def export_depth(scene_constants, export_root=os.path.join(OUTPUT_ROOT, "depth")
           baseline=np.array(data["baseline"], dtype=np.float32),
       )
 
+
+  # Written last, after every camera directory: its presence at the episode
+  # root is what the runner treats as "this episode finished", so a run
+  # killed part-way must not leave it behind.
+  robot = scene_constants["robot"]
+  if robot:
+    robot_save = {}
+    if "joint_positions" in robot:
+      robot_save["joint_positions"] = robot["joint_positions"].astype(np.float32)
+    if "gripper_positions" in robot:
+      robot_save["gripper_positions"] = robot["gripper_positions"].astype(np.float32)
+    if "T_ee_base_all" in robot:
+      robot_save["T_ee_base_all"] = robot["T_ee_base_all"].astype(np.float32)
+    if "T_cam_ee_init" in robot:
+      robot_save["T_cam_ee_init"] = robot["T_cam_ee_init"].astype(np.float32)
+    # Include metadata
+    meta = scene_constants["meta"]
+    if meta.get("valid_indices") is not None:
+      robot_save["valid_indices"] = meta["valid_indices"]
+    if meta.get("wrist_serial") is not None:
+      robot_save["wrist_serial"] = np.array(meta["wrist_serial"])
+    np.savez_compressed(os.path.join(ep_dir, "robot.npz"), **robot_save)
+
   return ep_dir
 
 
 # Execution & Batched Slicing
-if __name__ == "__main__":
-  parser = argparse.ArgumentParser(description="DROID Flexible Pipeline Extractor")
-  parser.add_argument("--rank", type=int, default=0, help="Rank of the process")
-  parser.add_argument("--world_size", type=int, default=1, help="Total number of processes")
-  parser.add_argument("--limit", type=int, default=-1, help="Limit total number of episodes to process")
-  parser.add_argument("--min_frames", type=int, default=48, help="Skip episodes with fewer than this many frames (default: 48, -1 to disable)")
-  parser.add_argument("--max_frames", type=int, default=250, help="Skip episodes with more than this many frames (default: 250, -1 to disable)")
+def process_episode(ep_id, models, dbs, raw_root, min_frames, max_frames,
+                    export_root):
+  """Decode one episode, infer depth, refine the gripper, and export."""
+  s2m2_model, sam_predictor, run_stereo_matching, device = models
+  id_to_path, serials_db, keep_ranges = dbs
 
+  scene_constants = init_episode(
+      ep_id, raw_root, id_to_path, serials_db, keep_ranges)
+  scene_constants = extract_svo_video(
+      scene_constants, min_frames=min_frames, max_frames=max_frames)
+  if not any("video_rgb" in data
+             for data in scene_constants["camera"].values()):
+    raise RuntimeError("no valid video streams extracted")
+
+  scene_constants = parse_robot_kinematics(scene_constants)
+  scene_constants = align_temporal_streams(scene_constants)
+  scene_constants = compute_stereo_depth(
+      scene_constants, s2m2_model, run_stereo_matching, device)
+
+  # Keep the pre-injection wrist depth so the refinement stays inspectable.
+  wrist_serial = scene_constants["meta"].get("wrist_serial")
+  wrist_data = scene_constants["camera"].get(wrist_serial or "", {})
+  if "raw_depth" in wrist_data:
+    wrist_data["original_raw_depth"] = wrist_data["raw_depth"].copy()
+
+  scene_constants = build_universal_gripper_mask(scene_constants, sam_predictor)
+  scene_constants = distill_empirical_gripper_depth(scene_constants)
+  scene_constants = inject_gripper_depth(scene_constants)
+  export_depth(scene_constants, export_root=export_root)
+
+
+if __name__ == "__main__":
+  parser = argparse.ArgumentParser(description="DROID Stage 1: Stereo Depth")
+  add_sharding_args(parser)
+  parser.add_argument("--min_frames", type=int, default=48,
+                      help="Skip episodes with fewer than this many frames "
+                           "(default: 48, -1 to disable)")
+  parser.add_argument("--max_frames", type=int, default=250,
+                      help="Skip episodes with more than this many frames "
+                           "(default: 250, -1 to disable)")
+  parser.add_argument("--export_root", type=str,
+                      default=os.path.join(OUTPUT_ROOT, "depth"),
+                      help="Root directory for depth output")
   args = parser.parse_args()
 
-  print("Environment setup verified. Initializing flexible multi-GPU extractor...")
+  print("DROID Stage 1: Stereo Depth")
   device = get_accelerator()
   s2m2_model, sam_predictor, run_stereo_matching = init_all_models()
-  serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids = load_metadata()
+  serials_db, id_to_path, keep_ranges, _, valid_ids = load_metadata()
+  raw_root = os.path.expanduser(
+      os.path.join(INPUT_ROOT, "robotics", "droid_raw", "1.0.1"))
 
-  random.seed(42)
-  random.shuffle(valid_ids)
-  if args.limit > 0:
-    valid_ids = valid_ids[:args.limit]
-  target_eps = valid_ids[args.rank::args.world_size]
-  print(f"Selected via distributed rank {args.rank}/{args.world_size} targeting: {len(target_eps)} episodes")
+  target = shard_episodes(valid_ids, args.rank, args.world_size, args.limit)
+  # An episode counts as done only once robot.npz is there: export_depth writes
+  # it last, after every camera directory, so a run killed part-way leaves the
+  # episode directory without it. Checked for this rank's share only.
+  export_abs = os.path.abspath(os.path.expanduser(args.export_root))
+  done = {ep for ep in target
+          if os.path.exists(os.path.join(export_abs, ep, "robot.npz"))}
 
-  succeeded_eps = []
-
-  for idx, ep_id in enumerate(target_eps):
-    print(f"\n[{idx + 1}/{len(target_eps)}] Processing Episode: {ep_id}")
-    if ep_id not in id_to_path:
-      print(f"  [FAIL] Invalid episode ID: {ep_id}")
-      continue
-
-    try:
-      scene_constants = init_episode(
-          ep_id,
-          os.path.expanduser(os.path.join(INPUT_ROOT, "robotics", "droid_raw", "1.0.1")),
-          id_to_path,
-          serials_db,
-          keep_ranges,
-      )
-      scene_constants = extract_svo_video(scene_constants, min_frames=args.min_frames, max_frames=args.max_frames)
-      if not any("video_rgb" in data for data in scene_constants["camera"].values()):
-        print(f"  [WARN] No valid video streams extracted for [{ep_id}]. Skipping processing.")
-        continue
-
-      scene_constants = parse_robot_kinematics(scene_constants)
-      scene_constants = align_temporal_streams(scene_constants)
-      scene_constants = compute_stereo_depth(
-          scene_constants, s2m2_model, run_stereo_matching, device)
-
-      # Gripper depth refinement (wrist camera only)
-      # Save original raw depth before injection
-      wrist_serial = scene_constants["meta"].get("wrist_serial")
-      if wrist_serial and wrist_serial in scene_constants["camera"]:
-        wrist_data = scene_constants["camera"][wrist_serial]
-        if "raw_depth" in wrist_data:
-          wrist_data["original_raw_depth"] = wrist_data["raw_depth"].copy()
-
-      scene_constants = build_universal_gripper_mask(scene_constants, sam_predictor)
-      scene_constants = distill_empirical_gripper_depth(scene_constants)
-      scene_constants = inject_gripper_depth(scene_constants)
-
-      export_depth(scene_constants)
-      succeeded_eps.append(ep_id)
-      print(f"  Episode {ep_id} completed successfully.")
-    except Exception as e:
-      print(f"  [FAIL] Episode {ep_id} failed: {e}")
-      continue
-
-  print(f"\nPipeline complete! {len(succeeded_eps)}/{len(target_eps)} episodes succeeded.")
+  run_episodes(
+      target,
+      lambda ep_id: process_episode(
+          ep_id, (s2m2_model, sam_predictor, run_stereo_matching, device),
+          (id_to_path, serials_db, keep_ranges),
+          raw_root, args.min_frames, args.max_frames,
+          args.export_root),
+      rank=args.rank, world_size=args.world_size,
+      done=done, stage="Stage 1")
