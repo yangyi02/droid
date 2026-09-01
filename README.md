@@ -245,7 +245,11 @@ rather than the GPU count — which is why it is a separate runner from
 
 ## Interactive Notebook
 
-Open [`pipeline.ipynb`](https://colab.research.google.com/github/yangyi02/droid/blob/main/pipeline.ipynb) in Colab for single-episode debugging.
+`pipeline.ipynb` runs one episode at a time, for debugging. It works both ways
+round: open it from a local checkout and it uses that checkout as-is, or open it
+[in Colab](https://colab.research.google.com/github/yangyi02/droid/blob/main/pipeline.ipynb)
+and the first cell clones the repo. Nothing is pulled or cloned over a local
+working tree.
 
 The notebook uses **3 global boolean flags** at the top (`COMPUTE_DEPTH`, `COMPUTE_EXTRINSICS`, `COMPUTE_TRACKS`):
 - `True` — Compute stage from scratch
