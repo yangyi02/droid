@@ -51,7 +51,7 @@ Decodes raw ZED SVO stereo video, extracts robot kinematics, and infers metric d
 robot.npz                      # joint_positions, T_ee_base_all, T_cam_ee_init, ...
 <cam_serial>/
   calibration.npz              # K matrix, baseline
-  video_left.mp4               # decoded left video
+  video_left.mp4               # decoded left video (also _right, _left_raw, _right_raw)
   raw_depth.npz                # refined depth (uint16 mm)
   original_raw_depth.npz       # pre-injection backup (wrist cam only)
   gripper_mask.npz             # SAM consensus mask (wrist cam only)
@@ -109,6 +109,7 @@ droid/
 │   ├── io.py                  #   Data loading: get_accelerator, load_depth/extrinsics
 │   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
 │   ├── physics.py             #   TensorRobotRenderer + PyBulletRenderer
+│   ├── runner.py              #   Episode sharding + resume-aware batch loop
 │   ├── tracking.py            #   URDFKinematicsTracker (FK propagation + visibility)
 │   └── visualization.py       #   Visualization helpers (point clouds, tracking videos, 4D orbit)
 ├── tapvidmv/                  # Everything specific to the TAPVid-MV release
