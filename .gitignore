@@ -13,7 +13,6 @@ logs/
 *.ckpt
 *.svo
 *.svo2
-checkpoints/
 
 # Jupyter
 .ipynb_checkpoints/
@@ -25,6 +24,7 @@ Thumbs.db
 # Separate paper repositories
 TAPVIDMV_3DV2026/
 
-# Local data & virtualenv
+# Local data, virtualenv, vendored source + weights
 data/
 venv/
+third_party/
