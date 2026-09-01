@@ -41,7 +41,8 @@ else
     [ "$JOBS" -gt 0 ] || { echo "❌ No GPUs detected by nvidia-smi" >&2; exit 1; }
 fi
 
+mkdir -p logs
 echo "🚀 $SCRIPT | $JOBS worker(s) | limit: ${LIMIT:-all}"
 seq 0 $((JOBS - 1)) | parallel -j "$JOBS" --ungroup --progress \
-    --joblog "parallel_$(basename "$SCRIPT" .py)_status.log" \
+    --joblog "logs/parallel_$(basename "$SCRIPT" .py)_status.log" \
     "CUDA_VISIBLE_DEVICES={} python $SCRIPT --rank {} --world_size $JOBS ${LIMIT:+--limit $LIMIT}"

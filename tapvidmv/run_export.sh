@@ -19,7 +19,8 @@ done
 # CPU-only work: 75% of the cores, leaving headroom for IO.
 JOBS=$(( $(nproc) * 3 / 4 ))
 
+mkdir -p ../logs
 echo "🚀 export_tapvidmv.py | $JOBS worker(s) | limit: ${LIMIT:-all}"
 seq 0 $((JOBS - 1)) | parallel -j "$JOBS" --ungroup --progress \
-    --joblog parallel_export_tapvidmv_status.log \
+    --joblog ../logs/parallel_export_tapvidmv_status.log \
     "python export_tapvidmv.py --rank {} --world_size $JOBS ${LIMIT:+--limit $LIMIT}"
