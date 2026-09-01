@@ -913,41 +913,46 @@ def evaluate_episode(scene_constants, scene_state, device,
 # ===========================================================================
 
 def load_track_data(episode_id, tracks_root):
-  """Load pre-computed track data from disk.
+  """Load Stage 3 outputs for one episode.
 
   Returns:
-    (final_traj_3d, final_per_cam_vis, n_static, n_robot) or
-    (None, None, 0, 0) if not found.
+    Dict with traj_3d (T, N, 3), vis_global (T, N), per_cam_tracks and
+    per_cam_vis keyed by camera, and the n_static / n_robot split -- or None
+    if the episode has no usable tracks. Everything here comes out of the two
+    npz files anyway, so it is all returned rather than the subset any one
+    caller happens to need.
   """
   ep_dir = os.path.abspath(
       os.path.expanduser(os.path.join(tracks_root, episode_id)))
 
   tracks_path = os.path.join(ep_dir, "tracks_3d.npz")
   meta_path = os.path.join(ep_dir, "track_metadata.npz")
-
   if not os.path.exists(tracks_path) or not os.path.exists(meta_path):
-    return None, None, 0, 0
+    return None
 
   tracks_data = np.load(tracks_path)
   meta_data = np.load(meta_path)
 
-  final_traj_3d = tracks_data["traj_3d"]  # (T, N, 3)
-  n_static = int(meta_data["n_static"])
-  n_robot = int(meta_data["n_robot"])
-
-  # Load per-camera visibility
-  final_per_cam_vis = {}
+  per_cam_tracks, per_cam_vis = {}, {}
   for cam_dir_name in os.listdir(ep_dir):
     cam_dir = os.path.join(ep_dir, cam_dir_name)
     vis_path = os.path.join(cam_dir, "tracks_2d.npz")
     if os.path.isdir(cam_dir) and os.path.exists(vis_path):
       cam_data = np.load(vis_path)
-      final_per_cam_vis[cam_dir_name] = cam_data["vis_2d"]
+      per_cam_tracks[cam_dir_name] = cam_data["traj_2d"]
+      per_cam_vis[cam_dir_name] = cam_data["vis_2d"]
 
-  if not final_per_cam_vis:
-    return None, None, 0, 0
+  if not per_cam_vis:
+    return None
 
-  return final_traj_3d, final_per_cam_vis, n_static, n_robot
+  return {
+      "traj_3d": tracks_data["traj_3d"],
+      "vis_global": tracks_data["vis_global"],
+      "per_cam_tracks": per_cam_tracks,
+      "per_cam_vis": per_cam_vis,
+      "n_static": int(meta_data["n_static"]),
+      "n_robot": int(meta_data["n_robot"]),
+  }
 
 
 # ===========================================================================
@@ -967,10 +972,12 @@ def evaluate_single_episode(episode_id, depth_root, extrinsics_root,
   scene_state = load_extrinsics(scene_constants, extrinsics_root)
 
   # Load track data (if available)
-  final_traj_3d, final_per_cam_vis, n_static, n_robot = \
-      load_track_data(episode_id, tracks_root)
-
-  has_tracks = final_traj_3d is not None
+  tracks = load_track_data(episode_id, tracks_root)
+  has_tracks = tracks is not None
+  final_traj_3d = tracks["traj_3d"] if has_tracks else None
+  final_per_cam_vis = tracks["per_cam_vis"] if has_tracks else None
+  n_static = tracks["n_static"] if has_tracks else 0
+  n_robot = tracks["n_robot"] if has_tracks else 0
 
   # Compute all metrics
   metrics = evaluate_episode(

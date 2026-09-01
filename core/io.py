@@ -60,7 +60,10 @@ Keyed by camera serial, same as scene_constants['camera'].
     '<cam_serial>': {
       'base_extrinsic':  np.float32 (4, 4)    static reference camera-to-world
       'extrinsics':      np.float32 (T, 4, 4) per-frame camera-to-world
-      'is_wrist':        bool                 True for wrist camera
+
+  export_extrinsics also writes an 'is_wrist' flag into each JSON, but nothing
+  reads it back: every caller derives it as cam_id == meta['wrist_serial'], so
+  load_extrinsics does not carry it into scene_state.
     }
   }
 """
@@ -138,14 +141,31 @@ def load_metadata(meta_root=META_ROOT):
   return serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids
 
 
+def _read_video(path):
+  """Decode a whole mp4 to (T, H, W, 3) uint8 RGB, or None if it is not there."""
+  cap = cv2.VideoCapture(path)
+  frames = []
+  while True:
+    ret, frame = cap.read()
+    if not ret:
+      break
+    frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+  cap.release()
+  return np.array(frames, dtype=np.uint8) if frames else None
+
+
 def load_depth_data(episode_id, depth_root=os.path.join(OUTPUT_ROOT, "depth"),
-                    load_video="first_frame"):
+                    load_video="first_frame", inspection=False):
   """Reconstruct scene_constants from Stage 1 disk outputs.
 
   Args:
     episode_id: str, episode identifier.
     depth_root: path to Stage 1 depth output root.
     load_video: "first_frame" (extrinsics) | "full" (tracks) | "none".
+    inspection: also load the streams only the inspection views read -- the
+        right stereo video, the pre-injection depth, and the distilled gripper
+        depth. No pipeline stage touches them and they roughly double what an
+        episode costs in memory, so they stay off by default.
 
   Returns:
     scene_constants dict matching the Stage 1 in-memory format.
@@ -211,6 +231,17 @@ def load_depth_data(episode_id, depth_root=os.path.join(OUTPUT_ROOT, "depth"),
     except FileNotFoundError:
       pass
 
+    if inspection:
+      # Depth before the gripper surface was injected, and the distilled
+      # surface itself: the two halves the refinement view compares.
+      for fname, key in [("original_raw_depth.npz", "original_raw_depth"),
+                         ("gripper_depth.npz", "empirical_gripper_depth")]:
+        try:
+          cam_data[key] = (np.load(os.path.join(cam_path, fname))["depth"]
+                           .astype(np.float32) / 1000.0)
+        except FileNotFoundError:
+          pass
+
     # Video loading
     video_path = os.path.join(cam_path, "video_left.mp4")
     if load_video == "first_frame":
@@ -220,16 +251,11 @@ def load_depth_data(episode_id, depth_root=os.path.join(OUTPUT_ROOT, "depth"),
       if ret:
         cam_data["first_frame_rgb"] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     elif load_video == "full":
-      cap = cv2.VideoCapture(video_path)
-      frames = []
-      while True:
-        ret, frame = cap.read()
-        if not ret:
-          break
-        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-      cap.release()
-      if frames:
-        cam_data["video_rgb"] = np.array(frames, dtype=np.uint8)
+      cam_data["video_rgb"] = _read_video(video_path)
+      if inspection:
+        right = _read_video(os.path.join(cam_path, "video_right.mp4"))
+        if right is not None:
+          cam_data["video_right"] = right
 
     camera[cam_id] = cam_data
 
