@@ -17,7 +17,7 @@ bash setup.sh
 bash mount_gcs.sh
 
 # 4. Run pipeline (3 stages)
-bash run_parallel.sh                    # Stage 1: depth
+bash run_parallel.sh --mode depth        # Stage 1: depth
 bash run_parallel.sh --mode extrinsics  # Stage 2: extrinsics
 bash run_parallel.sh --mode tracks      # Stage 3: tracks
 ```
@@ -159,7 +159,7 @@ bash mount_gcs.sh
 ## Running Options
 
 ```bash
-bash run_parallel.sh                          # depth, all episodes
+bash run_parallel.sh --mode depth              # depth, all episodes
 bash run_parallel.sh --mode extrinsics        # extrinsics, all episodes
 bash run_parallel.sh --mode tracks            # tracks, all episodes
 bash run_parallel.sh --mode metrics           # quality metrics, all episodes
@@ -168,9 +168,8 @@ bash run_parallel.sh --mode depth --limit 32  # depth, first 32 episodes
 
 | Flag | Short | Values | Default | Description |
 |------|-------|--------|---------|-------------|
-| `--mode` | `-m` | `depth`, `extrinsics`, `tracks`, `metrics` | `depth` | Pipeline stage |
+| `--mode` | `-m` | `depth`, `extrinsics`, `tracks`, `metrics` | required | Pipeline stage |
 | `--limit` | `-l` | integer | all | Max episodes to process |
-| `--jobs` | `-j` | integer | auto | Override the auto-detected worker count |
 
 Jobs auto-scale to the number of GPUs detected by `nvidia-smi`.
 
@@ -220,7 +219,6 @@ separate runner from `run_parallel.sh` rather than another `--mode`.
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--limit` | `-l` | all | Max episodes to export |
-| `--jobs` | `-j` | 75% of cores | Override the worker count |
 
 ## Interactive Notebook
 
