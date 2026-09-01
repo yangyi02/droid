@@ -52,6 +52,16 @@ from core.runner import (add_sharding_args, list_episode_dirs,
 # Helpers
 # ---------------------------------------------------------------------------
 
+def read_episode_list(path):
+  """Episode ids from a text file, one per line; blanks and # comments ignored."""
+  path = os.path.abspath(os.path.expanduser(path))
+  if not os.path.exists(path):
+    raise SystemExit(f"Episode list not found: {path}")
+  with open(path) as f:
+    return {line.split("#")[0].strip() for line in f
+            if line.split("#")[0].strip()}
+
+
 def _encode_jpeg(rgb_frame, quality=95):
   """Encode a single (H, W, 3) uint8 RGB frame to JPEG bytes as uint8 array."""
   bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
@@ -313,7 +323,16 @@ if __name__ == "__main__":
   add_sharding_args(parser)
   # Single-episode mode (optional, overrides discovery)
   parser.add_argument("--episode_id", type=str, default=None,
-                      help="Process a single episode (overrides discovery)")
+                      help="Process a single episode (overrides everything else)")
+  parser.add_argument("--episode_list", type=str,
+                      default=os.path.join(
+                          os.path.dirname(os.path.abspath(__file__)),
+                          "episodes_eval50.txt"),
+                      help="File of episode ids, one per line, to export: the "
+                           "selected release set. Exporting is the expensive "
+                           "step, so it runs after selection rather than over "
+                           "everything. Pass 'all' to export every episode "
+                           "that has tracks instead")
   # Paths
   parser.add_argument("--output_root", type=str,
                       default=os.path.join(OUTPUT_ROOT, "tapvidmv"),
@@ -338,8 +357,18 @@ if __name__ == "__main__":
   if args.episode_id:
     process_episode(args.episode_id, args)
   else:
-    available = list_episode_dirs(args.tracks_root)
-    print(f"Discovered {len(available)} episodes in {args.tracks_root}")
+    with_tracks = list_episode_dirs(args.tracks_root)
+    if args.episode_list == "all":
+      available = with_tracks
+      print(f"Exporting all {len(available)} episodes with tracks")
+    else:
+      available = read_episode_list(args.episode_list)
+      print(f"Read {len(available)} episodes from {args.episode_list}")
+      missing = available - with_tracks
+      if missing:
+        print(f"  [WARN] {len(missing)} have no tracks yet and will fail; "
+              f"run compute_tracks.py for them first "
+              f"(e.g. {sorted(missing)[0]})")
     run_episodes(
         shard_episodes(available, args.rank, args.world_size, args.limit),
         lambda ep_id: process_episode(ep_id, args),
