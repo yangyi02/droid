@@ -126,6 +126,7 @@ droid/
 ├── reports/                   # Tech-report statistics and figures
 │   ├── compute_stats.py       #   Dataset-level statistics
 │   └── figures.ipynb          #   Qualitative figure generation
+├── episodes_success.txt       # Successful DROID episode IDs (pipeline.ipynb samples from these)
 ├── assets/                    # Local assets (Franka + Robotiq URDF)
 └── third_party/               # Gitignored: submodule source + downloaded weights
     ├── s2m2/                  #   Stereo matching model (submodule)
