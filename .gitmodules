@@ -1,5 +1,3 @@
 [submodule "third_party/s2m2"]
 	path = third_party/s2m2
 	url = https://github.com/junhong-3dv/s2m2.git
-
-

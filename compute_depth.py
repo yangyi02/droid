@@ -52,7 +52,7 @@ def init_all_models():
 
   s2m2_model = torch.compile(
       load_model(
-          os.path.join(vendor_dir, "s2m2", "weights", "pretrain_weights"),
+          os.path.join(vendor_dir, "s2m2_weights"),
           "XL",
           True,
           3,
