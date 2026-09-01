@@ -100,7 +100,7 @@ droid/
 ├── compute_depth.py           # Stage 1: SVO → stereo depth + gripper refinement
 ├── compute_extrinsics.py      # Stage 2: Dataset init + camera-robot alignment
 ├── compute_tracks.py          # Stage 3: Static prior + URDF FK dense 3D tracking
-├── evaluate_episodes.py       # Batch quality metrics evaluation (GCP)
+├── compute_metrics.py         # Batch quality metrics evaluation (GCP)
 ├── run_parallel.sh            # Multi-GPU parallel runner for the stages above
 ├── setup.sh                   # One-shot dependency + weights setup
 ├── mount_gcs.sh               # GCS bucket mount helper
@@ -182,7 +182,7 @@ After running all 3 stages, compute quality metrics across episodes and select a
 bash run_parallel.sh --mode metrics
 ```
 
-Auto-detects GPUs and runs `evaluate_episodes.py` in parallel across all of them.
+Auto-detects GPUs and runs `compute_metrics.py` in parallel across all of them.
 
 Outputs `metrics.csv` (shared across all ranks via file locking) with 30+ quality columns per episode:
 

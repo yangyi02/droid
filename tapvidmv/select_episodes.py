@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Select evaluation episodes from pre-computed metrics CSV.
 
-Reads the merged metrics CSV produced by evaluate_episodes.py and
+Reads the merged metrics CSV produced by compute_metrics.py and
 applies stratified sampling to select a diverse, high-quality subset.
 
 Usage:

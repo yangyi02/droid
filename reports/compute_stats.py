@@ -231,7 +231,7 @@ def main():
   parser.add_argument("--workers", type=int, default=0,
                       help="Parallel workers (0 = auto = num CPUs)")
   parser.add_argument("--metrics_csv", type=str, default="",
-                      help="Optional path to metrics.csv from evaluate_episodes.py "
+                      help="Optional path to metrics.csv from compute_metrics.py "
                            "to integrate depth residual and extrinsics quality into summary.")
   args = parser.parse_args()
 

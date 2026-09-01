@@ -53,8 +53,8 @@ elif [[ "$MODE" == "extrinsics" ]]; then
     SCRIPT="compute_extrinsics.py"
     OP_NAME="compute_extrinsics"
 elif [[ "$MODE" == "metrics" ]]; then
-    SCRIPT="evaluate_episodes.py"
-    OP_NAME="evaluate_metrics"
+    SCRIPT="compute_metrics.py"
+    OP_NAME="compute_metrics"
 elif [[ "$MODE" == "export" ]]; then
     SCRIPT="tapvidmv/export_tapvid3d.py"
     OP_NAME="export_tapvid3d"

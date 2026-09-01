@@ -10,13 +10,13 @@ and extrinsics evaluation functions (formerly in core/pybullet_extrinsics.py).
 
 Usage:
   # Single GPU — all episodes
-  python evaluate_episodes.py
+  python compute_metrics.py
 
   # 4-GPU sharding (run each on a separate GPU)
-  python evaluate_episodes.py --rank 0 --world_size 4
-  python evaluate_episodes.py --rank 1 --world_size 4
-  python evaluate_episodes.py --rank 2 --world_size 4
-  python evaluate_episodes.py --rank 3 --world_size 4
+  python compute_metrics.py --rank 0 --world_size 4
+  python compute_metrics.py --rank 1 --world_size 4
+  python compute_metrics.py --rank 2 --world_size 4
+  python compute_metrics.py --rank 3 --world_size 4
 
 Output:
   metrics.csv — one row per episode with ~30+ metric columns.
