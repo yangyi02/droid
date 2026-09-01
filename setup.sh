@@ -6,6 +6,15 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 echo "📦 [1/4] Submodules"
 git submodule update --init --recursive
 
+# compute_depth.py imports s2m2 in place, which leaves __pycache__ inside the
+# submodule. Upstream ships no .gitignore, so that shows up as untracked in the
+# submodule's own status -- which is what editors colour, and what the parent's
+# .gitignore cannot reach. Exclude it in the submodule's local exclude file
+# rather than adding a file that would belong to upstream. --git-path resolves
+# it whether .git there is a directory or a gitdir pointer.
+exclude="third_party/s2m2/$(git -C third_party/s2m2 rev-parse --git-path info/exclude)"
+grep -qxF '__pycache__/' "$exclude" 2>/dev/null || echo '__pycache__/' >> "$exclude"
+
 # 2. Python packages
 echo "🐍 [2/4] Python packages"
 pip install -r requirements.txt
