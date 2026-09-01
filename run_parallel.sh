@@ -13,7 +13,6 @@ declare -A SCRIPTS=(
     [extrinsics]=compute_extrinsics.py
     [tracks]=compute_tracks.py
     [metrics]=compute_metrics.py
-    [export]=tapvidmv/export_tapvid3d.py
 )
 
 MODE=depth
@@ -32,12 +31,12 @@ done
 SCRIPT="${SCRIPTS[$MODE]}"
 [ -n "$SCRIPT" ] || { echo "❌ Invalid mode: $MODE (one of: ${!SCRIPTS[*]})" >&2; exit 1; }
 
-# One worker per GPU, except the CPU-only stages, which take 75% of the cores
+# One worker per GPU, except CPU-only tracks, which takes 75% of the cores
 # so there is headroom for IO.
 NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
 NUM_CPUS=$(nproc 2>/dev/null || echo 16)
 if [ -z "$JOBS" ]; then
-    if [[ "$MODE" == tracks || "$MODE" == export ]]; then
+    if [[ "$MODE" == tracks ]]; then
         JOBS=$(( NUM_CPUS * 3 / 4 ))
         [ "$JOBS" -lt 1 ] && JOBS=1
     elif [ "$NUM_GPUS" -gt 0 ]; then

@@ -112,7 +112,8 @@ droid/
 │   ├── tracking.py            #   URDFKinematicsTracker (FK propagation + visibility)
 │   └── visualization.py       #   Visualization helpers (point clouds, tracking videos, 4D orbit)
 ├── tapvidmv/                  # Everything specific to the TAPVid-MV release
-│   ├── export_tapvid3d.py     #   Pipeline outputs → TAPVid-3D format
+│   ├── export_tapvidmv.py     #   Pipeline outputs → TAPVid-MV release format
+│   ├── run_export.sh          #   Parallel runner for the export
 │   ├── select_episodes.py     #   Stratified episode selection from metrics CSV
 │   ├── episodes_eval50.txt    #   The 50 selected evaluation episodes
 │   ├── droid_file_list.txt    #   Raw DROID files backing the release
@@ -162,13 +163,12 @@ bash run_parallel.sh                          # depth, all episodes
 bash run_parallel.sh --mode extrinsics        # extrinsics, all episodes
 bash run_parallel.sh --mode tracks            # tracks, all episodes
 bash run_parallel.sh --mode metrics           # quality metrics, all episodes
-bash run_parallel.sh --mode export            # TAPVid-3D export, all episodes
 bash run_parallel.sh --mode depth --limit 32  # depth, first 32 episodes
 ```
 
 | Flag | Short | Values | Default | Description |
 |------|-------|--------|---------|-------------|
-| `--mode` | `-m` | `depth`, `extrinsics`, `tracks`, `metrics`, `export` | `depth` | Pipeline stage |
+| `--mode` | `-m` | `depth`, `extrinsics`, `tracks`, `metrics` | `depth` | Pipeline stage |
 | `--limit` | `-l` | integer | all | Max episodes to process |
 | `--jobs` | `-j` | integer | auto | Override the auto-detected worker count |
 
@@ -205,6 +205,22 @@ python tapvidmv/select_episodes.py --n 50
 
 Selection applies quality filtering (chamfer, depth residual thresholds),
 site-proportional quotas, and within-site motion diversity (evenly spaced by EE travel).
+
+### Step 3: Export
+
+```bash
+bash tapvidmv/run_export.sh              # all episodes
+bash tapvidmv/run_export.sh --limit 32   # first 32 only
+```
+
+Converts pipeline outputs into the TAPVid-MV release layout. CPU-only, so it
+sizes itself to the core count rather than the GPU count — which is why it is a
+separate runner from `run_parallel.sh` rather than another `--mode`.
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--limit` | `-l` | all | Max episodes to export |
+| `--jobs` | `-j` | 75% of cores | Override the worker count |
 
 ## Interactive Notebook
 

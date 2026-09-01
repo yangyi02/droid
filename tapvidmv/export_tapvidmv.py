@@ -18,12 +18,12 @@ Pixel centre convention: integer-centre (pixel (0,0) = centre of top-left
 pixel). Projection: x = fx * X/Z + cx, y = fy * Y/Z + cy.
 
 Usage (standalone):
-  python tapvidmv/export_tapvid3d.py \\
+  python tapvidmv/export_tapvidmv.py \\
       --episode_id "ILIAD+5e938e3b+2023-07-20" \\
       --output_root droid_data/output/mv-tap/droid/tapvidmv   # default; repo-relative
 
 Usage (from pipeline.ipynb / Python):
-  from tapvidmv.export_tapvid3d import export_to_tapvid3d
+  from tapvidmv.export_tapvidmv import export_to_tapvid3d
   export_to_tapvid3d(
       scene_constants, scene_state,
       final_traj_3d, final_per_cam_tracks, final_per_cam_vis,
