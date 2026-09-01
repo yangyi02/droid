@@ -31,13 +31,16 @@ def init_all_models():
   if not torch.cuda.is_available():
     print("[WARN] WARNING: PyTorch cannot find a valid CUDA device. Please ensure your CUDA_VISIBLE_DEVICES index is correct (e.g. 0 or 1) and NVIDIA drivers are running.")
 
-  # Inject third-party repo paths just-in-time
-  vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party")
+  # Inject third-party repo paths just-in-time. Source lives in third_party/
+  # (git submodules); model weights live in checkpoints/ (gitignored, fetched
+  # by setup.sh).
+  repo_dir = os.path.dirname(os.path.abspath(__file__))
+  vendor_dir = os.path.join(repo_dir, "third_party")
+  ckpt_dir = os.path.join(repo_dir, "checkpoints")
   s2m2_src = os.path.join(vendor_dir, "s2m2/src")
   if not os.path.exists(s2m2_src):
     print(f"  [WARN] s2m2 source not found, initializing git submodule...")
-    root_dir = os.path.dirname(os.path.abspath(__file__))
-    os.system(f"cd '{root_dir}' && git submodule update --init --recursive")
+    os.system(f"cd '{repo_dir}' && git submodule update --init --recursive")
 
   for pkg in ["s2m2/src"]:
     path = os.path.join(vendor_dir, pkg)
@@ -50,7 +53,7 @@ def init_all_models():
 
   s2m2_model = torch.compile(
       load_model(
-          os.path.join(vendor_dir, "s2m2/weights/pretrain_weights"),
+          os.path.join(ckpt_dir, "s2m2_weights"),
           "XL",
           True,
           3,
@@ -58,7 +61,7 @@ def init_all_models():
       ).eval()
   )
   sam = sam_model_registry["vit_h"](
-      checkpoint=os.path.join(vendor_dir, "sam_weights/sam_vit_h_4b8939.pth")
+      checkpoint=os.path.join(ckpt_dir, "sam_weights", "sam_vit_h_4b8939.pth")
   ).to(device)
 
   print("  All foundation models loaded.")

@@ -128,9 +128,11 @@ droid/
 │   └── figures.ipynb          #   Qualitative figure generation
 ├── episodes_success.txt       # Filtered successful episode IDs
 ├── assets/                    # Local assets (Franka + Robotiq URDF)
-└── third_party/               # Dependencies (git submodules + downloaded weights)
-    ├── s2m2/                  #   Stereo matching model
-    └── sam_weights/           #   SAM ViT-H weights
+├── checkpoints/               # Model weights (gitignored, fetched by setup.sh)
+│   ├── s2m2_weights/          #   S2M2 XL stereo matching
+│   └── sam_weights/           #   SAM ViT-H
+└── third_party/               # Vendored source (git submodules)
+    └── s2m2/                  #   Stereo matching model
 ```
 
 ## Data Setup
@@ -233,5 +235,5 @@ find /usr/local/zed/ -name "pyzed*.whl" -exec pip install {} \;
 
 | Model | Source | Path |
 |-------|--------|------|
-| S2M2 XL | HuggingFace `minimok/s2m2` | `third_party/s2m2/weights/` |
-| SAM ViT-H | `dl.fbaipublicfiles.com` | `third_party/sam_weights/` |
+| S2M2 XL | HuggingFace `minimok/s2m2` | `checkpoints/s2m2_weights/` |
+| SAM ViT-H | `dl.fbaipublicfiles.com` | `checkpoints/sam_weights/` |
