@@ -28,3 +28,6 @@ TAPVIDMV_3DV2026/
 data/
 venv/
 third_party/
+
+# Cached episode previews for pick_episodes.ipynb (rebuilt from the bucket)
+tapvidmv/previews/

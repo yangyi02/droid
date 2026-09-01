@@ -115,7 +115,8 @@ droid/
 ├── tapvidmv/                  # Everything specific to the TAPVid-MV release
 │   ├── export_tapvidmv.py     #   Pipeline outputs → TAPVid-MV release format
 │   ├── run_export.sh          #   Parallel runner for the export
-│   ├── select_episodes.py     #   Stratified episode selection from metrics CSV
+│   ├── select_episodes.py     #   Scene-stratified candidate pool from metrics CSV
+│   ├── pick_episodes.ipynb    #   Visual picker: candidate pool → release set
 │   ├── episodes_eval50.txt    #   The 50 selected evaluation episodes
 │   ├── download_episodes.sh   #   Fetch the released episodes
 │   ├── verify_downloads.sh    #   Size-check downloads, delete corrupt files
@@ -203,19 +204,43 @@ python tapvidmv/select_episodes.py --n 50
 Selection applies quality filtering (chamfer, depth residual thresholds),
 site-proportional quotas, and within-site motion diversity (evenly spaced by EE travel).
 
-### Step 3: Export
+Selection is deterministic: quotas are equal per *scene* (the middle field of
+the episode id, 62 of them against 13 sites) and filled round-robin, and
+`--min_ee_travel` drops episodes where the arm barely moves. Those pass every
+quality threshold — a frozen arm has nothing to blur and no FK error to
+accumulate — while being worth nothing to a tracking benchmark.
+
+Run it with a larger `--n` than the release needs: it produces a candidate
+pool, not the final set.
+
+### Step 3: Pick
+
+Open [`tapvidmv/pick_episodes.ipynb`](tapvidmv/pick_episodes.ipynb) and work
+through the pool by eye. Each candidate is shown as one row per camera and
+eight frames across the episode, beside its metrics; **Keep** / **Skip** /
+**Back** build the set, and the last cell writes `episodes_eval50.txt`.
+
+What the metrics cannot see is whether the manipulation is interesting, or
+whether two candidates from different scenes are doing the same thing anyway.
+
+### Step 4: Export
 
 ```bash
-bash tapvidmv/run_export.sh              # all episodes
-bash tapvidmv/run_export.sh --limit 32   # first 32 only
+bash tapvidmv/run_export.sh                             # episodes_eval50.txt
+bash tapvidmv/run_export.sh --list episodes_eval150.txt # a different set
+bash tapvidmv/run_export.sh --list all                  # everything with tracks
 ```
 
-Converts pipeline outputs into the TAPVid-MV release layout. CPU-only, so it
-sizes itself to the core count rather than the GPU count — which is why it is a
-separate runner from `run_parallel.sh` rather than another `--mode`.
+Converts the selected episodes into the TAPVid-MV release layout. This runs
+*after* selection: it re-encodes every frame to JPEG and writes the depth
+maps, so exporting first and selecting second meant paying that over thousands
+of episodes to keep fifty. CPU-only, so it sizes itself to the core count
+rather than the GPU count — which is why it is a separate runner from
+`run_parallel.sh` rather than another `--mode`.
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
+| `--list` | `-f` | `episodes_eval50.txt` | Episode list to export, or `all` |
 | `--limit` | `-l` | all | Max episodes to export |
 
 ## Interactive Notebook
