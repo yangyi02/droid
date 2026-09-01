@@ -26,5 +26,5 @@ Thumbs.db
 TAPVIDMV_3DV2026/
 
 # Local data & virtualenv
-droid_data/
-droid_env/
+data/
+venv/

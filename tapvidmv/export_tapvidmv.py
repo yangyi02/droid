@@ -20,7 +20,7 @@ pixel). Projection: x = fx * X/Z + cx, y = fy * Y/Z + cy.
 Usage (standalone):
   python tapvidmv/export_tapvidmv.py \\
       --episode_id "ILIAD+5e938e3b+2023-07-20" \\
-      --output_root droid_data/output/mv-tap/droid/tapvidmv   # default; repo-relative
+      --output_root data/output/mv-tap/droid/tapvidmv   # default; repo-relative
 
 Usage (from pipeline.ipynb / Python):
   from tapvidmv.export_tapvidmv import export_to_tapvid3d

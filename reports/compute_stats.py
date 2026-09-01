@@ -30,7 +30,7 @@ from tqdm import tqdm
 # canonical one from core.io; keep it in step with core.io.DATA_ROOT.
 OUTPUT_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "droid_data", "output", "mv-tap", "droid")
+    "data", "output", "mv-tap", "droid")
 
 # Pipeline Coverage
 

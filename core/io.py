@@ -76,7 +76,7 @@ import torch
 # this, so a clone carries its own data layout and nothing depends on the
 # invoking user's home directory. Override any individual root via the CLI.
 DATA_ROOT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "droid_data")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 META_ROOT = os.path.join(DATA_ROOT, "meta", "1.0.1")
 INPUT_ROOT = os.path.join(DATA_ROOT, "input")
 OUTPUT_ROOT = os.path.join(DATA_ROOT, "output", "mv-tap", "droid")
