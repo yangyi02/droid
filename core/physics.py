@@ -210,7 +210,6 @@ class PyBulletRenderer:
       angle = (raw_val * 0.8028) - gripper_width_offset
       for i, sign in zip(self.gripper_joints, self.gripper_signs):
         p.resetJointState(self.ghost_id, i, angle * sign)
-    p.performCollisionDetection()
 
   def _get_projection_matrix(self, K, w, h, near=0.01, far=10.0):
     """Convert intrinsic matrix to OpenGL projection matrix."""
