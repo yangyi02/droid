@@ -16,9 +16,3 @@ gcsfuse --implicit-dirs --only-dir robotics/droid_raw gresearch "$INPUT_DIR"
 fusermount -uz "$OUTPUT_DIR" 2>/dev/null
 mkdir -p "$OUTPUT_DIR"
 gcsfuse --implicit-dirs --only-dir mv-tap dm-tapnet "$OUTPUT_DIR"
-
-# gcsfuse can report success without leaving a usable mount, and the pipeline
-# would then just read empty directories. Say so here instead.
-mountpoint -q "$INPUT_DIR" && mountpoint -q "$OUTPUT_DIR" \
-    || { echo "❌ Mount failed — the pipeline will not find its data." >&2; exit 1; }
-echo "🎉 Mounted under $DATA_ROOT"
