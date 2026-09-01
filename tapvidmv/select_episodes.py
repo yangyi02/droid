@@ -20,7 +20,6 @@ Output:
 import argparse
 import csv
 import os
-import random
 import sys
 
 import numpy as np
@@ -53,14 +52,22 @@ def safe_float(val, default=float("nan")):
 
 
 def apply_quality_filter(rows, max_chamfer, max_depth_residual,
-                         min_static_points, min_frames):
-  """Filter episodes by quality thresholds."""
+                         min_static_points, min_frames, min_ee_travel):
+  """Filter episodes by quality thresholds and a floor on robot motion.
+
+  The motion floor is not a quality test, it is a usefulness test. An episode
+  where the arm never moves scores *better* on chamfer and depth residual --
+  no motion blur, no FK error to accumulate -- so quality thresholds alone
+  actively favour it, while it is worth nothing to a tracking benchmark.
+  """
   filtered = []
+  n_frozen = 0
   for row in rows:
     chamfer = safe_float(row.get("chamfer_total"))
     depth_res = safe_float(row.get("depth_residual_overall_median_mm"))
     n_static = safe_float(row.get("n_static"), 0)
     n_frames = safe_float(row.get("n_frames"), 0)
+    ee_travel = safe_float(row.get("ee_travel_m"), 0)
 
     # Skip episodes with missing critical metrics
     if np.isnan(chamfer) or np.isnan(depth_res):
@@ -75,89 +82,104 @@ def apply_quality_filter(rows, max_chamfer, max_depth_residual,
       continue
     if n_frames < min_frames:
       continue
+    if ee_travel < min_ee_travel:
+      n_frozen += 1
+      continue
 
     filtered.append(row)
 
-  print(f"  {len(filtered)}/{len(rows)} episodes passed quality filter")
+  print(f"  {len(filtered)}/{len(rows)} episodes passed quality filter"
+        f" ({n_frozen} dropped for moving less than {min_ee_travel} m)")
   return filtered
 
 
-def stratified_sample(rows, n_target, seed=42):
-  """Sample episodes stratified by site, with motion diversity.
+def _spread_order(n):
+  """Indices 0..n-1 ordered so that every prefix is spread across the range.
 
-  Strategy:
-    1. Allocate quotas proportional to site frequency (min 1 per site).
-    2. Within each site, sort by ee_travel_m and pick evenly spaced
-       indices to ensure a mix of small/large motion episodes.
-    3. If a site has fewer episodes than its quota, take all of them
-       and redistribute the remainder.
+  Bisection, breadth first: the median comes first, then the two quartiles,
+  then the eighths. Taking the first k of this order samples the range evenly
+  for any k, which is what a scene needs when its quota is not known until the
+  round-robin has run.
+
+  Deliberately not `linspace(0, n-1, k)`: its first index is always 0, so a
+  scene with a quota of one always contributes its slowest episode. That is the
+  bug this selection used to have -- with 13 site groups it guaranteed 13
+  minimum-motion episodes in a set of 50.
   """
-  rng = random.Random(seed)
+  order, segments = [], [(0, n - 1)]
+  while segments:
+    nxt = []
+    for lo, hi in segments:
+      mid = (lo + hi) // 2
+      order.append(mid)
+      nxt.extend([(lo, mid - 1), (mid + 1, hi)])
+    segments = [(lo, hi) for lo, hi in nxt if lo <= hi]
+  return order
 
-  # Group by site
-  by_site = {}
+
+def scene_of(row):
+  """The scene id: the middle field of a DROID episode id.
+
+  `AUTOLab+0d4edc83+2023-10-21-19h-02m-53s` -> `0d4edc83`. Episodes sharing it
+  come from one session: same table, same camera rig, usually the same task.
+  Two of them are near-duplicates for a tracking benchmark, however different
+  their metrics look, which is why this and not `site` is the unit to spread
+  across -- there are 62 scenes against 13 sites.
+  """
+  parts = row["episode_id"].split("+")
+  return parts[1] if len(parts) >= 2 else row.get("site", "UNKNOWN")
+
+
+def sample_diverse(rows, n_target):
+  """Pick `n_target` episodes spread as widely as possible over scenes.
+
+  Quotas are equal per scene, not proportional to scene size: proportional
+  quotas hand most of the budget to whichever session happened to record the
+  most episodes, which is the opposite of what a benchmark wants. Scenes are
+  filled round-robin, so a scene too small for its quota simply passes the
+  remainder on to the others.
+
+  Within a scene, episodes are taken evenly spaced along end-effector travel,
+  which spans the range of motion present there. That is only safe because the
+  quality filter has already dropped the barely-moving episodes: taking the
+  lowest-travel episode of every group is exactly what made the old selection
+  fill up with frozen arms.
+
+  There is no randomness left here, so the same metrics CSV always yields the
+  same set.
+  """
+  by_scene = {}
   for row in rows:
-    site = row.get("site", "UNKNOWN")
-    by_site.setdefault(site, []).append(row)
+    by_scene.setdefault(scene_of(row), []).append(row)
 
-  n_sites = len(by_site)
-  print(f"  {n_sites} unique sites: {sorted(by_site.keys())}")
+  # Order each scene's episodes so that any prefix is spread over that scene's
+  # range of motion instead of clustered at one end.
+  ordered = {}
+  for scene, scene_rows in by_scene.items():
+    scene_rows.sort(key=lambda r: safe_float(r.get("ee_travel_m"), 0))
+    ordered[scene] = [scene_rows[i] for i in _spread_order(len(scene_rows))]
 
-  # Allocate quotas proportional to site size (min 1)
-  total = len(rows)
-  quotas = {}
-  for site, site_rows in by_site.items():
-    quota = max(1, round(len(site_rows) / total * n_target))
-    quotas[site] = quota
-
-  # Adjust to hit exactly n_target
-  allocated = sum(quotas.values())
-  sites_by_size = sorted(quotas.keys(),
-                         key=lambda s: len(by_site[s]), reverse=True)
-  idx = 0
-  while allocated != n_target:
-    site = sites_by_size[idx % len(sites_by_size)]
-    if allocated < n_target:
-      quotas[site] += 1
-      allocated += 1
-    elif allocated > n_target and quotas[site] > 1:
-      quotas[site] -= 1
-      allocated -= 1
-    idx += 1
-    if idx > n_target * 10:  # safety
+  # Round-robin across scenes, largest first so ties break predictably.
+  scenes = sorted(ordered, key=lambda s: (-len(ordered[s]), s))
+  selected, round_idx = [], 0
+  while len(selected) < n_target:
+    took_any = False
+    for scene in scenes:
+      if round_idx < len(ordered[scene]):
+        selected.append(ordered[scene][round_idx])
+        took_any = True
+        if len(selected) == n_target:
+          break
+    if not took_any:
       break
+    round_idx += 1
 
-  print(f"  Site quotas: {dict(sorted(quotas.items()))}")
-
-  # Within each site, pick evenly spaced by motion
-  selected = []
-  for site in sorted(by_site.keys()):
-    site_rows = by_site[site]
-    quota = min(quotas.get(site, 1), len(site_rows))
-
-    # Sort by end-effector travel (motion diversity)
-    site_rows.sort(key=lambda r: safe_float(r.get("ee_travel_m"), 0))
-
-    if len(site_rows) <= quota:
-      # Take all
-      selected.extend(site_rows)
-    else:
-      # Evenly spaced indices
-      indices = np.linspace(0, len(site_rows) - 1, quota).astype(int)
-      for i in indices:
-        selected.append(site_rows[i])
-
-    print(f"    {site}: {quota}/{len(site_rows)} selected")
-
-  # Fill remaining slots if we're under target (from largest sites)
-  remaining = n_target - len(selected)
-  if remaining > 0:
-    selected_ids = set(r["episode_id"] for r in selected)
-    pool = [r for r in rows if r["episode_id"] not in selected_ids]
-    rng.shuffle(pool)
-    selected.extend(pool[:remaining])
-
-  return selected[:n_target]
+  per_scene = {}
+  for r in selected:
+    per_scene[scene_of(r)] = per_scene.get(scene_of(r), 0) + 1
+  print(f"  {len(selected)} episodes over {len(per_scene)} scenes "
+        f"(max {max(per_scene.values())} from any one scene)")
+  return selected
 
 
 def main():
@@ -176,8 +198,10 @@ def main():
                       help="Min number of static track points")
   parser.add_argument("--min_frames", type=int, default=30,
                       help="Min number of frames")
-  parser.add_argument("--seed", type=int, default=42,
-                      help="Random seed for sampling")
+  parser.add_argument("--min_ee_travel", type=float, default=0.3,
+                      help="Min end-effector path length in metres. Drops "
+                           "episodes where the arm barely moves, which pass "
+                           "every quality test but are useless to track")
   parser.add_argument("--output_dir", type=str,
                       default=os.path.dirname(os.path.abspath(__file__)),
                       help="Output directory (default: tapvidmv/, next to this script)")
@@ -189,7 +213,7 @@ def main():
   # Filter
   filtered = apply_quality_filter(
       rows, args.max_chamfer, args.max_depth_residual,
-      args.min_static_points, args.min_frames)
+      args.min_static_points, args.min_frames, args.min_ee_travel)
 
   if len(filtered) < args.n:
     print(f"  [WARN] Only {len(filtered)} episodes pass filter, "
@@ -206,7 +230,7 @@ def main():
         break
 
   # Select
-  selected = stratified_sample(filtered, args.n, seed=args.seed)
+  selected = sample_diverse(filtered, args.n)
 
   output_dir = os.path.expanduser(args.output_dir)
   os.makedirs(output_dir, exist_ok=True)
