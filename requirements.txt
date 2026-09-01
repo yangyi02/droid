@@ -1,6 +1,6 @@
 torch
 numpy
-pybullet
+pybullet  # setup.sh rebuilds this from source so NumPy support is on
 opencv-python
 scipy
 matplotlib
