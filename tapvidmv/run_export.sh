@@ -22,5 +22,5 @@ JOBS=$(( $(nproc) * 3 / 4 ))
 mkdir -p ../logs
 echo "🚀 export_tapvidmv.py | $JOBS worker(s) | limit: ${LIMIT:-all}"
 seq 0 $((JOBS - 1)) | parallel -j "$JOBS" --ungroup --progress \
-    --joblog ../logs/parallel_export_tapvidmv_status.log \
+    --joblog ../logs/export_tapvidmv_status.log \
     "python export_tapvidmv.py --rank {} --world_size $JOBS ${LIMIT:+--limit $LIMIT}"

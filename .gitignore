@@ -22,9 +22,6 @@ checkpoints/
 .DS_Store
 Thumbs.db
 
-# Parallel runner logs
-parallel_*_status.log
-
 # Separate paper repositories
 TAPVIDMV_3DV2026/
 
