@@ -240,14 +240,16 @@ class PyBulletRenderer:
         (-extrinsic[:3, 1]).tolist())
     proj_matrix = self._get_projection_matrix(K, w, h)
     # ER_TINY_RENDERER, the CPU rasteriser, spelled out rather than left to the
-    # ER_BULLET_HARDWARE_OPENGL fallback. The GPU path is ~5x faster on this
-    # two-body scene (24 vs 126 ms per 1280x720 frame on an A100, medians)
-    # but produces a *different* image:
-    # both bodies are hidden link-by-link with rgbaColor alpha=0, and the EGL
-    # rasteriser draws alpha=0 links anyway. The ghost's hidden arm then
-    # occludes the real one -- measured on the Panda, the robot mask collapses
-    # from 4.43% to 0.36% of the frame, IoU 0.08. Switching renderers means
-    # first hiding links some way that both rasterisers respect.
+    # ER_BULLET_HARDWARE_OPENGL fallback. The GPU path is ~4.4x faster on this
+    # two-body scene (28 vs 124 ms per 1280x720 frame on an A100, medians) but
+    # produces a *different* image: both bodies are hidden link-by-link with
+    # rgbaColor alpha=0, and the EGL rasteriser draws alpha=0 links anyway. The
+    # ghost's hidden arm then occludes the real one -- on the Panda the robot
+    # mask collapses from 4.43% of the frame to 0.36%, IoU 0.08 against this
+    # renderer's own output. Switching rasterisers means first hiding links
+    # some way that both of them respect: removing the geometry from the URDF
+    # works, and notebooks/pybullet_egl_mask_benchmark.ipynb measures all of
+    # this and demonstrates that fix.
     _, _, _, depth_buf, seg_buf = p.getCameraImage(
         w, h, viewMatrix=view_matrix, projectionMatrix=proj_matrix,
         renderer=p.ER_TINY_RENDERER,

@@ -130,7 +130,8 @@ droid/
 ├── notebooks/                 # Interactive notebooks (run from anywhere in the checkout)
 │   ├── pipeline.ipynb         #   Whole pipeline, one episode at a time (flag-based flow)
 │   ├── filter_points.ipynb    #   Dropping background points carried away by the gripper
-│   └── pybullet_numpy_benchmark.ipynb  # Why PyBullet must be built with NumPy support
+│   ├── pybullet_numpy_benchmark.ipynb  # Why PyBullet must be built with NumPy support
+│   └── pybullet_egl_mask_benchmark.ipynb  # Why the GPU rasteriser is off, and what it would take
 ├── reports/                   # Tech-report statistics and figures
 │   ├── compute_stats.py       #   Dataset-level statistics
 │   └── figures.ipynb          #   Qualitative figure generation
