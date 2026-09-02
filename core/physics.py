@@ -137,6 +137,18 @@ class PyBulletRenderer:
     import pybullet_data
     import importlib.util
 
+    # A pybullet built without NumPy support marshals every pixel of
+    # getCameraImage into a Python tuple before returning it: ~336 ms per
+    # 1280x720 render here instead of ~25 ms. It degrades silently, and pip
+    # produces such a build by default (its isolated build env has no numpy),
+    # so a venv that predates setup.sh's rebuild step still looks fine.
+    if not p.isNumpyEnabled():
+      raise RuntimeError(
+          'pybullet was built without NumPy support -- rendering would be '
+          '~15x slower. Rebuild it in place:\n'
+          '  pip install --force-reinstall --no-deps --no-binary pybullet \\\n'
+          '      --no-build-isolation --no-cache-dir pybullet')
+
     if ghost_urdf is None:
       ghost_urdf = _DEFAULT_URDF
 
