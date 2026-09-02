@@ -148,6 +148,16 @@ def _load_egl():
   loads, so this has to run before the first loadURDF -- otherwise the renders
   come back empty, very fast, which reads like a speedup.
   """
+  # The plugin takes its device from EGL_VISIBLE_DEVICES and ignores
+  # CUDA_VISIBLE_DEVICES, so under run_parallel.sh -- which pins each worker
+  # with CUDA_VISIBLE_DEVICES -- every worker's EGL context would open on GPU 0
+  # while its tensors live on the pinned card. Mirror the pin, unless the
+  # caller has already chosen. Only a single-index pin is unambiguous; a list
+  # or a UUID is left alone.
+  cuda_pin = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+  if "EGL_VISIBLE_DEVICES" not in os.environ and cuda_pin.isdigit():
+    os.environ["EGL_VISIBLE_DEVICES"] = cuda_pin
+
   spec = importlib.util.find_spec("eglRenderer")
   if spec is None:
     return False
