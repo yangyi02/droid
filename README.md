@@ -10,13 +10,18 @@ stereo depth extraction, camera-robot extrinsics calibration, and dense 3D point
 git clone --recurse-submodules https://github.com/yangyi02/droid.git
 cd droid
 
-# 2. Install dependencies + download model weights
+# 2. Create the virtualenv -- setup.sh installs into whichever python is
+#    active, so without this it goes into the system interpreter
+python3 -m venv venv
+source venv/bin/activate
+
+# 3. Install dependencies + download model weights
 bash setup.sh
 
-# 3. Mount GCS input/output buckets
+# 4. Mount GCS input/output buckets
 bash mount_gcs.sh
 
-# 4. Run pipeline (3 stages)
+# 5. Run pipeline (3 stages)
 bash run_parallel.sh --mode depth        # Stage 1: depth
 bash run_parallel.sh --mode extrinsics  # Stage 2: extrinsics
 bash run_parallel.sh --mode tracks      # Stage 3: tracks
@@ -122,12 +127,14 @@ droid/
 │   ├── verify_downloads.sh    #   Size-check downloads, delete corrupt files
 │   ├── visualize_groundtruth_colab.ipynb   # Self-contained ground-truth viewer
 │   └── visualize_tracks_groundtruth.ipynb  # 3D/2D track inspection, all episodes
-├── pipeline.ipynb             # Interactive pipeline notebook (flag-based execution flow)
-├── filter_points.ipynb        # Dropping background points carried away by the gripper
+├── notebooks/                 # Interactive notebooks (run from anywhere in the checkout)
+│   ├── pipeline.ipynb         #   Whole pipeline, one episode at a time (flag-based flow)
+│   ├── filter_points.ipynb    #   Dropping background points carried away by the gripper
+│   └── pybullet_numpy_benchmark.ipynb  # Why PyBullet must be built with NumPy support
 ├── reports/                   # Tech-report statistics and figures
 │   ├── compute_stats.py       #   Dataset-level statistics
 │   └── figures.ipynb          #   Qualitative figure generation
-├── episodes_success.txt       # Successful DROID episode IDs (pipeline.ipynb samples from these)
+├── episodes_success.txt       # Successful DROID episode IDs (notebooks/pipeline.ipynb samples from these)
 ├── assets/                    # Local assets (Franka + Robotiq URDF)
 └── third_party/               # Gitignored: submodule source + downloaded weights
     ├── s2m2/                  #   Stereo matching model (submodule)
@@ -245,9 +252,10 @@ rather than the GPU count — which is why it is a separate runner from
 
 ## Interactive Notebook
 
-`pipeline.ipynb` runs one episode at a time, for debugging. It works both ways
-round: open it from a local checkout and it uses that checkout as-is, or open it
-[in Colab](https://colab.research.google.com/github/yangyi02/droid/blob/main/pipeline.ipynb)
+`notebooks/pipeline.ipynb` runs one episode at a time, for debugging. It works
+both ways round: open it from a local checkout and it uses that checkout as-is
+(from any directory inside it), or open it
+[in Colab](https://colab.research.google.com/github/yangyi02/droid/blob/main/notebooks/pipeline.ipynb)
 and the first cell clones the repo. Nothing is pulled or cloned over a local
 working tree.
 
