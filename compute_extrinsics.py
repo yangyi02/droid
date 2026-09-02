@@ -146,13 +146,26 @@ def robot_depth_loss(batch_X, T_opt, K, batch_obs, is_wrist):
 
 # Phase 2: Unified Camera-Robot Alignment (external + wrist)
 def phase2_per_camera_alignment(scene_constants, pb_renderer, phase1_scene_state,
-                                device, outer_steps=3, inner_steps=167,
+                                device, outer_steps=1, inner_steps=500,
                                 render_scale=0.5):
   """Unified Phase 2: optimize all cameras against robot body/gripper depth.
 
-  Two nested loops rather than one: the point cloud is whatever the camera sees
-  from its current estimate, so it has to be re-rendered as that estimate moves.
-  The inner loop is pure torch on a cloud that is constant within it.
+  outer_steps re-renders the point cloud from the current estimate partway
+  through, which is what v50 did (5 passes of 100). It turns out not to be
+  worth it: over three episodes and two seeds, 1x500, 3x167 and 5x100 land
+  within the seed-to-seed noise of each other after phase 3, while phase 2
+  costs 16 s, 27 s and 39 s respectively -- and the wrist camera is
+  consistently slightly *better* with a single pass.
+
+  That fits what re-rendering actually changes. The 3D points sit on the robot,
+  whose world pose comes from the joint angles, not from the extrinsic; moving
+  the estimate only changes which of those points are visible. So a refresh
+  swaps the point set out from under an optimizer whose momentum carries across
+  it, without supplying new information.
+
+  The knob stays because a bad enough starting estimate could in principle
+  render a cloud that misses the robot, and none of the three episodes tested
+  that case.
   """
   print("\nPhase 2: Unified camera-robot alignment (external + wrist)...")
   wrist_cam = scene_constants['meta']['wrist_serial']
