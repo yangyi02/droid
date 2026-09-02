@@ -6,7 +6,10 @@ PyBulletRenderer (pybullet): segmentation + depth renderer for robot
   masking and URDF tracking in compute_tracks.
 """
 
+import hashlib
+import importlib.util
 import os
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import pybullet as p
@@ -125,15 +128,77 @@ class TensorRobotRenderer:
 # PyBulletRenderer — for compute_tracks (segmentation + masking)
 # ===========================================================================
 
+
+def _hidden_on_arm(name):
+  """Arm-body links the ghost body draws instead (the Robotiq hand)."""
+  return "hand" in name or "finger" in name
+
+
+def _hidden_on_ghost(name):
+  """Ghost-body links the arm body draws instead (the whole Panda arm)."""
+  return "panda_link" in name
+
+
+def _load_egl():
+  """Load pybullet's GPU rasteriser into the current connection.
+
+  Two traps. The module pybullet ships is `eglRenderer`; `_eglRendererPlugin`
+  is only the name it registers under, so asking find_spec for the latter
+  silently returns None. And the plugin only sees geometry registered after it
+  loads, so this has to run before the first loadURDF -- otherwise the renders
+  come back empty, very fast, which reads like a speedup.
+  """
+  spec = importlib.util.find_spec("eglRenderer")
+  if spec is None:
+    return False
+  try:
+    return p.loadPlugin(spec.origin, "_eglRendererPlugin") >= 0
+  except p.error:
+    return False
+
+
+def _trimmed_urdf(src, hidden):
+  """Copy `src` with the geometry of `hidden(link_name)` links removed.
+
+  Both <visual> and <collision> have to go: a link with no visual is drawn
+  from its collision mesh instead, which is coarser and slightly fatter, so
+  dropping one alone leaves the link on screen in the wrong shape.
+
+  The copy is written beside the original, which keeps every relative and
+  package:// mesh path resolving as it did. Gitignored as _trimmed_*.urdf.
+  """
+  tree = ET.parse(src)
+  stripped = []
+  for link in tree.getroot().findall("link"):
+    if hidden(link.get("name", "")):
+      gone = link.findall("visual") + link.findall("collision")
+      for element in gone:
+        link.remove(element)
+      if gone:
+        stripped.append(link.get("name"))
+  tag = hashlib.md5((src + repr(stripped)).encode()).hexdigest()[:8]
+  out = os.path.join(os.path.dirname(src), f"_trimmed_{tag}.urdf")
+  if not os.path.exists(out):
+    tree.write(out)
+  return out
+
 class PyBulletRenderer:
   """Dual-body PyBullet renderer: Franka arm + Robotiq gripper.
 
   The 'robot' body renders the arm links (hand/finger hidden).
   The 'ghost' body renders the gripper (arm links hidden).
   Together they form the complete visual model.
+
+  gpu=True renders on the EGL rasteriser instead of the CPU one: ~4.4x faster
+  at 1280x720 and up to ~35x at the small resolutions a point-cloud pass wants.
+  It also changes how the two bodies hide their unwanted links -- alpha=0 means
+  nothing to EGL, so the geometry is stripped from the URDF instead. Renders
+  are not bit-identical across the two (mask IoU 0.98, agreeing to under a
+  millimetre away from silhouettes), so it is off by default. See
+  notebooks/pybullet_egl_mask_benchmark.ipynb.
   """
 
-  def __init__(self, ghost_urdf=None):
+  def __init__(self, ghost_urdf=None, gpu=False):
     import pybullet_data
 
     # A pybullet built without NumPy support marshals every pixel of
@@ -156,10 +221,18 @@ class PyBulletRenderer:
     p.connect(p.DIRECT)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
-    # No EGL plugin on purpose -- see _render_raw.
+    # Before the first loadURDF, or the plugin sees no geometry. Falls back to
+    # the CPU rasteriser when there is no GPU, rather than rendering nothing.
+    self.gpu = bool(gpu) and _load_egl()
+    self.renderer = (p.ER_BULLET_HARDWARE_OPENGL if self.gpu
+                     else p.ER_TINY_RENDERER)
 
     # Real body: thin arm (hand/finger hidden)
-    self.robot_id = p.loadURDF("franka_panda/panda.urdf", useFixedBase=True)
+    robot_urdf = os.path.join(pybullet_data.getDataPath(),
+                              "franka_panda", "panda.urdf")
+    if self.gpu:
+      robot_urdf = _trimmed_urdf(robot_urdf, _hidden_on_arm)
+    self.robot_id = p.loadURDF(robot_urdf, useFixedBase=True)
     self.arm_joints = [
         i for i in range(p.getNumJoints(self.robot_id))
         if "panda_joint" in p.getJointInfo(self.robot_id, i)[1].decode()
@@ -170,11 +243,14 @@ class PyBulletRenderer:
     for i in range(-1, p.getNumJoints(self.robot_id)):
       name = (p.getBodyInfo(self.robot_id)[0].decode() if i == -1
               else p.getJointInfo(self.robot_id, i)[12].decode())
-      if "hand" in name or "finger" in name:
-        p.changeVisualShape(self.robot_id, i, rgbaColor=[0, 0, 0, 0])
+      if _hidden_on_arm(name):
+        if not self.gpu:                    # on gpu the geometry is gone
+          p.changeVisualShape(self.robot_id, i, rgbaColor=[0, 0, 0, 0])
         self.hidden_robot_links.append(i)
 
     # Ghost body: Robotiq gripper (arm links hidden)
+    if self.gpu:
+      ghost_urdf = _trimmed_urdf(ghost_urdf, _hidden_on_ghost)
     self.ghost_id = p.loadURDF(ghost_urdf, useFixedBase=True)
     self.ghost_arm_joints = [
         i for i in range(p.getNumJoints(self.ghost_id))
@@ -199,8 +275,9 @@ class PyBulletRenderer:
     for i in range(-1, p.getNumJoints(self.ghost_id)):
       name = (p.getBodyInfo(self.ghost_id)[0].decode() if i == -1
               else p.getJointInfo(self.ghost_id, i)[12].decode())
-      if "panda_link" in name:
-        p.changeVisualShape(self.ghost_id, i, rgbaColor=[0, 0, 0, 0])
+      if _hidden_on_ghost(name):
+        if not self.gpu:
+          p.changeVisualShape(self.ghost_id, i, rgbaColor=[0, 0, 0, 0])
         self.hidden_ghost_links.append(i)
 
   def update_robot_pose(self, joint_angles, gripper_state=None,
@@ -239,20 +316,12 @@ class PyBulletRenderer:
         cam_pos.tolist(), (cam_pos + extrinsic[:3, 2]).tolist(),
         (-extrinsic[:3, 1]).tolist())
     proj_matrix = self._get_projection_matrix(K, w, h)
-    # ER_TINY_RENDERER, the CPU rasteriser, spelled out rather than left to the
-    # ER_BULLET_HARDWARE_OPENGL fallback. The GPU path is ~4.4x faster on this
-    # two-body scene (28 vs 124 ms per 1280x720 frame on an A100, medians) but
-    # produces a *different* image: both bodies are hidden link-by-link with
-    # rgbaColor alpha=0, and the EGL rasteriser draws alpha=0 links anyway. The
-    # ghost's hidden arm then occludes the real one -- on the Panda the robot
-    # mask collapses from 4.43% of the frame to 0.36%, IoU 0.08 against this
-    # renderer's own output. Switching rasterisers means first hiding links
-    # some way that both of them respect: removing the geometry from the URDF
-    # works, and notebooks/pybullet_egl_mask_benchmark.ipynb measures all of
-    # this and demonstrates that fix.
+    # Spelled out rather than left to the ER_BULLET_HARDWARE_OPENGL fallback,
+    # which silently lands on the CPU rasteriser when no EGL plugin is loaded.
+    # Which of the two is in use is decided once, in __init__.
     _, _, _, depth_buf, seg_buf = p.getCameraImage(
         w, h, viewMatrix=view_matrix, projectionMatrix=proj_matrix,
-        renderer=p.ER_TINY_RENDERER,
+        renderer=self.renderer,
         flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX)
     return depth_buf, seg_buf
 

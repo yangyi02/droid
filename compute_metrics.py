@@ -125,7 +125,7 @@ def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer,
       w_img, h_img,
       viewMatrix=view_matrix,
       projectionMatrix=proj_matrix,
-      renderer=p.ER_BULLET_HARDWARE_OPENGL,
+      renderer=pb_renderer.renderer,
       flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
   )
 
