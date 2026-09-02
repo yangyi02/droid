@@ -38,7 +38,10 @@ from compute_extrinsics import (batched_chamfer_distance,
                                 get_cam_points_local_t)
 from core.geometry import project_points
 from core.io import OUTPUT_ROOT, load_depth_data, load_extrinsics, get_accelerator
-from core.physics import PyBulletRenderer
+from core.physics import (PyBulletRenderer, compute_robot_loss_batched,
+                          compute_wrist_loss_batched,
+                          get_foreground_gripper_points,
+                          get_foreground_robot_points)
 from core.runner import (add_sharding_args, list_episode_dirs,
                          run_episodes, shard_episodes)
 
@@ -48,214 +51,15 @@ from core.runner import (add_sharding_args, list_episode_dirs,
 # (from core/pybullet_extrinsics.py)
 # ===========================================================================
 
-def get_foreground_robot_points(T_init, K, obs_depth, pb_renderer, device,
-                                max_pts=2000):
-  """Extract robot point cloud via PyBullet depth rendering and reprojection.
-
-  Renders the full robot body at the given extrinsic pose, selects pixels
-  where the rendered depth is nonzero, and lifts them to world-frame 3D
-  points.
-
-  Args:
-    T_init: (4, 4) NumPy camera-to-world extrinsic matrix.
-    K: (3, 3) NumPy intrinsic matrix.
-    obs_depth: (H, W) NumPy observed depth map (used only for resolution).
-    pb_renderer: ``PyBulletRenderer`` instance (from ``core.physics``).
-    device: torch device string or object.
-    max_pts: Target number of output points.
-
-  Returns:
-    (max_pts, 3) float32 tensor on *device*, or ``None`` if too few pixels.
-  """
-  h_img, w_img = obs_depth.shape
-  render_d = pb_renderer.render_depth(T_init, K, w_img, h_img)
-
-  v_r, u_r = np.where(render_d > 0)
-  z_r = render_d[v_r, u_r]
-  if len(z_r) < max_pts:
-    return None
-
-  P_cam_r = np.stack([
-      (u_r - K[0, 2]) * z_r / K[0, 0],
-      (v_r - K[1, 2]) * z_r / K[1, 1],
-      z_r,
-      np.ones_like(z_r),
-  ])
-  pts_robot_world = (T_init @ P_cam_r)[:3, :].T
-
-  idx = np.random.choice(
-      len(pts_robot_world), max_pts,
-      replace=(len(pts_robot_world) < max_pts),
-  )
-  return torch.tensor(
-      pts_robot_world[idx], dtype=torch.float32, device=device,
-  )
-
-
-def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer,
-                                  device, max_pts=2000):
-  """Extract gripper-only point cloud using PyBullet segmentation mask.
-
-  Renders a full camera image and filters by the ghost body's segmentation
-  ID so that only gripper pixels survive.  Returns **camera-frame**
-  homogeneous coordinates (4, max_pts) for hand-eye optimization.
-
-  Args:
-    T_cam_world: (4, 4) NumPy camera-to-world extrinsic matrix.
-    K: (3, 3) NumPy intrinsic matrix.
-    obs_depth: (H, W) NumPy observed depth map (used only for resolution).
-    pb_renderer: ``PyBulletRenderer`` instance.
-    device: torch device string or object.
-    max_pts: Target number of output points.
-
-  Returns:
-    (4, max_pts) NumPy float64 array of camera-frame homogeneous points,
-    or ``None`` if fewer than 100 valid pixels.
-  """
-  h_img, w_img = obs_depth.shape
-
-  cam_pos = T_cam_world[:3, 3]
-  target_pos = T_cam_world[:3, 3] + T_cam_world[:3, 2]
-  view_matrix = p.computeViewMatrix(
-      cam_pos.tolist(), target_pos.tolist(), (-T_cam_world[:3, 1]).tolist(),
-  )
-  proj_matrix = pb_renderer._get_projection_matrix(K, w_img, h_img)
-
-  _, _, _, depth_buffer, seg_buffer = p.getCameraImage(
-      w_img, h_img,
-      viewMatrix=view_matrix,
-      projectionMatrix=proj_matrix,
-      renderer=pb_renderer.renderer,
-      flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
-  )
-
-  metric_depth = 0.1 / (10.0 - 9.99 * np.reshape(depth_buffer, (h_img, w_img)))
-  seg_array = np.reshape(seg_buffer, (h_img, w_img)).astype(np.int32)
-  obj_ids = seg_array & 0xFFFFFF
-  valid_ghost = (obj_ids == pb_renderer.ghost_id)
-
-  v_r, u_r = np.where((metric_depth < 9.9) & valid_ghost)
-  z_r = metric_depth[v_r, u_r]
-  if len(z_r) < 100:
-    return None
-
-  P_cam_r = np.stack([
-      (u_r - K[0, 2]) * z_r / K[0, 0],
-      (v_r - K[1, 2]) * z_r / K[1, 1],
-      z_r,
-      np.ones_like(z_r),
-  ])
-
-  idx = np.random.choice(len(z_r), max_pts, replace=(len(z_r) < max_pts))
-  return P_cam_r[:, idx]
-
-
-def compute_robot_loss_batched(batch_X, T_opt, K, batch_obs):
-  """Depth re-projection loss for external cameras.
-
-  Projects world-frame robot points into the camera using *T_opt*, samples
-  observed depth via differentiable ``grid_sample``, and returns the mean
-  absolute depth error.
-
-  Unlike ``compute_robot_loss`` in ``compute_extrinsics.py``, this version
-  does **not** use surface normals, front-face culling, or depth tolerance.
-
-  Args:
-    batch_X: (B, N, 3) world-frame robot points.
-    T_opt: (4, 4) camera-to-world extrinsic (differentiable).
-    K: (3, 3) intrinsic matrix (tensor).
-    batch_obs: (B, 1, H, W) observed depth maps.
-
-  Returns:
-    Scalar loss tensor.
-  """
-  B, _, h_img, w_img = batch_obs.shape
-
-  P_c = (batch_X - T_opt[:3, 3]) @ T_opt[:3, :3]
-  Z_pred = P_c[..., 2]
-
-  u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
-  v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
-
-  grid = torch.stack([
-      (u / (w_img - 1)) * 2 - 1,
-      (v / (h_img - 1)) * 2 - 1,
-  ], dim=-1).unsqueeze(1)
-
-  Z_obs_raw = F.grid_sample(
-      batch_obs, grid, mode='bilinear', padding_mode='border',
-      align_corners=True,
-  ).squeeze(1).squeeze(1)
-
-  valid_mask = (
-      (Z_pred > 0.) & (Z_pred < 1.5) &
-      (Z_obs_raw > 0.) & (Z_obs_raw < 1.5) &
-      (u >= 0) & (u < w_img - 1) &
-      (v >= 0) & (v < h_img - 1)
-  )
-
-  diff = torch.abs(Z_obs_raw[valid_mask] - Z_pred[valid_mask])
-  return torch.nan_to_num(diff.mean(), nan=0.0)
-
-
-def compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K, batch_obs):
-  """Depth re-projection loss for the wrist camera.
-
-  Points are anchored in the end-effector frame.  The function inverts
-  ``T_cam_ee_opt`` to transform them back to the camera frame before
-  projection and depth comparison.
-
-  Args:
-    batch_P_ee: (B, N, 3) points in end-effector frame.
-    T_cam_ee_opt: (4, 4) wrist-cam-to-EE extrinsic (differentiable).
-    K: (3, 3) intrinsic matrix (tensor).
-    batch_obs: (B, 1, H, W) observed depth maps.
-
-  Returns:
-    Scalar loss tensor.
-  """
-  B, _, h_img, w_img = batch_obs.shape
-
-  T_ee_cam = torch.linalg.inv(T_cam_ee_opt)
-  P_c = batch_P_ee @ T_ee_cam[:3, :3].T + T_ee_cam[:3, 3]
-  Z_pred = P_c[..., 2]
-
-  u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
-  v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
-
-  grid = torch.stack([
-      (u / (w_img - 1)) * 2 - 1,
-      (v / (h_img - 1)) * 2 - 1,
-  ], dim=-1).unsqueeze(1)
-
-  Z_obs_raw = F.grid_sample(
-      batch_obs, grid, mode='bilinear', padding_mode='border',
-      align_corners=True,
-  ).squeeze(1).squeeze(1)
-
-  valid_mask = (
-      (Z_pred > 0.) & (Z_pred < 1.5) &
-      (Z_obs_raw > 0.) & (Z_obs_raw < 1.5) &
-      (u >= 0) & (u < w_img - 1) &
-      (v >= 0) & (v < h_img - 1)
-  )
-
-  diff = torch.abs(Z_obs_raw[valid_mask] - Z_pred[valid_mask])
-  return torch.nan_to_num(diff.mean(), nan=0.0)
-
-
-# ===========================================================================
-# Extrinsics evaluation
-# ===========================================================================
-
 @torch.no_grad()
 def evaluate_extrinsics(scene_constants, scene_state, device,
                         pb_renderer=None):
   """Compute extrinsics quality metrics without re-running optimization.
 
-  Uses PyBullet rendering to compute robot depth losses (the evaluation
-  path), as opposed to the yourdfpy tensor_renderer used for optimization
-  in compute_extrinsics.py.
+  Uses PyBullet rendering to compute robot depth losses. compute_extrinsics
+  now optimises against the same renderer, so this is no longer an independent
+  yardstick for the robot columns -- Chamfer and bg overlap, which read only
+  the observed depth, are.
 
   Args:
     scene_constants: Scene data dict.

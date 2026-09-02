@@ -1,9 +1,13 @@
-"""Robot physics renderers for the DROID pipeline.
+"""Robot rendering for the DROID pipeline.
 
-TensorRobotRenderer (yourdfpy): differentiable point cloud renderer for
-  camera-robot depth alignment in compute_extrinsics.
-PyBulletRenderer (pybullet): segmentation + depth renderer for robot
-  masking and URDF tracking in compute_tracks.
+PyBulletRenderer (pybullet): depth + segmentation renderer for the robot.
+  compute_extrinsics optimises camera poses against the point clouds it
+  produces, compute_tracks masks with them, compute_metrics scores with them.
+
+It replaced a yourdfpy renderer that sampled the CAD meshes and approximated
+visibility with front-face culling; the rasteriser gets visibility right for
+free, which is worth most on the wrist camera where the gripper occludes
+itself. notebooks/pybullet_gpu_pipeline_validation.ipynb has the comparison.
 """
 
 import hashlib
@@ -15,113 +19,13 @@ import numpy as np
 import pybullet as p
 
 import torch
-import trimesh
-import yourdfpy
+import torch.nn.functional as F
 
 _SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_URDF = os.path.join(
     _SCRIPT_DIR, "assets", "franka_description",
     "franka_panda_robotiq_2f85_og.urdf",
 )
-
-
-# ===========================================================================
-# TensorRobotRenderer — for compute_extrinsics (differentiable alignment)
-# ===========================================================================
-
-class TensorRobotRenderer:
-  """High-speed robot point cloud renderer using yourdfpy forward kinematics."""
-
-  def __init__(self, urdf_path=None, device="cuda", total_samples=100000):
-    if urdf_path is None:
-      urdf_path = _DEFAULT_URDF
-    self.device = device
-    self.dtype = torch.float32
-    self.total_samples = total_samples
-    print(f"[TensorRobotRenderer] Loading yourdfpy model from {urdf_path}...")
-    self.robot = yourdfpy.URDF.load(urdf_path)
-
-    self.mesh_points = {}
-    self.world_points_cache = {}
-
-    # Parse gripper joint names and kinematic mirror signs
-    self.gripper_joint_names = []
-    self.gripper_signs = []
-    for joint_name, joint in self.robot.joint_map.items():
-      if joint.type != 'fixed' and 'panda_joint' not in joint_name:
-        self.gripper_joint_names.append(joint_name)
-        base_sign = -1 if 'right' in joint_name else 1
-        self.gripper_signs.append(
-            base_sign * (-1 if any(k in joint_name for k in ['inner_finger', 'follower', 'finger_tip']) else 1)
-        )
-
-  def _sample_mesh(self):
-    """Pre-sample mesh surface points and face normals."""
-    node_names, mesh_objs, mesh_areas = [], [], []
-    for node_name in self.robot.scene.graph.nodes_geometry:
-      _, geom_name = self.robot.scene.graph[node_name]
-      mesh = self.robot.scene.geometry.get(geom_name)
-      if mesh is None or mesh.area <= 0:
-        continue
-      area = mesh.area * (0.0001 if any(k in geom_name.lower() for k in ['hand_camera', 'camera']) else 1.0)
-      node_names.append(node_name)
-      mesh_objs.append(mesh)
-      mesh_areas.append(area)
-
-    total_area = sum(mesh_areas)
-    for name, mesh, area in zip(node_names, mesh_objs, mesh_areas):
-      count = max(100, int(self.total_samples * area / total_area))
-      pts, face_idx = trimesh.sample.sample_surface(mesh, count)
-      self.mesh_points[name] = torch.tensor(
-          np.hstack([pts, mesh.face_normals[face_idx]]),
-          dtype=self.dtype, device=self.device,
-      )
-
-  def get_world_points(self, joint_positions, gripper_state, only_gripper=False, num_points=None):
-    """Return world-frame 3D points with normals as (N, 6) tensor."""
-    cache_key = tuple(
-        np.round(joint_positions, 4).tolist()
-        + [round(float(gripper_state), 4), int(only_gripper), num_points]
-    )
-    if cache_key in self.world_points_cache:
-      return self.world_points_cache[cache_key]
-
-    # Assemble joint configuration
-    cfg = {f'panda_joint{i+1}': float(joint_positions[i]) for i in range(7)}
-    angle = (np.clip(float(gripper_state), 0.0, 1.0) * 0.8028) - 0.08
-    for j_name, sign in zip(self.gripper_joint_names, self.gripper_signs):
-      cfg[j_name] = angle * sign
-
-    self.robot.update_cfg(cfg)
-    if not self.mesh_points:
-      self._sample_mesh()
-
-    all_pts = []
-    gripper_keywords = ['hand', 'link8', 'robotiq', 'finger', 'knuckle', 'follower', 'pad', 'inner', 'outer']
-
-    for node_name, local_data in self.mesh_points.items():
-      if only_gripper and not any(k in node_name.lower() for k in gripper_keywords):
-        continue
-
-      local_pts, local_normals = local_data[:, :3], local_data[:, 3:]
-      pose = torch.tensor(self.robot.scene.graph[node_name][0], dtype=self.dtype, device=self.device)
-
-      pts_h = torch.cat([local_pts, torch.ones((local_pts.shape[0], 1), device=self.device, dtype=self.dtype)], dim=1)
-      world_pts = torch.mm(pts_h, pose.T)[:, :3]
-      world_normals = torch.mm(local_normals, pose[:3, :3].T)
-
-      all_pts.append(torch.cat([world_pts, world_normals], dim=1))
-
-    if not all_pts:
-      return None
-    out_pts = torch.cat(all_pts, dim=0)
-
-    # Random subsample if requested
-    if num_points is not None and out_pts.shape[0] > num_points:
-      out_pts = out_pts[torch.randperm(out_pts.shape[0], device=self.device)[:num_points]]
-
-    self.world_points_cache[cache_key] = out_pts
-    return out_pts
 
 
 # ===========================================================================
@@ -362,3 +266,205 @@ class PyBulletRenderer:
     obj_ids = seg_array & 0xFFFFFF
     link_ids = (seg_array >> 24) - 1
     return obj_ids, link_ids, metric
+
+
+# ===========================================================================
+# Robot point clouds and depth losses — shared by compute_extrinsics
+# (optimization) and compute_metrics (evaluation)
+# ===========================================================================
+
+
+def get_foreground_robot_points(T_init, K, obs_depth, pb_renderer, device,
+                                max_pts=2000):
+  """Extract robot point cloud via PyBullet depth rendering and reprojection.
+
+  Renders the full robot body at the given extrinsic pose, selects pixels
+  where the rendered depth is nonzero, and lifts them to world-frame 3D
+  points.
+
+  Args:
+    T_init: (4, 4) NumPy camera-to-world extrinsic matrix.
+    K: (3, 3) NumPy intrinsic matrix.
+    obs_depth: (H, W) NumPy observed depth map (used only for resolution).
+    pb_renderer: ``PyBulletRenderer`` instance (from ``core.physics``).
+    device: torch device string or object.
+    max_pts: Target number of output points.
+
+  Returns:
+    (max_pts, 3) float32 tensor on *device*, or ``None`` if too few pixels.
+  """
+  h_img, w_img = obs_depth.shape
+  render_d = pb_renderer.render_depth(T_init, K, w_img, h_img)
+
+  v_r, u_r = np.where(render_d > 0)
+  z_r = render_d[v_r, u_r]
+  if len(z_r) < max_pts:
+    return None
+
+  P_cam_r = np.stack([
+      (u_r - K[0, 2]) * z_r / K[0, 0],
+      (v_r - K[1, 2]) * z_r / K[1, 1],
+      z_r,
+      np.ones_like(z_r),
+  ])
+  pts_robot_world = (T_init @ P_cam_r)[:3, :].T
+
+  idx = np.random.choice(
+      len(pts_robot_world), max_pts,
+      replace=(len(pts_robot_world) < max_pts),
+  )
+  return torch.tensor(
+      pts_robot_world[idx], dtype=torch.float32, device=device,
+  )
+
+
+def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer,
+                                  device, max_pts=2000):
+  """Extract gripper-only point cloud using PyBullet segmentation mask.
+
+  Renders a full camera image and filters by the ghost body's segmentation
+  ID so that only gripper pixels survive.  Returns **camera-frame**
+  homogeneous coordinates (4, max_pts) for hand-eye optimization.
+
+  Args:
+    T_cam_world: (4, 4) NumPy camera-to-world extrinsic matrix.
+    K: (3, 3) NumPy intrinsic matrix.
+    obs_depth: (H, W) NumPy observed depth map (used only for resolution).
+    pb_renderer: ``PyBulletRenderer`` instance.
+    device: torch device string or object.
+    max_pts: Target number of output points.
+
+  Returns:
+    (4, max_pts) NumPy float64 array of camera-frame homogeneous points,
+    or ``None`` if fewer than 100 valid pixels.
+  """
+  h_img, w_img = obs_depth.shape
+
+  cam_pos = T_cam_world[:3, 3]
+  target_pos = T_cam_world[:3, 3] + T_cam_world[:3, 2]
+  view_matrix = p.computeViewMatrix(
+      cam_pos.tolist(), target_pos.tolist(), (-T_cam_world[:3, 1]).tolist(),
+  )
+  proj_matrix = pb_renderer._get_projection_matrix(K, w_img, h_img)
+
+  _, _, _, depth_buffer, seg_buffer = p.getCameraImage(
+      w_img, h_img,
+      viewMatrix=view_matrix,
+      projectionMatrix=proj_matrix,
+      renderer=pb_renderer.renderer,
+      flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
+  )
+
+  metric_depth = 0.1 / (10.0 - 9.99 * np.reshape(depth_buffer, (h_img, w_img)))
+  seg_array = np.reshape(seg_buffer, (h_img, w_img)).astype(np.int32)
+  obj_ids = seg_array & 0xFFFFFF
+  valid_ghost = (obj_ids == pb_renderer.ghost_id)
+
+  v_r, u_r = np.where((metric_depth < 9.9) & valid_ghost)
+  z_r = metric_depth[v_r, u_r]
+  if len(z_r) < 100:
+    return None
+
+  P_cam_r = np.stack([
+      (u_r - K[0, 2]) * z_r / K[0, 0],
+      (v_r - K[1, 2]) * z_r / K[1, 1],
+      z_r,
+      np.ones_like(z_r),
+  ])
+
+  idx = np.random.choice(len(z_r), max_pts, replace=(len(z_r) < max_pts))
+  return P_cam_r[:, idx]
+
+
+def compute_robot_loss_batched(batch_X, T_opt, K, batch_obs):
+  """Depth re-projection loss for external cameras.
+
+  Projects world-frame robot points into the camera using *T_opt*, samples
+  observed depth via differentiable ``grid_sample``, and returns the mean
+  absolute depth error.
+
+  Unlike ``compute_robot_loss`` in ``compute_extrinsics.py``, this version
+  does **not** use surface normals, front-face culling, or depth tolerance.
+
+  Args:
+    batch_X: (B, N, 3) world-frame robot points.
+    T_opt: (4, 4) camera-to-world extrinsic (differentiable).
+    K: (3, 3) intrinsic matrix (tensor).
+    batch_obs: (B, 1, H, W) observed depth maps.
+
+  Returns:
+    Scalar loss tensor.
+  """
+  B, _, h_img, w_img = batch_obs.shape
+
+  P_c = (batch_X - T_opt[:3, 3]) @ T_opt[:3, :3]
+  Z_pred = P_c[..., 2]
+
+  u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
+  v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
+
+  grid = torch.stack([
+      (u / (w_img - 1)) * 2 - 1,
+      (v / (h_img - 1)) * 2 - 1,
+  ], dim=-1).unsqueeze(1)
+
+  Z_obs_raw = F.grid_sample(
+      batch_obs, grid, mode='bilinear', padding_mode='border',
+      align_corners=True,
+  ).squeeze(1).squeeze(1)
+
+  valid_mask = (
+      (Z_pred > 0.) & (Z_pred < 1.5) &
+      (Z_obs_raw > 0.) & (Z_obs_raw < 1.5) &
+      (u >= 0) & (u < w_img - 1) &
+      (v >= 0) & (v < h_img - 1)
+  )
+
+  diff = torch.abs(Z_obs_raw[valid_mask] - Z_pred[valid_mask])
+  return torch.nan_to_num(diff.mean(), nan=0.0)
+
+
+def compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K, batch_obs):
+  """Depth re-projection loss for the wrist camera.
+
+  Points are anchored in the end-effector frame.  The function inverts
+  ``T_cam_ee_opt`` to transform them back to the camera frame before
+  projection and depth comparison.
+
+  Args:
+    batch_P_ee: (B, N, 3) points in end-effector frame.
+    T_cam_ee_opt: (4, 4) wrist-cam-to-EE extrinsic (differentiable).
+    K: (3, 3) intrinsic matrix (tensor).
+    batch_obs: (B, 1, H, W) observed depth maps.
+
+  Returns:
+    Scalar loss tensor.
+  """
+  B, _, h_img, w_img = batch_obs.shape
+
+  T_ee_cam = torch.linalg.inv(T_cam_ee_opt)
+  P_c = batch_P_ee @ T_ee_cam[:3, :3].T + T_ee_cam[:3, 3]
+  Z_pred = P_c[..., 2]
+
+  u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
+  v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
+
+  grid = torch.stack([
+      (u / (w_img - 1)) * 2 - 1,
+      (v / (h_img - 1)) * 2 - 1,
+  ], dim=-1).unsqueeze(1)
+
+  Z_obs_raw = F.grid_sample(
+      batch_obs, grid, mode='bilinear', padding_mode='border',
+      align_corners=True,
+  ).squeeze(1).squeeze(1)
+
+  valid_mask = (
+      (Z_pred > 0.) & (Z_pred < 1.5) &
+      (Z_obs_raw > 0.) & (Z_obs_raw < 1.5) &
+      (u >= 0) & (u < w_img - 1) &
+      (v >= 0) & (v < h_img - 1)
+  )
+
+  diff = torch.abs(Z_obs_raw[valid_mask] - Z_pred[valid_mask])
+  return torch.nan_to_num(diff.mean(), nan=0.0)

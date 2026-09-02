@@ -57,7 +57,7 @@ So What → 结果如何？和先前方法相比好多少？
 |------|-----------|------|-------------------|
 | **Initial estimate** | VGGT (same) | VGGT (same) | 两者都用 VGGT 做初始化 |
 | **Refinement strategy** | Differentiable alignment against robot depth (similar idea) | **Multi-stage**: per-camera independent → global joint Chamfer + Robot loss | **Global joint optimization** 是关键差异：不只是让每个相机对齐 robot，还要让多个相机之间的 environment point clouds 互相一致（Chamfer loss） |
-| **Robot model** | URDF + urdfpy | URDF + yourdfpy (TensorRobotRenderer) + PyBullet | 双 renderer 架构：yourdfpy 用于 differentiable optimization，PyBullet 用于 segmentation masking |
+| **Robot model** | URDF + urdfpy | URDF + PyBullet (EGL 光栅化) | 单 renderer：优化和 masking 用同一条路径。光栅化器天然只给可见表面，不需要像 CAD 采样那样用法线近似可见性——腕部相机上差别最大，夹爪自遮挡最重 |
 | **Quality gate** | `filter_paths_by_extrinsics_quality.py` — 按 final loss 过滤，`max_final_loss=0.10` | No explicit quality gate in code（但可以在论文中讨论） | PointWorld 有一个 advantage：它显式过滤低质量 extrinsics scenes |
 | **Multi-view consistency** | ❌ 每个 camera 独立优化 | ✅ Cross-camera Chamfer loss ensures consistency | 这对 3D tracking quality 至关重要 |
 

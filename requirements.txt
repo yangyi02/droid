@@ -8,7 +8,6 @@ trimesh
 tqdm
 h5py
 mediapy
-yourdfpy
 plotly
 pyrender
 open3d

@@ -35,7 +35,7 @@ bash run_parallel.sh --mode tracks      # Stage 3: tracks
 | Stage | Script | Core Modules | Description |
 |-------|--------|--------------|-------------|
 | 1. Depth | `compute_depth.py` | `core.depth` | SVO decode → S2M2 stereo depth → SAM gripper mask → depth distillation |
-| 2. Extrinsics | `compute_extrinsics.py` | `core.physics` | Dataset extrinsics → differentiable robot alignment → global joint optimization |
+| 2. Extrinsics | `compute_extrinsics.py` | `core.physics` | Dataset extrinsics → rendered robot alignment → global joint optimization |
 | 3. Tracks | `compute_tracks.py` | `core.tracking` | Static background depth consensus + URDF FK robot tracks (model-free) |
 
 ### Stage 1 — `compute_depth.py`
@@ -65,7 +65,7 @@ robot.npz                      # joint_positions, T_ee_base_all, T_cam_ee_init, 
 
 ### Stage 2 — `compute_extrinsics.py`
 
-Multi-stage camera extrinsics calibration using differentiable rendering and point cloud alignment.
+Multi-stage camera extrinsics calibration: the robot is rasterised from each camera's current pose estimate, and the resulting point cloud is aligned against the observed depth.
 
 | Stage | Description |
 |-------|-------------|
@@ -113,7 +113,7 @@ droid/
 │   ├── geometry.py            #   3D math: unproject, project, make_4x4, rodrigues
 │   ├── io.py                  #   Data loading: get_accelerator, load_depth/extrinsics
 │   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
-│   ├── physics.py             #   TensorRobotRenderer + PyBulletRenderer
+│   ├── physics.py             #   PyBulletRenderer + robot point clouds and depth losses
 │   ├── runner.py              #   Episode sharding + resume-aware batch loop
 │   ├── tracking.py            #   URDFKinematicsTracker (FK propagation + visibility)
 │   └── visualization.py       #   Visualization helpers (point clouds, tracking videos, 4D orbit)

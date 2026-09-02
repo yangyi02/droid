@@ -24,7 +24,10 @@ import torch.optim as optim
 
 from core.geometry import make_4x4, make_T
 from core.io import OUTPUT_ROOT, get_accelerator, load_depth_data, load_metadata
-from core.physics import TensorRobotRenderer
+from core.physics import (PyBulletRenderer, compute_robot_loss_batched,
+                          compute_wrist_loss_batched,
+                          get_foreground_gripper_points,
+                          get_foreground_robot_points)
 from core.runner import (add_sharding_args, list_episode_dirs,
                          run_episodes, shard_episodes)
 
@@ -82,132 +85,133 @@ def phase1_init_extrinsics(scene_constants, extrinsics_db):
 
 
 # Shared Loss & Data Factory
-def compute_robot_loss(batch_X_base, T_cam_to_base, K, batch_obs, depth_tolerance):
-  """Unified depth re-projection loss with normals, front-face culling, and tolerance."""
-  B, _, h_img, w_img = batch_obs.shape
+# Robot point clouds, rendered under the current extrinsic estimate
+def extract_robot_clouds(cam_id, scene_constants, pb_renderer, base_extrinsic,
+                         device, render_scale=0.5):
+  """Rasterise the robot from `base_extrinsic` and lift it to a point cloud.
 
-  T_base_to_cam = torch.linalg.inv(T_cam_to_base)
-  rot, t = T_base_to_cam[:3, :3], T_base_to_cam[:3, 3]
+  For external cameras the points come back in the world frame; for the wrist
+  they are anchored in the EE frame, which is what the hand-eye loss wants.
 
-  pts_base, normals_base = batch_X_base[..., :3], batch_X_base[..., 3:]
-
-  P_c = pts_base @ rot.T + t
-  Z_pred = P_c[..., 2].clamp(min=1e-4)
-
-  # Front-face culling via normal dot product
-  normals_c = normals_base @ rot.T
-  front_facing = (normals_c * P_c).sum(dim=-1) < 0
-
-  u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
-  v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
-
-  grid = torch.stack([(u / (w_img - 1)) * 2 - 1, (v / (h_img - 1)) * 2 - 1], dim=-1).unsqueeze(1)
-  Z_obs = F.grid_sample(batch_obs, grid, mode="bilinear", padding_mode="border", align_corners=True).squeeze(1).squeeze(1)
-
-  diff = torch.abs(Z_obs - Z_pred)
-  valid = (Z_pred > 0.) & (Z_obs > 0.) & \
-          (u >= 0) & (u < w_img - 1) & (v >= 0) & (v < h_img - 1) & \
-          front_facing & (diff < depth_tolerance)
-
-  return torch.nan_to_num(diff[valid].mean(), nan=0.0)
-
-
-def extract_robot_physical_tensors(cam_id, scene_constants, tensor_renderer):
-  """One-shot physical tensor extraction factory for any camera.
-
-  For external cameras: returns CAD points in world frame with normals.
-  For wrist camera: transforms CAD gripper points into EE frame.
+  The rasteriser hands back exactly the surface the camera can see, so unlike
+  the CAD-sampling path this replaced there are no normals to cull back faces
+  with -- visibility is already correct. Rendering at `render_scale` costs a
+  quarter of the time and moves the cloud by ~2 mm, against a ~1.9 mm floor
+  from subsampling it to 2000 points anyway; see
+  notebooks/pybullet_gpu_pipeline_validation.ipynb.
   """
-  device = tensor_renderer.device
   is_wrist = (cam_id == scene_constants['meta']['wrist_serial'])
-  n_frames = len(scene_constants['camera'][cam_id]['raw_depth'])
   T_ee_base_all = scene_constants['robot']['T_ee_base_all']
+  cam_data = scene_constants['camera'][cam_id]
+  h_img, w_img = cam_data['raw_depth'][0].shape
+  w_r, h_r = int(w_img * render_scale), int(h_img * render_scale)
+  K_render = cam_data['K_mat'].copy()
+  K_render[:2] *= render_scale
+  shape_only = np.zeros((h_r, w_r), np.float32)   # only its shape is read
 
   cache_X, cache_obs = [], []
-  for t in range(n_frames):
-    joints = scene_constants['robot']['joint_positions'][t]
-    gripper = scene_constants['robot']['gripper_positions'][t]
-    d_obs = scene_constants['camera'][cam_id]['raw_depth'][t].astype(np.float32)
-
-    cad_pts_world = tensor_renderer.get_world_points(joints, gripper, only_gripper=is_wrist)
-    if cad_pts_world is None:
-      continue
+  for t in range(len(scene_constants['robot']['joint_positions'])):
+    pb_renderer.update_robot_pose(
+        scene_constants['robot']['joint_positions'][t],
+        scene_constants['robot']['gripper_positions'][t])
+    d_obs = cam_data['raw_depth'][t].astype(np.float32)
 
     if is_wrist:
-      # Transform world points into EE frame for hand-eye optimization
-      T_world_to_ee = torch.linalg.inv(torch.tensor(T_ee_base_all[t], dtype=torch.float32, device=device))
-      pts_w_h = torch.cat([cad_pts_world[:, :3], torch.ones((cad_pts_world.shape[0], 1), device=device)], dim=1)
-      pts_base = (T_world_to_ee @ pts_w_h.T).T[:, :3]
-      normals_base = (T_world_to_ee[:3, :3] @ cad_pts_world[:, 3:].T).T
-      cache_X.append(torch.cat([pts_base, normals_base], dim=-1))
+      pts_cam = get_foreground_gripper_points(
+          T_ee_base_all[t] @ base_extrinsic, K_render, shape_only,
+          pb_renderer, device)
+      if pts_cam is None:
+        continue
+      cache_X.append(torch.tensor((base_extrinsic @ pts_cam)[:3, :].T,
+                                  dtype=torch.float32, device=device))
     else:
-      cache_X.append(cad_pts_world)
-
-    cache_obs.append(torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
-
-  # Free cached GPU tensors from get_world_points (already copied into cache_X)
-  tensor_renderer.world_points_cache.clear()
+      pts_world = get_foreground_robot_points(
+          base_extrinsic, K_render, shape_only, pb_renderer, device)
+      if pts_world is None:
+        continue
+      cache_X.append(pts_world)
+    cache_obs.append(torch.tensor(d_obs, dtype=torch.float32,
+                                  device=device)[None, ...])
 
   if not cache_X:
     return None, None
   return torch.stack(cache_X), torch.stack(cache_obs)
 
 
+def robot_depth_loss(batch_X, T_opt, K, batch_obs, is_wrist):
+  """Depth re-projection loss for whichever kind of camera this is."""
+  return (compute_wrist_loss_batched(batch_X, T_opt, K, batch_obs) if is_wrist
+          else compute_robot_loss_batched(batch_X, T_opt, K, batch_obs))
+
+
 # Phase 2: Unified Camera-Robot Alignment (external + wrist)
-def phase2_per_camera_alignment(scene_constants, tensor_renderer, phase1_scene_state):
-  """Unified Phase 2: optimize all cameras against robot body/gripper depth."""
+def phase2_per_camera_alignment(scene_constants, pb_renderer, phase1_scene_state,
+                                device, outer_steps=3, inner_steps=167,
+                                render_scale=0.5):
+  """Unified Phase 2: optimize all cameras against robot body/gripper depth.
+
+  Two nested loops rather than one: the point cloud is whatever the camera sees
+  from its current estimate, so it has to be re-rendered as that estimate moves.
+  The inner loop is pure torch on a cloud that is constant within it.
+  """
   print("\nPhase 2: Unified camera-robot alignment (external + wrist)...")
-  device = tensor_renderer.device
   wrist_cam = scene_constants['meta']['wrist_serial']
   phase2_scene_state = copy.deepcopy(phase1_scene_state)
   T_ee_base_all = scene_constants['robot']['T_ee_base_all']
+  n_frames = len(scene_constants['robot']['joint_positions'])
 
   for cam in scene_constants['camera'].keys():
     is_wrist = (cam == wrist_cam)
     mode = "wrist (gripper-only)" if is_wrist else "external (full body)"
     print(f"\n  Optimizing [{mode}] camera: [{cam}] ...")
 
-    # Extract physical tensors from shared factory
-    batch_X_base, batch_obs = extract_robot_physical_tensors(cam, scene_constants, tensor_renderer)
-    if batch_X_base is None:
-      print(f"    [WARN] No valid physical point cloud extracted! Skipping.")
-      continue
-
-    n_frames_total = len(batch_X_base)
-    K_t = torch.tensor(scene_constants['camera'][cam]['K_mat'], dtype=torch.float32, device=device)
-    T_init_t = torch.tensor(phase1_scene_state[cam]['base_extrinsic'], dtype=torch.float32, device=device)
-
+    K_t = torch.tensor(scene_constants['camera'][cam]['K_mat'],
+                       dtype=torch.float32, device=device)
+    T_init_t = torch.tensor(phase1_scene_state[cam]['base_extrinsic'],
+                            dtype=torch.float32, device=device)
     d_ext = torch.zeros(6, requires_grad=True, device=device)
-    total_steps = 500
     optimizer = optim.Adam([d_ext], lr=0.001)
+    loss_rob = None
 
-    print(f"      Launching GPU tensor gradient descent ({total_steps} steps)...")
-    for step in range(total_steps):
-      optimizer.zero_grad()
-      T_cam_to_base = T_init_t @ make_T(d_ext, device)
-      loss_rob = compute_robot_loss(
-          batch_X_base, T_cam_to_base, K_t, batch_obs,
-          depth_tolerance=float('inf') if is_wrist else 0.15,
-      )
-      loss_rob.backward()
-      optimizer.step()
+    print(f"      {outer_steps} x {inner_steps} steps, "
+          f"re-rendering the cloud between them...")
+    for outer in range(outer_steps):
+      with torch.no_grad():
+        T_cur = (T_init_t @ make_T(d_ext, device)).cpu().numpy()
+      batch_X, batch_obs = extract_robot_clouds(
+          cam, scene_constants, pb_renderer, T_cur, device, render_scale)
+      if batch_X is None:
+        print(f"    [WARN] No valid physical point cloud extracted! Skipping.")
+        break
 
-      if step % 50 == 0 or step == total_steps - 1:
-        with torch.no_grad():
-          rot_deg = torch.norm(d_ext[:3]).item() * (180.0 / np.pi)
-          shift_mm = torch.norm(d_ext[3:]).item() * 1000.0
-        print(f"        Step {step:03d} | Loss: {loss_rob.item():.4f} | Shift: {shift_mm:.2f}mm | Rot: {rot_deg:.2f}°")
+      for _ in range(inner_steps):
+        optimizer.zero_grad()
+        loss_rob = robot_depth_loss(
+            batch_X, T_init_t @ make_T(d_ext, device), K_t, batch_obs, is_wrist)
+        loss_rob.backward()
+        optimizer.step()
+
+      with torch.no_grad():
+        rot_deg = torch.norm(d_ext[:3]).item() * (180.0 / np.pi)
+        shift_mm = torch.norm(d_ext[3:]).item() * 1000.0
+      print(f"        Outer {outer + 1}/{outer_steps} | frames "
+            f"{len(batch_X)} | Loss: {loss_rob.item():.4f} | "
+            f"Shift: {shift_mm:.2f}mm | Rot: {rot_deg:.2f}°")
+
+    if loss_rob is None:
+      continue
 
     with torch.no_grad():
       T_final_np = (T_init_t @ make_T(d_ext, device)).cpu().numpy()
       shift_mm = torch.norm(d_ext[3:]).item() * 1000.0
       rot_deg = torch.norm(d_ext[:3]).item() * (180.0 / np.pi)
-      print(f"  [{cam}] Alignment done! Loss: {loss_rob.item():.4f} (shift: {shift_mm:.2f}mm, rot: {rot_deg:.2f}°)")
+      print(f"  [{cam}] Alignment done! Loss: {loss_rob.item():.4f} "
+            f"(shift: {shift_mm:.2f}mm, rot: {rot_deg:.2f}°)")
 
       phase2_scene_state[cam]['base_extrinsic'] = T_final_np
       phase2_scene_state[cam]['extrinsics'] = (
           T_ee_base_all @ T_final_np if is_wrist
-          else np.tile(T_final_np, (n_frames_total, 1, 1))
+          else np.tile(T_final_np, (n_frames, 1, 1))
       )
 
   return phase2_scene_state
@@ -256,17 +260,26 @@ def get_cam_points_local_t(t, cam_data, device, n_points=2000):
 
 
 # Phase 3: Global Joint Optimization (Chamfer + Robot + Wrist)
-def phase3_global_joint_alignment(scene_constants, prev_scene_state, tensor_renderer,
-                                lr=0.001, n_steps=500,
-                                chamfer_weight=1.0, robot_weight=1.0,
-                                chamfer_n_points=2000,
-                                phase_name="Phase 3"):
+def phase3_global_joint_alignment(scene_constants, prev_scene_state, pb_renderer,
+                                  device, lr=0.001, n_steps=500,
+                                  chamfer_weight=1.0, robot_weight=1.0,
+                                  chamfer_n_points=2000, render_scale=0.5,
+                                  phase_name="Phase 3"):
   """Global joint optimization: Chamfer + Robot depth + Wrist depth.
+
+  Unlike phase 2 the robot clouds are rendered once, from the incoming
+  estimate, and held fixed for the whole run -- the Chamfer term dominates the
+  motion here and re-rendering inside it buys nothing.
+
+  robot_weight is worth leaving at 1.0. At 0.1 the Chamfer term simply
+  overrules the robot term: measured over three episodes it moved Chamfer by
+  about 0.002 while doubling the robot depth loss on an external camera.
 
   Args:
     scene_constants: Scene data dict.
     prev_scene_state: Previous extrinsics to refine.
-    tensor_renderer: TensorRobotRenderer for robot point clouds.
+    pb_renderer: PyBulletRenderer for robot point clouds.
+    device: Torch device.
     lr: Learning rate.
     n_steps: Number of optimization steps.
     robot_weight: Weight for robot depth losses.
@@ -274,18 +287,22 @@ def phase3_global_joint_alignment(scene_constants, prev_scene_state, tensor_rend
   """
   print(f"\n{phase_name}: Global joint optimization "
         f"(Chamfer + Robot + Wrist, lr={lr})...")
-  device = tensor_renderer.device
   wrist_cam = scene_constants['meta']['wrist_serial']
   ext_cams = [c for c in scene_constants['camera'].keys() if c != wrist_cam]
   cam1, cam2 = ext_cams[0], ext_cams[1]
   n_frames = len(scene_constants['robot']['joint_positions'])
   T_ee_all = scene_constants['robot']['T_ee_base_all']
 
-  # Extract robot physical tensors from shared factory
-  print(f"  Extracting robot physical tensor caches...")
-  batch_X1, batch_obs1 = extract_robot_physical_tensors(cam1, scene_constants, tensor_renderer)
-  batch_X2, batch_obs2 = extract_robot_physical_tensors(cam2, scene_constants, tensor_renderer)
-  batch_P_ee, batch_obs_w = extract_robot_physical_tensors(wrist_cam, scene_constants, tensor_renderer)
+  print(f"  Rendering robot physical point clouds...")
+  batch_X1, batch_obs1 = extract_robot_clouds(
+      cam1, scene_constants, pb_renderer,
+      prev_scene_state[cam1]['base_extrinsic'], device, render_scale)
+  batch_X2, batch_obs2 = extract_robot_clouds(
+      cam2, scene_constants, pb_renderer,
+      prev_scene_state[cam2]['base_extrinsic'], device, render_scale)
+  batch_P_ee, batch_obs_w = extract_robot_clouds(
+      wrist_cam, scene_constants, pb_renderer,
+      prev_scene_state[wrist_cam]['base_extrinsic'], device, render_scale)
 
   # Extract Chamfer environment point clouds
   print(f"  Extracting Chamfer environment point clouds...")
@@ -338,9 +355,9 @@ def phase3_global_joint_alignment(scene_constants, prev_scene_state, tensor_rend
     loss_chamfer = l12 + l1w + l2w
 
     # Robot depth losses
-    l_rob1 = compute_robot_loss(batch_X1, T1_opt, K_t1, batch_obs1, depth_tolerance=0.15)
-    l_rob2 = compute_robot_loss(batch_X2, T2_opt, K_t2, batch_obs2, depth_tolerance=0.15)
-    l_wrist = compute_robot_loss(batch_P_ee, Tee_opt, K_t_w, batch_obs_w, depth_tolerance=float('inf'))
+    l_rob1 = robot_depth_loss(batch_X1, T1_opt, K_t1, batch_obs1, is_wrist=False)
+    l_rob2 = robot_depth_loss(batch_X2, T2_opt, K_t2, batch_obs2, is_wrist=False)
+    l_wrist = robot_depth_loss(batch_P_ee, Tee_opt, K_t_w, batch_obs_w, is_wrist=True)
 
     loss_total = chamfer_weight * loss_chamfer + robot_weight * (l_rob1 + l_rob2 + l_wrist)
 
@@ -386,6 +403,7 @@ def phase3_global_joint_alignment(scene_constants, prev_scene_state, tensor_rend
   })
 
   return ultimate_scene_state
+
 
 
 def export_extrinsics(scene_constants, scene_state,
@@ -447,12 +465,13 @@ def _has_final_extrinsics(ep_dir):
 
 
 # Main Execution
-def process_episode(ep_id, tensor_renderer, extrinsics_db, depth_root, export_root):
+def process_episode(ep_id, pb_renderer, extrinsics_db, depth_root, export_root,
+                    device):
   """Phase 1-3 for one episode, then free the GPU memory it held.
 
-  The cleanup has to run whether or not the phases succeed: the per-joint-config
-  tensor cache is the main source of fragmentation-driven OOM once a rank has
-  worked through a few hundred episodes.
+  The cleanup has to run whether or not the phases succeed: the cached depth
+  and point-cloud tensors are the main source of fragmentation-driven OOM once
+  a rank has worked through a few hundred episodes.
   """
   scene_constants = phase1_state = phase2_state = phase3_state = None
   try:
@@ -463,12 +482,12 @@ def process_episode(ep_id, tensor_renderer, extrinsics_db, depth_root, export_ro
                       export_root=export_root, phase_suffix="phase1")
 
     phase2_state = phase2_per_camera_alignment(
-        scene_constants, tensor_renderer, phase1_state)
+        scene_constants, pb_renderer, phase1_state, device)
     export_extrinsics(scene_constants, phase2_state,
                       export_root=export_root, phase_suffix="phase2")
 
     phase3_state = phase3_global_joint_alignment(
-        scene_constants, phase2_state, tensor_renderer,
+        scene_constants, phase2_state, pb_renderer, device,
         lr=0.001, n_steps=500, robot_weight=1.0, phase_name="Phase 3")
     export_extrinsics(scene_constants, phase3_state,
                       export_root=export_root, phase_suffix="phase3")
@@ -476,7 +495,6 @@ def process_episode(ep_id, tensor_renderer, extrinsics_db, depth_root, export_ro
     export_extrinsics(scene_constants, phase3_state, export_root=export_root)
   finally:
     scene_constants = phase1_state = phase2_state = phase3_state = None
-    tensor_renderer.world_points_cache.clear()
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -496,8 +514,11 @@ if __name__ == "__main__":
   print("DROID Stage 2: Camera Extrinsics Calibration Pipeline")
   device = get_accelerator()
   serials_db, _, _, extrinsics_db, _ = load_metadata()
-  tensor_renderer = TensorRobotRenderer(device=device)
-  print("  Using TensorRobotRenderer (yourdfpy)")
+  # gpu=True is what makes this path affordable: the optimizer renders the
+  # robot thousands of times per episode, and the CPU rasteriser costs ~220 ms
+  # a frame against ~8 ms here at half resolution.
+  pb_renderer = PyBulletRenderer(gpu=True)
+  print(f"  Using PyBulletRenderer (EGL: {pb_renderer.gpu})")
 
   target = shard_episodes(list_episode_dirs(args.depth_root),
                           args.rank, args.world_size, args.limit)
@@ -510,7 +531,7 @@ if __name__ == "__main__":
   run_episodes(
       target,
       lambda ep_id: process_episode(
-          ep_id, tensor_renderer, extrinsics_db,
-          args.depth_root, args.export_root),
+          ep_id, pb_renderer, extrinsics_db,
+          args.depth_root, args.export_root, device),
       rank=args.rank, world_size=args.world_size,
       done=done, stage="Stage 2")
