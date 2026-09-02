@@ -135,7 +135,6 @@ class PyBulletRenderer:
 
   def __init__(self, ghost_urdf=None):
     import pybullet_data
-    import importlib.util
 
     # A pybullet built without NumPy support marshals every pixel of
     # getCameraImage into a Python tuple before returning it: ~336 ms per
@@ -157,9 +156,7 @@ class PyBulletRenderer:
     p.connect(p.DIRECT)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
-    egl_spec = importlib.util.find_spec('eglRendererPlugin')
-    if egl_spec:
-      p.loadPlugin(egl_spec.origin, "_eglRendererPlugin")
+    # No EGL plugin on purpose -- see _render_raw.
 
     # Real body: thin arm (hand/finger hidden)
     self.robot_id = p.loadURDF("franka_panda/panda.urdf", useFixedBase=True)
@@ -242,9 +239,17 @@ class PyBulletRenderer:
         cam_pos.tolist(), (cam_pos + extrinsic[:3, 2]).tolist(),
         (-extrinsic[:3, 1]).tolist())
     proj_matrix = self._get_projection_matrix(K, w, h)
+    # ER_TINY_RENDERER, the CPU rasteriser, spelled out rather than left to the
+    # ER_BULLET_HARDWARE_OPENGL fallback. The GPU path is ~2.5x faster (28 vs
+    # 99 ms per 1280x720 frame on an A100) but produces a *different* image:
+    # both bodies are hidden link-by-link with rgbaColor alpha=0, and the EGL
+    # rasteriser draws alpha=0 links anyway. The ghost's hidden arm then
+    # occludes the real one -- measured on the Panda, the robot mask collapses
+    # from 4.43% to 0.36% of the frame, IoU 0.08. Switching renderers means
+    # first hiding links some way that both rasterisers respect.
     _, _, _, depth_buf, seg_buf = p.getCameraImage(
         w, h, viewMatrix=view_matrix, projectionMatrix=proj_matrix,
-        renderer=p.ER_BULLET_HARDWARE_OPENGL,
+        renderer=p.ER_TINY_RENDERER,
         flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX)
     return depth_buf, seg_buf
 
