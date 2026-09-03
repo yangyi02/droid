@@ -4,7 +4,6 @@ import csv
 import json
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from functools import partial
 
 import numpy as np
 from tqdm import tqdm
@@ -212,10 +211,11 @@ def main():
   all_stats = []
   errors_list = []
 
-  worker_fn = partial(_worker, tracks_root=args.tracks_root, depth_root=args.depth_root)
-
   with ProcessPoolExecutor(max_workers=args.workers) as pool:
-    futures = {pool.submit(worker_fn, ep_id): ep_id for ep_id in completed_eps}
+    futures = {
+      pool.submit(_worker, ep_id, args.tracks_root, args.depth_root): ep_id
+      for ep_id in completed_eps
+    }
 
     with tqdm(total=len(futures), desc="Computing stats") as pbar:
       for future in as_completed(futures):

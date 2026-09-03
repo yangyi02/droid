@@ -25,6 +25,10 @@ def safe_float(val, default=float("nan")):
   return float(val)
 
 
+def ee_travel(row):
+  return safe_float(row.get("ee_travel_m"), 0)
+
+
 def apply_quality_filter(
   rows, max_chamfer, max_depth_residual, min_static_points, min_frames, min_ee_travel
 ):
@@ -85,10 +89,10 @@ def sample_diverse(rows, n_target):
 
   ordered = {}
   for scene, scene_rows in by_scene.items():
-    scene_rows.sort(key=lambda r: safe_float(r.get("ee_travel_m"), 0))
+    scene_rows.sort(key=ee_travel)
     ordered[scene] = [scene_rows[i] for i in _spread_order(len(scene_rows))]
 
-  scenes = sorted(ordered, key=lambda s: (-len(ordered[s]), s))
+  scenes = [scene for _, scene in sorted((-len(rows), scene) for scene, rows in ordered.items())]
   selected, round_idx = [], 0
   while len(selected) < n_target:
     took_any = False

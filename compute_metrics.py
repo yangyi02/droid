@@ -6,9 +6,7 @@ import os
 import time
 
 import numpy as np
-import pybullet as p
 import torch
-import torch.nn.functional as F
 
 import compute_extrinsics
 import core.geometry
@@ -131,7 +129,6 @@ def print_metrics(metrics, stage_name=""):
   robw = metrics.get("robot_loss_wrist", float("nan"))
   overlap = metrics.get("bg_overlap_pct", float("nan"))
   track = metrics.get("track_reproj_mean_px", float("nan"))
-  track_med = metrics.get("track_reproj_median_px", float("nan"))
   wrist_bg = metrics.get("track_reproj_wrist_bg_mean_px", float("nan"))
   wrist_bg_med = metrics.get("track_reproj_wrist_bg_median_px", float("nan"))
   static_robot = metrics.get("track_reproj_static_robot_mean_px", float("nan"))
@@ -539,13 +536,6 @@ def _append_row(csv_path, metrics):
     fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def _log_failure(path, ep_id, err):
-  with open(path, "a") as f:
-    fcntl.flock(f, fcntl.LOCK_EX)
-    f.write(f"{ep_id}\t{err}\n")
-    fcntl.flock(f, fcntl.LOCK_UN)
-
-
 def main():
   parser = argparse.ArgumentParser(
     description="Batch quality metrics evaluation for DROID episodes"
@@ -569,7 +559,6 @@ def main():
   output_dir = os.path.abspath(os.path.expanduser(args.output_dir))
   os.makedirs(output_dir, exist_ok=True)
   csv_path = os.path.join(output_dir, "metrics.csv")
-  fail_path = os.path.join(output_dir, "failures.txt")
 
   available = core.runner.list_episode_dirs(args.depth_root) & core.runner.list_episode_dirs(
     args.extrinsics_root

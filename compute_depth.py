@@ -423,9 +423,8 @@ if __name__ == "__main__":
   export_abs = os.path.abspath(os.path.expanduser(args.export_root))
   done = {ep for ep in target if os.path.exists(os.path.join(export_abs, ep, "robot.npz"))}
 
-  core.runner.run_episodes(
-    target,
-    lambda ep_id: process_episode(
+  def run_one(ep_id):
+    process_episode(
       ep_id,
       (s2m2_model, sam_predictor, run_stereo_matching, device),
       (id_to_path, serials_db, keep_ranges),
@@ -433,7 +432,11 @@ if __name__ == "__main__":
       args.min_frames,
       args.max_frames,
       args.export_root,
-    ),
+    )
+
+  core.runner.run_episodes(
+    target,
+    run_one,
     rank=args.rank,
     world_size=args.world_size,
     done=done,

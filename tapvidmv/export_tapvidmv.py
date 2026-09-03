@@ -235,9 +235,13 @@ if __name__ == "__main__":
     else:
       available = read_episode_list(args.episode_list)
       print(f"Read {len(available)} episodes from {args.episode_list}")
+
+    def run_one(episode_id):
+      process_episode(episode_id, args)
+
     core.runner.run_episodes(
       core.runner.shard_episodes(available, args.rank, args.world_size, args.limit),
-      lambda ep_id: process_episode(ep_id, args),
+      run_one,
       rank=args.rank,
       world_size=args.world_size,
       done=core.runner.list_episode_dirs(args.output_root),

@@ -374,7 +374,6 @@ def render_segmentation_video(
   scene_constants, scene_state, pb_renderer, tgt_width=1200, max_frames=None
 ):
   camera_ids = list(scene_constants['camera'].keys())
-  wrist_serial = scene_constants['meta']['wrist_serial']
   n_frames = len(scene_constants['camera'][camera_ids[0]]['video_rgb'])
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
@@ -397,8 +396,6 @@ def render_segmentation_video(
       overlay = img_rgb.copy()
       overlay[robot_mask] = [50, 150, 255]
       blended_img = cv2.addWeighted(img_rgb, 0.6, overlay, 0.4, 0)
-      is_wrist = cam_id == wrist_serial
-      label_color = (0, 255, 255) if is_wrist else (0, 255, 0)
       cv2.putText(
         blended_img, f"Cam [{cam_id}]", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 4
       )

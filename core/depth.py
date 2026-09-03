@@ -1,5 +1,3 @@
-import warnings
-
 import cv2
 import numpy as np
 import torch
@@ -71,14 +69,15 @@ def extract_single_frame_mask(img_rgb, predictor):
     point_coords=points, point_labels=labels, box=bbox, multimask_output=True
   )
 
-  valid_masks = []
+  valid_masks, valid_scores = [], []
   for m, s in zip(masks, scores):
     area_ratio = np.sum(m) / (w * h)
     if 0.02 < area_ratio < 0.45:
-      valid_masks.append((m, s * area_ratio))
+      valid_masks.append(m)
+      valid_scores.append(s * area_ratio)
 
   if valid_masks:
-    best_mask = max(valid_masks, key=lambda x: x[1])[0]
+    best_mask = valid_masks[np.argmax(valid_scores)]
   else:
     best_mask = masks[np.argmax(scores)]
 
@@ -140,11 +139,9 @@ def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
     depth_bank[i, valid_pixels] = raw_depth[valid_pixels]
 
   print("  Computing temporal median depth...")
-  with warnings.catch_warnings():
-    warnings.simplefilter("ignore", category=RuntimeWarning)
-    median_depth = np.nanmedian(depth_bank, axis=0)
-
-  median_depth = np.nan_to_num(median_depth, nan=0.0).astype(np.float32)
+  observed = ~np.isnan(depth_bank).all(axis=0)
+  median_depth = np.zeros((h, w), dtype=np.float32)
+  median_depth[observed] = np.nanmedian(depth_bank[:, observed], axis=0)
   cam_data["empirical_gripper_depth"] = median_depth
   print("  Gripper depth distillation complete.")
 

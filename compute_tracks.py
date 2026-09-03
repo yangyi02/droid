@@ -512,7 +512,7 @@ def process_episode(
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
   print(f"  {len(camera_ids)} cameras × {T_frames} frames (full video)")
 
-  print(f"\nDense at t=0 -> Cross-View Consensus -> Static Points")
+  print("\nDense at t=0 -> Cross-View Consensus -> Static Points")
   static_pts_3d, static_rgb = find_static_candidates(
     scene_constants, scene_state, pb_renderer, num_points=num_static_points
   )
@@ -605,10 +605,9 @@ if __name__ == "__main__":
   export_abs = os.path.abspath(os.path.expanduser(args.export_root))
   done = {ep for ep in target if os.path.exists(os.path.join(export_abs, ep, "tracks_3d.npz"))}
 
-  core.runner.run_episodes(
-    target,
-    lambda ep_id: process_episode(
-      ep_id,
+  def run_one(episode_id):
+    process_episode(
+      episode_id,
       pb_renderer,
       device,
       args.depth_root,
@@ -616,7 +615,11 @@ if __name__ == "__main__":
       args.export_root,
       num_static_points=args.num_static_points,
       max_robot_pts_per_cam=args.max_robot_pts_per_cam,
-    ),
+    )
+
+  core.runner.run_episodes(
+    target,
+    run_one,
     rank=args.rank,
     world_size=args.world_size,
     done=done,

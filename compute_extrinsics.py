@@ -6,7 +6,6 @@ import os
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.optim as optim
 
 import core.geometry
@@ -215,7 +214,7 @@ def global_joint_alignment(
   n_frames = len(scene_constants['robot']['joint_positions'])
   T_ee_all = scene_constants['robot']['T_ee_base_all']
 
-  print(f"  Rendering robot physical point clouds...")
+  print("  Rendering robot physical point clouds...")
   batch_X1, batch_obs1 = extract_robot_clouds(
     cam1, scene_constants, pb_renderer, prev_scene_state[cam1]['base_extrinsic'], device
   )
@@ -226,7 +225,7 @@ def global_joint_alignment(
     wrist_cam, scene_constants, pb_renderer, prev_scene_state[wrist_cam]['base_extrinsic'], device
   )
 
-  print(f"  Extracting Chamfer environment point clouds...")
+  print("  Extracting Chamfer environment point clouds...")
   cache_Pc1, cache_Pc2, cache_Pcw, cache_Tee = [], [], [], []
 
   for t in range(n_frames):
@@ -432,11 +431,12 @@ if __name__ == "__main__":
   export_abs = os.path.abspath(os.path.expanduser(args.export_root))
   done = {ep for ep in target if _has_final_extrinsics(os.path.join(export_abs, ep))}
 
+  def run_one(ep_id):
+    process_episode(ep_id, pb_renderer, extrinsics_db, args.depth_root, args.export_root, device)
+
   core.runner.run_episodes(
     target,
-    lambda ep_id: process_episode(
-      ep_id, pb_renderer, extrinsics_db, args.depth_root, args.export_root, device
-    ),
+    run_one,
     rank=args.rank,
     world_size=args.world_size,
     done=done,
