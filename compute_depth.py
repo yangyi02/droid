@@ -16,9 +16,13 @@ import core.geometry
 import core.io
 import core.runner
 
+
 def init_all_models():
   device = core.io.get_accelerator()
-  print(f"Launching models onto {device} | CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}")
+  print(
+    f"Launching models onto {device} | "
+    f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}"
+  )
   repo_dir = os.path.dirname(os.path.abspath(__file__))
   vendor_dir = os.path.join(repo_dir, "third_party")
   s2m2_src = os.path.join(vendor_dir, "s2m2/src")
@@ -34,16 +38,16 @@ def init_all_models():
   from segment_anything import sam_model_registry, SamPredictor
 
   s2m2_model = torch.compile(
-      load_model(
-          os.path.join(vendor_dir, "s2m2", "weights"),
-          "XL",
-          True,
-          3,
-          device,
-      ).eval()
+    load_model(
+      os.path.join(vendor_dir, "s2m2", "weights"),
+      "XL",
+      True,
+      3,
+      device,
+    ).eval()
   )
   sam = sam_model_registry["vit_h"](
-      checkpoint=os.path.join(vendor_dir, "sam_weights", "sam_vit_h_4b8939.pth")
+    checkpoint=os.path.join(vendor_dir, "sam_weights", "sam_vit_h_4b8939.pth")
   ).to(device)
 
   print("  All foundation models loaded.")
@@ -60,7 +64,9 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
   valid_cams = sorted(set(cam_info.values()))
 
   base_prefix = "gs://xembodiment_data/r2d2/r2d2-data-full/"
-  episode_key = f"{base_prefix}{relative_path}/recordings/MP4--{base_prefix}{relative_path}/trajectory.h5"
+  episode_key = (
+    f"{base_prefix}{relative_path}/recordings/MP4--{base_prefix}{relative_path}/trajectory.h5"
+  )
 
   valid_indices = None
 
@@ -73,19 +79,19 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
     print(f"  Loaded action ranges, marked {len(valid_indices)} frames as valid keyframes.")
 
   return {
-      "meta": {
-          "episode_id": episode_id,
-          "episode_path": episode_path,
-          "wrist_serial": wrist_serial,
-          "valid_indices": valid_indices,
-      },
-      "robot": {},
-      "camera": {
-          cam: {
-              "baseline": 0.063 if cam == wrist_serial else 0.120,
-          }
-          for cam in valid_cams
-      },
+    "meta": {
+      "episode_id": episode_id,
+      "episode_path": episode_path,
+      "wrist_serial": wrist_serial,
+      "valid_indices": valid_indices,
+    },
+    "robot": {},
+    "camera": {
+      cam: {
+        "baseline": 0.063 if cam == wrist_serial else 0.120,
+      }
+      for cam in valid_cams
+    },
   }
 
 
@@ -118,33 +124,45 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
     cam_info = zed.get_camera_information()
 
     calib = cam_info.camera_configuration.calibration_parameters
-    K_calib_left = np.array([
+    K_calib_left = np.array(
+      [
         [calib.left_cam.fx, 0, calib.left_cam.cx],
         [0, calib.left_cam.fy, calib.left_cam.cy],
         [0, 0, 1],
-    ], dtype=np.float32)
+      ],
+      dtype=np.float32,
+    )
     disto_calib_left = np.array(calib.left_cam.disto, dtype=np.float32)
 
-    K_calib_right = np.array([
+    K_calib_right = np.array(
+      [
         [calib.right_cam.fx, 0, calib.right_cam.cx],
         [0, calib.right_cam.fy, calib.right_cam.cy],
         [0, 0, 1],
-    ], dtype=np.float32)
+      ],
+      dtype=np.float32,
+    )
     disto_calib_right = np.array(calib.right_cam.disto, dtype=np.float32)
 
     calib_raw = cam_info.camera_configuration.calibration_parameters_raw
-    K_raw_left = np.array([
+    K_raw_left = np.array(
+      [
         [calib_raw.left_cam.fx, 0, calib_raw.left_cam.cx],
         [0, calib_raw.left_cam.fy, calib_raw.left_cam.cy],
         [0, 0, 1],
-    ], dtype=np.float32)
+      ],
+      dtype=np.float32,
+    )
     disto_raw_left = np.array(calib_raw.left_cam.disto, dtype=np.float32)
 
-    K_raw_right = np.array([
+    K_raw_right = np.array(
+      [
         [calib_raw.right_cam.fx, 0, calib_raw.right_cam.cx],
         [0, calib_raw.right_cam.fy, calib_raw.right_cam.cy],
         [0, 0, 1],
-    ], dtype=np.float32)
+      ],
+      dtype=np.float32,
+    )
     disto_raw_right = np.array(calib_raw.right_cam.disto, dtype=np.float32)
 
     all_left, all_right, all_left_raw, all_right_raw = [], [], [], []
@@ -169,24 +187,30 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
 
     zed.close()
 
-    scene_constants["camera"][cam].update({
+    scene_constants["camera"][cam].update(
+      {
         "K_mat": K_calib_left,
         "zed_calibration": {
-            "calibrated": {
-                "K": K_calib_left, "disto": disto_calib_left,
-                "K_right": K_calib_right, "disto_right": disto_calib_right,
-            },
-            "raw": {
-                "K": K_raw_left, "disto": disto_raw_left,
-                "K_right": K_raw_right, "disto_right": disto_raw_right,
-            },
+          "calibrated": {
+            "K": K_calib_left,
+            "disto": disto_calib_left,
+            "K_right": K_calib_right,
+            "disto_right": disto_calib_right,
+          },
+          "raw": {
+            "K": K_raw_left,
+            "disto": disto_raw_left,
+            "K_right": K_raw_right,
+            "disto_right": disto_raw_right,
+          },
         },
         "video_rgb": np.stack(all_left),
         "video_right": np.stack(all_right),
         "video_raw_rgb": np.stack(all_left_raw),
         "video_raw_right": np.stack(all_right_raw),
         "timestamps": np.array(all_timestamps),
-    })
+      }
+    )
 
   return scene_constants
 
@@ -213,12 +237,13 @@ def parse_robot_kinematics(scene_constants):
   T_ee_all[:, :3, 3] = ee_poses[:, :3]
 
   scene_constants["robot"] = {
-      "joint_positions": joint_poses,
-      "gripper_positions": gripper_poses,
-      "T_cam_ee_init": (np.linalg.inv(core.geometry.make_4x4(ee_poses[0]))
-                        @ core.geometry.make_4x4(wrist_ext)),
-      "T_ee_base_all": T_ee_all,
-      "timestamps": timestamps,
+    "joint_positions": joint_poses,
+    "gripper_positions": gripper_poses,
+    "T_cam_ee_init": (
+      np.linalg.inv(core.geometry.make_4x4(ee_poses[0])) @ core.geometry.make_4x4(wrist_ext)
+    ),
+    "T_ee_base_all": T_ee_all,
+    "timestamps": timestamps,
   }
   return scene_constants
 
@@ -227,9 +252,9 @@ def align_temporal_streams(scene_constants):
   print("  Running global temporal alignment check...")
 
   lengths = [
-      len(scene_constants["robot"]["joint_positions"]),
-      len(scene_constants["robot"]["gripper_positions"]),
-      len(scene_constants["robot"]["T_ee_base_all"]),
+    len(scene_constants["robot"]["joint_positions"]),
+    len(scene_constants["robot"]["gripper_positions"]),
+    len(scene_constants["robot"]["T_ee_base_all"]),
   ]
   for cam_id, cam_data in scene_constants["camera"].items():
     lengths.append(len(cam_data["video_rgb"]))
@@ -262,8 +287,7 @@ def _write_mp4(path, frames, fps=10.0):
   writer.release()
 
 
-def export_depth(scene_constants,
-                 export_root=os.path.join(core.io.OUTPUT_ROOT, "depth")):
+def export_depth(scene_constants, export_root=os.path.join(core.io.OUTPUT_ROOT, "depth")):
   ep_id = scene_constants["meta"]["episode_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_id)))
   os.makedirs(ep_dir, exist_ok=True)
@@ -275,10 +299,10 @@ def export_depth(scene_constants,
     os.makedirs(cam_dir, exist_ok=True)
 
     video_keys = {
-        "video_rgb": "video_left.mp4",
-        "video_right": "video_right.mp4",
-        "video_raw_rgb": "video_left_raw.mp4",
-        "video_raw_right": "video_right_raw.mp4",
+      "video_rgb": "video_left.mp4",
+      "video_right": "video_right.mp4",
+      "video_raw_rgb": "video_left_raw.mp4",
+      "video_raw_right": "video_right_raw.mp4",
     }
     for key, filename in video_keys.items():
       if key in data and len(data[key]) > 0:
@@ -286,44 +310,41 @@ def export_depth(scene_constants,
 
     if "original_raw_depth" in data:
       np.savez_compressed(
-          os.path.join(cam_dir, "original_raw_depth.npz"),
-          depth=(data["original_raw_depth"] * 1000).astype(np.uint16),
+        os.path.join(cam_dir, "original_raw_depth.npz"),
+        depth=(data["original_raw_depth"] * 1000).astype(np.uint16),
       )
     if "raw_depth" in data:
       np.savez_compressed(
-          os.path.join(cam_dir, "raw_depth.npz"),
-          depth=(data["raw_depth"] * 1000).astype(np.uint16),
+        os.path.join(cam_dir, "raw_depth.npz"),
+        depth=(data["raw_depth"] * 1000).astype(np.uint16),
       )
 
     if "sam_real_masks" in data:
       np.savez_compressed(
-          os.path.join(cam_dir, "gripper_mask.npz"),
-          mask=data["sam_real_masks"],
+        os.path.join(cam_dir, "gripper_mask.npz"),
+        mask=data["sam_real_masks"],
       )
     if "empirical_gripper_depth" in data:
-      gripper_uint16 = (data["empirical_gripper_depth"] * 1000).astype(
-          np.uint16
-      )
+      gripper_uint16 = (data["empirical_gripper_depth"] * 1000).astype(np.uint16)
       np.savez_compressed(
-          os.path.join(cam_dir, "gripper_depth.npz"),
-          depth=gripper_uint16,
+        os.path.join(cam_dir, "gripper_depth.npz"),
+        depth=gripper_uint16,
       )
 
     if "zed_calibration" in data:
       calib = data["zed_calibration"]
       np.savez(
-          os.path.join(cam_dir, "calibration.npz"),
-          K_calib_left=calib["calibrated"]["K"],
-          K_calib_right=calib["calibrated"]["K_right"],
-          disto_calib_left=calib["calibrated"]["disto"],
-          disto_calib_right=calib["calibrated"]["disto_right"],
-          K_raw_left=calib["raw"]["K"],
-          K_raw_right=calib["raw"]["K_right"],
-          disto_raw_left=calib["raw"]["disto"],
-          disto_raw_right=calib["raw"]["disto_right"],
-          baseline=np.array(data["baseline"], dtype=np.float32),
+        os.path.join(cam_dir, "calibration.npz"),
+        K_calib_left=calib["calibrated"]["K"],
+        K_calib_right=calib["calibrated"]["K_right"],
+        disto_calib_left=calib["calibrated"]["disto"],
+        disto_calib_right=calib["calibrated"]["disto_right"],
+        K_raw_left=calib["raw"]["K"],
+        K_raw_right=calib["raw"]["K_right"],
+        disto_raw_left=calib["raw"]["disto"],
+        disto_raw_right=calib["raw"]["disto_right"],
+        baseline=np.array(data["baseline"], dtype=np.float32),
       )
-
 
   robot = scene_constants["robot"]
   if robot:
@@ -346,27 +367,24 @@ def export_depth(scene_constants,
   return ep_dir
 
 
-def process_episode(ep_id, models, dbs, raw_root, min_frames, max_frames,
-                    export_root):
+def process_episode(ep_id, models, dbs, raw_root, min_frames, max_frames, export_root):
   s2m2_model, sam_predictor, run_stereo_matching, device = models
   id_to_path, serials_db, keep_ranges = dbs
 
-  scene_constants = init_episode(
-      ep_id, raw_root, id_to_path, serials_db, keep_ranges)
-  scene_constants = extract_svo_video(
-      scene_constants, min_frames=min_frames, max_frames=max_frames)
+  scene_constants = init_episode(ep_id, raw_root, id_to_path, serials_db, keep_ranges)
+  scene_constants = extract_svo_video(scene_constants, min_frames=min_frames, max_frames=max_frames)
   scene_constants = parse_robot_kinematics(scene_constants)
   scene_constants = align_temporal_streams(scene_constants)
   scene_constants = core.depth.compute_stereo_depth(
-      scene_constants, s2m2_model, run_stereo_matching, device)
+    scene_constants, s2m2_model, run_stereo_matching, device
+  )
 
   wrist_serial = scene_constants["meta"].get("wrist_serial")
   wrist_data = scene_constants["camera"].get(wrist_serial or "", {})
   if "raw_depth" in wrist_data:
     wrist_data["original_raw_depth"] = wrist_data["raw_depth"].copy()
 
-  scene_constants = core.depth.build_universal_gripper_mask(
-      scene_constants, sam_predictor)
+  scene_constants = core.depth.build_universal_gripper_mask(scene_constants, sam_predictor)
   scene_constants = core.depth.distill_empirical_gripper_depth(scene_constants)
   scene_constants = core.depth.inject_gripper_depth(scene_constants)
   export_depth(scene_constants, export_root=export_root)
@@ -375,36 +393,49 @@ def process_episode(ep_id, models, dbs, raw_root, min_frames, max_frames,
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="DROID Stage 1: Stereo Depth")
   core.runner.add_sharding_args(parser)
-  parser.add_argument("--min_frames", type=int, default=48,
-                      help="Skip episodes with fewer than this many frames "
-                           "(default: 48, -1 to disable)")
-  parser.add_argument("--max_frames", type=int, default=250,
-                      help="Skip episodes with more than this many frames "
-                           "(default: 250, -1 to disable)")
-  parser.add_argument("--export_root", type=str,
-                      default=os.path.join(core.io.OUTPUT_ROOT, "depth"),
-                      help="Root directory for depth output")
+  parser.add_argument(
+    "--min_frames",
+    type=int,
+    default=48,
+    help="Skip episodes with fewer than this many frames (default: 48, -1 to disable)",
+  )
+  parser.add_argument(
+    "--max_frames",
+    type=int,
+    default=250,
+    help="Skip episodes with more than this many frames (default: 250, -1 to disable)",
+  )
+  parser.add_argument(
+    "--export_root",
+    type=str,
+    default=os.path.join(core.io.OUTPUT_ROOT, "depth"),
+    help="Root directory for depth output",
+  )
   args = parser.parse_args()
 
   print("DROID Stage 1: Stereo Depth")
   device = core.io.get_accelerator()
   s2m2_model, sam_predictor, run_stereo_matching = init_all_models()
   serials_db, id_to_path, keep_ranges, _, valid_ids = core.io.load_metadata()
-  raw_root = os.path.expanduser(
-      os.path.join(core.io.INPUT_ROOT, "robotics", "droid_raw", "1.0.1"))
+  raw_root = os.path.expanduser(os.path.join(core.io.INPUT_ROOT, "robotics", "droid_raw", "1.0.1"))
 
-  target = core.runner.shard_episodes(
-      valid_ids, args.rank, args.world_size, args.limit)
+  target = core.runner.shard_episodes(valid_ids, args.rank, args.world_size, args.limit)
   export_abs = os.path.abspath(os.path.expanduser(args.export_root))
-  done = {ep for ep in target
-          if os.path.exists(os.path.join(export_abs, ep, "robot.npz"))}
+  done = {ep for ep in target if os.path.exists(os.path.join(export_abs, ep, "robot.npz"))}
 
   core.runner.run_episodes(
-      target,
-      lambda ep_id: process_episode(
-          ep_id, (s2m2_model, sam_predictor, run_stereo_matching, device),
-          (id_to_path, serials_db, keep_ranges),
-          raw_root, args.min_frames, args.max_frames,
-          args.export_root),
-      rank=args.rank, world_size=args.world_size,
-      done=done, stage="Stage 1")
+    target,
+    lambda ep_id: process_episode(
+      ep_id,
+      (s2m2_model, sam_predictor, run_stereo_matching, device),
+      (id_to_path, serials_db, keep_ranges),
+      raw_root,
+      args.min_frames,
+      args.max_frames,
+      args.export_root,
+    ),
+    rank=args.rank,
+    world_size=args.world_size,
+    done=done,
+    stage="Stage 1",
+  )

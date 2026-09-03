@@ -9,13 +9,14 @@ import core.geometry
 
 
 @torch.inference_mode()
-def get_s2m2_disparity(img_left, img_right, s2m2_model, run_stereo_matching,
-                       device, conf_thresh=0.95):
+def get_s2m2_disparity(
+  img_left, img_right, s2m2_model, run_stereo_matching, device, conf_thresh=0.95
+):
   left_torch = torch.from_numpy(img_left).permute(2, 0, 1).unsqueeze(0).to(device)
   right_torch = torch.from_numpy(img_right).permute(2, 0, 1).unsqueeze(0).to(device)
 
   pred_disp, _, pred_conf, _, _ = run_stereo_matching(
-      s2m2_model, left_torch, right_torch, device, N_repeat=3
+    s2m2_model, left_torch, right_torch, device, N_repeat=3
   )
 
   disp = pred_disp.cpu().numpy().squeeze()
@@ -27,8 +28,7 @@ def get_s2m2_disparity(img_left, img_right, s2m2_model, run_stereo_matching,
   return disp
 
 
-def compute_stereo_depth(scene_constants, s2m2_model, run_stereo_matching,
-                         device):
+def compute_stereo_depth(scene_constants, s2m2_model, run_stereo_matching, device):
   print("  Running S2M2 stereo depth inference (frame-by-frame)...")
 
   for cam_id in scene_constants["camera"]:
@@ -36,11 +36,10 @@ def compute_stereo_depth(scene_constants, s2m2_model, run_stereo_matching,
     left_seq, right_seq = cam_data["video_rgb"], cam_data["video_right"]
 
     disp_frames = [
-        get_s2m2_disparity(left_img, right_img, s2m2_model,
-                           run_stereo_matching, device=device)
-        for left_img, right_img in tqdm(
-            zip(left_seq, right_seq), total=len(left_seq), desc=f"Depth [{cam_id}]"
-        )
+      get_s2m2_disparity(left_img, right_img, s2m2_model, run_stereo_matching, device=device)
+      for left_img, right_img in tqdm(
+        zip(left_seq, right_seq), total=len(left_seq), desc=f"Depth [{cam_id}]"
+      )
     ]
     raw_disp = np.stack(disp_frames)
 
@@ -54,20 +53,22 @@ def compute_stereo_depth(scene_constants, s2m2_model, run_stereo_matching,
 def extract_single_frame_mask(img_rgb, predictor):
   h, w = img_rgb.shape[:2]
 
-  points = np.array([
+  points = np.array(
+    [
       [w // 2 - 120, h - 110],
       [w // 2 + 500, h - 110],
       [w // 2 - 250, h - 25],
       [w // 2 + 450, h - 25],
       [w // 2 + 100, h - 15],
       [w // 2 + 100, h - 300],
-  ])
+    ]
+  )
   labels = np.array([1, 1, 1, 1, 1, 0])
   bbox = np.array([0, h // 2, w, h])
 
   predictor.set_image(img_rgb)
   masks, scores, _ = predictor.predict(
-      point_coords=points, point_labels=labels, box=bbox, multimask_output=True
+    point_coords=points, point_labels=labels, box=bbox, multimask_output=True
   )
 
   valid_masks = []
@@ -89,7 +90,7 @@ def compute_consensus_mask(masks_list, consensus_thresh=0.5):
   consensus_mask = vote_map >= consensus_thresh
 
   num_labels, labels_map, stats, _ = cv2.connectedComponentsWithStats(
-      consensus_mask.astype(np.uint8)
+    consensus_mask.astype(np.uint8)
   )
   if num_labels > 1:
     largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
@@ -114,9 +115,7 @@ def build_universal_gripper_mask(scene_constants, sam_predictor):
   final_mask = compute_consensus_mask(masks_list)
 
   n_frames = len(gripper_states)
-  cam_data["sam_real_masks"] = np.zeros(
-      (n_frames, *final_mask.shape), dtype=bool
-  )
+  cam_data["sam_real_masks"] = np.zeros((n_frames, *final_mask.shape), dtype=bool)
   cam_data["sam_real_masks"][closed_indices] = final_mask
   print(f"  Gripper consensus mask built and broadcast to {len(closed_indices)} frames.")
 
@@ -163,9 +162,9 @@ def inject_gripper_depth(scene_constants):
 
   print(f"  Injecting distilled gripper depth into {len(closed_indices)} frames...")
   cam_data["raw_depth"][closed_indices] = np.where(
-      valid_mask,
-      empirical_depth,
-      cam_data["raw_depth"][closed_indices],
+    valid_mask,
+    empirical_depth,
+    cam_data["raw_depth"][closed_indices],
   )
 
   replaced_pixels_per_frame = int(np.sum(valid_mask))

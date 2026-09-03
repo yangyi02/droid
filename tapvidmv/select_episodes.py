@@ -25,8 +25,9 @@ def safe_float(val, default=float("nan")):
   return float(val)
 
 
-def apply_quality_filter(rows, max_chamfer, max_depth_residual,
-                         min_static_points, min_frames, min_ee_travel):
+def apply_quality_filter(
+  rows, max_chamfer, max_depth_residual, min_static_points, min_frames, min_ee_travel
+):
   filtered = []
   n_frozen = 0
   for row in rows:
@@ -53,8 +54,10 @@ def apply_quality_filter(rows, max_chamfer, max_depth_residual,
 
     filtered.append(row)
 
-  print(f"  {len(filtered)}/{len(rows)} episodes passed quality filter"
-        f" ({n_frozen} dropped for moving less than {min_ee_travel} m)")
+  print(
+    f"  {len(filtered)}/{len(rows)} episodes passed quality filter"
+    f" ({n_frozen} dropped for moving less than {min_ee_travel} m)"
+  )
   return filtered
 
 
@@ -102,50 +105,71 @@ def sample_diverse(rows, n_target):
   per_scene = {}
   for r in selected:
     per_scene[scene_of(r)] = per_scene.get(scene_of(r), 0) + 1
-  print(f"  {len(selected)} episodes over {len(per_scene)} scenes "
-        f"(max {max(per_scene.values())} from any one scene)")
+  print(
+    f"  {len(selected)} episodes over {len(per_scene)} scenes "
+    f"(max {max(per_scene.values())} from any one scene)"
+  )
   return selected
 
 
 def main():
-  parser = argparse.ArgumentParser(
-      description="Select evaluation episodes from metrics CSV")
-  parser.add_argument("--input", type=str,
-                      default=os.path.join(core.io.OUTPUT_ROOT, "metrics", "metrics.csv"),
-                      help="Path to metrics CSV")
-  parser.add_argument("--n", type=int, default=50,
-                      help="Number of episodes to select")
-  parser.add_argument("--max_chamfer", type=float, default=0.10,
-                      help="Max chamfer_total threshold (metres)")
-  parser.add_argument("--max_depth_residual", type=float, default=30.0,
-                      help="Max depth_residual_overall_median_mm threshold")
-  parser.add_argument("--min_static_points", type=int, default=50,
-                      help="Min number of static track points")
-  parser.add_argument("--min_frames", type=int, default=30,
-                      help="Min number of frames")
-  parser.add_argument("--min_ee_travel", type=float, default=0.3,
-                      help="Min end-effector path length in metres. Drops "
-                           "episodes where the arm barely moves, which pass "
-                           "every quality test but are useless to track")
-  parser.add_argument("--output_dir", type=str,
-                      default=os.path.dirname(os.path.abspath(__file__)),
-                      help="Output directory (default: tapvidmv/, next to this script)")
+  parser = argparse.ArgumentParser(description="Select evaluation episodes from metrics CSV")
+  parser.add_argument(
+    "--input",
+    type=str,
+    default=os.path.join(core.io.OUTPUT_ROOT, "metrics", "metrics.csv"),
+    help="Path to metrics CSV",
+  )
+  parser.add_argument("--n", type=int, default=50, help="Number of episodes to select")
+  parser.add_argument(
+    "--max_chamfer", type=float, default=0.10, help="Max chamfer_total threshold (metres)"
+  )
+  parser.add_argument(
+    "--max_depth_residual",
+    type=float,
+    default=30.0,
+    help="Max depth_residual_overall_median_mm threshold",
+  )
+  parser.add_argument(
+    "--min_static_points", type=int, default=50, help="Min number of static track points"
+  )
+  parser.add_argument("--min_frames", type=int, default=30, help="Min number of frames")
+  parser.add_argument(
+    "--min_ee_travel",
+    type=float,
+    default=0.3,
+    help="Min end-effector path length in metres. Drops "
+    "episodes where the arm barely moves, which pass "
+    "every quality test but are useless to track",
+  )
+  parser.add_argument(
+    "--output_dir",
+    type=str,
+    default=os.path.dirname(os.path.abspath(__file__)),
+    help="Output directory (default: tapvidmv/, next to this script)",
+  )
   args = parser.parse_args()
 
   rows = load_metrics(os.path.expanduser(args.input))
 
   filtered = apply_quality_filter(
-      rows, args.max_chamfer, args.max_depth_residual,
-      args.min_static_points, args.min_frames, args.min_ee_travel)
+    rows,
+    args.max_chamfer,
+    args.max_depth_residual,
+    args.min_static_points,
+    args.min_frames,
+    args.min_ee_travel,
+  )
 
   if len(filtered) < args.n:
     for mult in [1.5, 2.0, 3.0, 5.0]:
       filtered = apply_quality_filter(
-          rows,
-          args.max_chamfer * mult,
-          args.max_depth_residual * mult,
-          max(10, args.min_static_points // 2),
-          max(10, args.min_frames // 2))
+        rows,
+        args.max_chamfer * mult,
+        args.max_depth_residual * mult,
+        max(10, args.min_static_points // 2),
+        max(10, args.min_frames // 2),
+      )
       if len(filtered) >= args.n:
         break
 
@@ -177,14 +201,18 @@ def main():
   chamfers = [safe_float(r.get("chamfer_total")) for r in selected]
   chamfers = [c for c in chamfers if not np.isnan(c)]
   if chamfers:
-    print(f"   Chamfer: median={np.median(chamfers):.4f}, "
-          f"range=[{min(chamfers):.4f}, {max(chamfers):.4f}]")
+    print(
+      f"   Chamfer: median={np.median(chamfers):.4f}, "
+      f"range=[{min(chamfers):.4f}, {max(chamfers):.4f}]"
+    )
 
   travels = [safe_float(r.get("ee_travel_m")) for r in selected]
   travels = [t for t in travels if not np.isnan(t)]
   if travels:
-    print(f"   EE travel: median={np.median(travels):.2f}m, "
-          f"range=[{min(travels):.2f}, {max(travels):.2f}]m")
+    print(
+      f"   EE travel: median={np.median(travels):.2f}m, "
+      f"range=[{min(travels):.2f}, {max(travels):.2f}]m"
+    )
 
 
 if __name__ == "__main__":

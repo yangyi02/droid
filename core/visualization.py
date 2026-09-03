@@ -8,6 +8,7 @@ import core.geometry
 
 def inspect_dict_structure(data, name="scene_constants", indent=0):
   import torch
+
   spacing = "  " * indent
   if isinstance(data, dict):
     print(f"{spacing}{name} (dict, {len(data)} keys)")
@@ -26,23 +27,40 @@ def inspect_dict_structure(data, name="scene_constants", indent=0):
     print(f"{spacing}{name}: {type(data).__name__} = {val_str}")
 
 
-def show_plotly_point_cloud(pts, cols, title="3D Point Cloud",
-                            max_points=150000, eye_pos=(-1.5, -1.5, 1.0),
-                            height=600, width=1000, renderer=None):
+def show_plotly_point_cloud(
+  pts,
+  cols,
+  title="3D Point Cloud",
+  max_points=150000,
+  eye_pos=(-1.5, -1.5, 1.0),
+  height=600,
+  width=1000,
+  renderer=None,
+):
   import plotly.graph_objects as go
+
   idx = np.random.permutation(len(pts))[:max_points]
   p, c = pts[idx], cols[idx]
   fig = go.Figure(
-      data=[go.Scatter3d(
-          x=p[:, 0], y=p[:, 1], z=p[:, 2], mode='markers',
-          marker=dict(size=1.5,
-                      color=[f'rgb({r},{g},{b})' for r, g, b in c]))],
-      layout=go.Layout(
-          title=title, margin=dict(l=0, r=0, b=0, t=40),
-          width=width, height=height, showlegend=False,
-          scene=dict(aspectmode='data',
-                     camera=dict(eye=dict(x=eye_pos[0], y=eye_pos[1],
-                                          z=eye_pos[2]))))
+    data=[
+      go.Scatter3d(
+        x=p[:, 0],
+        y=p[:, 1],
+        z=p[:, 2],
+        mode='markers',
+        marker=dict(size=1.5, color=[f'rgb({r},{g},{b})' for r, g, b in c]),
+      )
+    ],
+    layout=go.Layout(
+      title=title,
+      margin=dict(l=0, r=0, b=0, t=40),
+      width=width,
+      height=height,
+      showlegend=False,
+      scene=dict(
+        aspectmode='data', camera=dict(eye=dict(x=eye_pos[0], y=eye_pos[1], z=eye_pos[2]))
+      ),
+    ),
   )
   if renderer is not None:
     fig.show(renderer=renderer)
@@ -50,10 +68,16 @@ def show_plotly_point_cloud(pts, cols, title="3D Point Cloud",
     fig.show()
 
 
-def render_fused_point_cloud(scene_constants, scene_state, frame_idx=0,
-                             max_render_points=150000,
-                             eye_pos=(-1.2, -1.2, 0.8), use_tint=False,
-                             height=600, width=1000):
+def render_fused_point_cloud(
+  scene_constants,
+  scene_state,
+  frame_idx=0,
+  max_render_points=150000,
+  eye_pos=(-1.2, -1.2, 0.8),
+  use_tint=False,
+  height=600,
+  width=1000,
+):
   camera_ids = sorted(scene_constants['camera'].keys())
   tint_colors = np.array([[0, 50, 0], [50, 0, 0], [0, 0, 50]])
   fused_points, fused_colors = [], []
@@ -63,12 +87,15 @@ def render_fused_point_cloud(scene_constants, scene_state, frame_idx=0,
     cam_state = scene_state[cam_id]
     raw_depth = cam_data['raw_depth'][frame_idx].astype(np.float32)
     points_3d, colors_rgb = core.geometry.unproject_to_3d(
-        raw_depth, cam_data['video_rgb'][frame_idx],
-        cam_data['K_mat'], T_cam2world=cam_state['extrinsics'][frame_idx])
+      raw_depth,
+      cam_data['video_rgb'][frame_idx],
+      cam_data['K_mat'],
+      T_cam2world=cam_state['extrinsics'][frame_idx],
+    )
     if use_tint:
       colors_rgb = np.clip(
-          colors_rgb.astype(int) + tint_colors[idx % len(tint_colors)],
-          0, 255).astype(np.uint8)
+        colors_rgb.astype(int) + tint_colors[idx % len(tint_colors)], 0, 255
+      ).astype(np.uint8)
     fused_points.append(points_3d)
     fused_colors.append(colors_rgb)
 
@@ -76,29 +103,46 @@ def render_fused_point_cloud(scene_constants, scene_state, frame_idx=0,
   if use_tint:
     title += " [Tinted Debug Mode]"
   show_plotly_point_cloud(
-      pts=np.vstack(fused_points), cols=np.vstack(fused_colors),
-      title=title, max_points=max_render_points, eye_pos=eye_pos,
-      height=height, width=width)
+    pts=np.vstack(fused_points),
+    cols=np.vstack(fused_colors),
+    title=title,
+    max_points=max_render_points,
+    eye_pos=eye_pos,
+    height=height,
+    width=width,
+  )
 
 
 def render_distilled_gripper_3d(median_depth, K_mat, rgb_img):
   import plotly.graph_objects as go
+
   v, u = np.where(median_depth > 0)
   z = median_depth[v, u]
   x = (u - K_mat[0, 2]) * z / K_mat[0, 0]
   y = (v - K_mat[1, 2]) * z / K_mat[1, 1]
   pts_3d = np.stack([x, y, z], axis=-1)
-  fig = go.Figure(data=[go.Scatter3d(
-      x=pts_3d[:, 0], y=pts_3d[:, 1], z=pts_3d[:, 2],
-      mode='markers',
-      marker=dict(size=2, color=rgb_img[v, u], opacity=0.8))])
+  fig = go.Figure(
+    data=[
+      go.Scatter3d(
+        x=pts_3d[:, 0],
+        y=pts_3d[:, 1],
+        z=pts_3d[:, 2],
+        mode='markers',
+        marker=dict(size=2, color=rgb_img[v, u], opacity=0.8),
+      )
+    ]
+  )
   fig.update_layout(
-      title="Distilled Gripper Surface",
-      scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Depth (Z)',
-                 aspectmode='data',
-                 camera=dict(eye=dict(x=0, y=-0.5, z=-1.5),
-                             up=dict(x=0, y=-1, z=0))),
-      margin=dict(l=0, r=0, b=0, t=40))
+    title="Distilled Gripper Surface",
+    scene=dict(
+      xaxis_title='X',
+      yaxis_title='Y',
+      zaxis_title='Depth (Z)',
+      aspectmode='data',
+      camera=dict(eye=dict(x=0, y=-0.5, z=-1.5), up=dict(x=0, y=-1, z=0)),
+    ),
+    margin=dict(l=0, r=0, b=0, t=40),
+  )
   fig.show()
 
 
@@ -116,7 +160,11 @@ def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
   d_final = raw_depth[frame_idx] if raw_depth is not None and len(raw_depth) > frame_idx else None
 
   if gripper_mask is not None:
-    mask_vis = gripper_mask[min(frame_idx, len(gripper_mask)-1)] if gripper_mask.ndim == 3 else gripper_mask
+    mask_vis = (
+      gripper_mask[min(frame_idx, len(gripper_mask) - 1)]
+      if gripper_mask.ndim == 3
+      else gripper_mask
+    )
   else:
     mask_vis = None
 
@@ -142,7 +190,9 @@ def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
   axes[1].axis('off')
 
   if emp_depth is not None:
-    im2 = axes[2].imshow(np.where(emp_depth > 0, emp_depth, np.nan), cmap='viridis', vmin=0.1, vmax=1.2)
+    im2 = axes[2].imshow(
+      np.where(emp_depth > 0, emp_depth, np.nan), cmap='viridis', vmin=0.1, vmax=1.2
+    )
     axes[2].set_title("Distilled Gripper Surface Depth", fontsize=11)
     plt.colorbar(im2, ax=axes[2], fraction=0.046)
   else:
@@ -157,22 +207,30 @@ def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
     axes[3].set_title("Final Depth N/A", fontsize=11)
   axes[3].axis('off')
 
-  plt.suptitle(f"Wrist Camera [{wrist_serial[:8]}] Gripper Refinement Inspection (Frame {frame_idx})", fontsize=13, y=1.02)
+  plt.suptitle(
+    f"Wrist Camera [{wrist_serial[:8]}] Gripper Refinement Inspection (Frame {frame_idx})",
+    fontsize=13,
+    y=1.02,
+  )
   plt.tight_layout()
   plt.show()
 
 
 def visualize_disparity_video(disp_array, vmax=100.0):
   disp_norm = (np.clip(disp_array, 0, vmax) / vmax * 255).astype(np.uint8)
-  return np.stack([
-      cv2.cvtColor(cv2.applyColorMap(frame, cv2.COLORMAP_MAGMA),
-                   cv2.COLOR_BGR2RGB)
-      for frame in disp_norm])
+  return np.stack(
+    [
+      cv2.cvtColor(cv2.applyColorMap(frame, cv2.COLORMAP_MAGMA), cv2.COLOR_BGR2RGB)
+      for frame in disp_norm
+    ]
+  )
 
 
-def render_multicam_disparity_video(scene_constants, tgt_size=(128, 228),
-                                    disp_vmax=100.0, max_frames=None):
+def render_multicam_disparity_video(
+  scene_constants, tgt_size=(128, 228), disp_vmax=100.0, max_frames=None
+):
   import mediapy as media
+
   camera_rows = []
   for cam_data in scene_constants['camera'].values():
     video_rgb = cam_data['video_rgb']
@@ -189,18 +247,23 @@ def render_multicam_disparity_video(scene_constants, tgt_size=(128, 228),
     raw_disp = np.zeros_like(raw_depth)
     valid_mask = raw_depth > 0
     raw_disp[valid_mask] = (fx * baseline) / raw_depth[valid_mask]
-    disp_video = visualize_disparity_video(
-        media.resize_video(raw_disp, tgt_size), vmax=disp_vmax)
-    camera_rows.append(np.concatenate(
-        [left_video, right_video, disp_video], axis=2))
+    disp_video = visualize_disparity_video(media.resize_video(raw_disp, tgt_size), vmax=disp_vmax)
+    camera_rows.append(np.concatenate([left_video, right_video, disp_video], axis=2))
   return np.concatenate(camera_rows, axis=1)
 
 
-def render_2d_tracking_video(video_frames, tracks, visibility,
-                             global_colors=None, linewidth=3,
-                             tracks_leave_trace=20, tgt_size=None,
-                             max_frames=None):
+def render_2d_tracking_video(
+  video_frames,
+  tracks,
+  visibility,
+  global_colors=None,
+  linewidth=3,
+  tracks_leave_trace=20,
+  tgt_size=None,
+  max_frames=None,
+):
   import mediapy as media
+
   if max_frames is not None:
     video_frames = video_frames[:max_frames]
     tracks = tracks[:max_frames]
@@ -219,8 +282,12 @@ def render_2d_tracking_video(video_frames, tracks, visibility,
   h_img, w_img = video_frames[0].shape[:2]
   track_pts = tracks.copy()
 
-  is_valid = ((track_pts[..., 0] >= 0) & (track_pts[..., 0] < w_img) &
-              (track_pts[..., 1] >= 0) & (track_pts[..., 1] < h_img))
+  is_valid = (
+    (track_pts[..., 0] >= 0)
+    & (track_pts[..., 0] < w_img)
+    & (track_pts[..., 1] >= 0)
+    & (track_pts[..., 1] < h_img)
+  )
   is_drawable = is_valid & visibility
 
   video_frames = [f.copy() for f in video_frames]
@@ -240,14 +307,17 @@ def render_2d_tracking_video(video_frames, tracks, visibility,
       past_t = t - trace_len + step
       alpha = (step / (trace_len + 1)) ** 2
       overlay = current_img.copy()
-      valid_edges = np.where(
-          is_drawable[past_t] & is_drawable[past_t + 1])[0]
+      valid_edges = np.where(is_drawable[past_t] & is_drawable[past_t + 1])[0]
       for i in valid_edges:
-        cv2.line(overlay, tuple(track_pts[past_t, i]),
-                 tuple(track_pts[past_t + 1, i]),
-                 point_colors[i], linewidth, cv2.LINE_AA)
-      cv2.addWeighted(overlay, alpha, current_img, 1 - alpha,
-                      0, current_img)
+        cv2.line(
+          overlay,
+          tuple(track_pts[past_t, i]),
+          tuple(track_pts[past_t + 1, i]),
+          point_colors[i],
+          linewidth,
+          cv2.LINE_AA,
+        )
+      cv2.addWeighted(overlay, alpha, current_img, 1 - alpha, 0, current_img)
 
     occ_overlay = current_img.copy()
     has_occlusion = False
@@ -255,21 +325,17 @@ def render_2d_tracking_video(video_frames, tracks, visibility,
     for i in active_points:
       pt_coord = tuple(track_pts[t, i])
       if visibility[t, i]:
-        cv2.circle(current_img, pt_coord, point_radius,
-                   point_colors[i], -1, cv2.LINE_AA)
+        cv2.circle(current_img, pt_coord, point_radius, point_colors[i], -1, cv2.LINE_AA)
       else:
-        cv2.circle(occ_overlay, pt_coord, point_radius,
-                   point_colors[i], 1, cv2.LINE_AA)
+        cv2.circle(occ_overlay, pt_coord, point_radius, point_colors[i], 1, cv2.LINE_AA)
         has_occlusion = True
     if has_occlusion:
-      cv2.addWeighted(occ_overlay, 0.35, current_img, 0.65,
-                      0, current_img)
+      cv2.addWeighted(occ_overlay, 0.35, current_img, 0.65, 0, current_img)
 
   return video_frames
 
 
-def render_multiview_mask_inspection(scene_constants, scene_state,
-                                    pb_renderer, frame_idx=0):
+def render_multiview_mask_inspection(scene_constants, scene_state, pb_renderer, frame_idx=0):
   camera_ids = list(scene_constants['camera'].keys())
   wrist_cam = scene_constants['meta']['wrist_serial']
 
@@ -281,16 +347,18 @@ def render_multiview_mask_inspection(scene_constants, scene_state,
   if len(camera_ids) == 1:
     axes = [axes]
   fig.suptitle(
-      f"Multi-View Segmentation Mask Inspection (Frame {frame_idx})",
-      fontsize=20, fontweight='bold', y=1.05)
+    f"Multi-View Segmentation Mask Inspection (Frame {frame_idx})",
+    fontsize=20,
+    fontweight='bold',
+    y=1.05,
+  )
 
   for i, cam_id in enumerate(camera_ids):
     extrinsics = scene_state[cam_id]['extrinsics'][frame_idx]
     intrinsics = scene_constants['camera'][cam_id]['K_mat']
     img_rgb = scene_constants['camera'][cam_id]['video_rgb'][frame_idx].copy()
     h_img, w_img = img_rgb.shape[:2]
-    robot_mask = pb_renderer.render_mask(
-        extrinsics, intrinsics, w_img, h_img) > 0
+    robot_mask = pb_renderer.render_mask(extrinsics, intrinsics, w_img, h_img) > 0
     overlay = img_rgb.copy()
     overlay[robot_mask] = [50, 255, 50]
     blended_img = cv2.addWeighted(img_rgb, 0.6, overlay, 0.4, 0)
@@ -302,8 +370,9 @@ def render_multiview_mask_inspection(scene_constants, scene_state,
   plt.show()
 
 
-def render_segmentation_video(scene_constants, scene_state, pb_renderer,
-                              tgt_width=1200, max_frames=None):
+def render_segmentation_video(
+  scene_constants, scene_state, pb_renderer, tgt_width=1200, max_frames=None
+):
   camera_ids = list(scene_constants['camera'].keys())
   wrist_serial = scene_constants['meta']['wrist_serial']
   n_frames = len(scene_constants['camera'][camera_ids[0]]['video_rgb'])
@@ -314,27 +383,28 @@ def render_segmentation_video(scene_constants, scene_state, pb_renderer,
   for frame_idx in tqdm(range(n_frames), desc="Rendering segmentation"):
     current_joints = scene_constants['robot']['joint_positions'][frame_idx]
     current_gripper = scene_constants['robot']['gripper_positions'][frame_idx]
-    pb_renderer.update_robot_pose(current_joints,
-                                 gripper_state=current_gripper)
+    pb_renderer.update_robot_pose(current_joints, gripper_state=current_gripper)
     frame_views = []
     for cam_id in camera_ids:
       cam_data = scene_constants['camera'][cam_id]
       cam_state = scene_state[cam_id]
       img_rgb = cam_data['video_rgb'][frame_idx].copy()
       h_img, w_img = img_rgb.shape[:2]
-      robot_mask = pb_renderer.render_mask(
-          cam_state['extrinsics'][frame_idx],
-          cam_data['K_mat'],
-          w_img, h_img) > 0
+      robot_mask = (
+        pb_renderer.render_mask(cam_state['extrinsics'][frame_idx], cam_data['K_mat'], w_img, h_img)
+        > 0
+      )
       overlay = img_rgb.copy()
       overlay[robot_mask] = [50, 150, 255]
       blended_img = cv2.addWeighted(img_rgb, 0.6, overlay, 0.4, 0)
-      is_wrist = (cam_id == wrist_serial)
+      is_wrist = cam_id == wrist_serial
       label_color = (0, 255, 255) if is_wrist else (0, 255, 0)
-      cv2.putText(blended_img, f"Cam [{cam_id}]", (20, 50),
-                  cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 4)
-      cv2.putText(blended_img, f"Cam [{cam_id}]", (20, 50),
-                  cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
+      cv2.putText(
+        blended_img, f"Cam [{cam_id}]", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 4
+      )
+      cv2.putText(
+        blended_img, f"Cam [{cam_id}]", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2
+      )
       frame_views.append(blended_img)
     row_concat = np.concatenate(frame_views, axis=1)
     tgt_height = int(row_concat.shape[0] * (tgt_width / row_concat.shape[1]))
@@ -342,15 +412,16 @@ def render_segmentation_video(scene_constants, scene_state, pb_renderer,
   return video_frames
 
 
-def render_cross_camera_axes(scene_constants, scene_state, axis_len=0.15,
-                             tgt_w=1200, max_frames=None):
+def render_cross_camera_axes(
+  scene_constants, scene_state, axis_len=0.15, tgt_w=1200, max_frames=None
+):
   cams = list(scene_constants['camera'].keys())
   n_frames = len(scene_state[cams[0]]['extrinsics'])
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
-  axes_3d = np.array([
-      [0, 0, 0, 1], [axis_len, 0, 0, 1],
-      [0, axis_len, 0, 1], [0, 0, axis_len, 1]]).T
+  axes_3d = np.array(
+    [[0, 0, 0, 1], [axis_len, 0, 0, 1], [0, axis_len, 0, 1], [0, 0, axis_len, 1]]
+  ).T
   video_frames = []
 
   for frame_idx in tqdm(range(n_frames), desc="Rendering camera axes"):
@@ -360,8 +431,7 @@ def render_cross_camera_axes(scene_constants, scene_state, axis_len=0.15,
       img_rgb = cam_data['video_rgb'][frame_idx].copy()
       h_img, w_img = img_rgb.shape[:2]
       K_mat = cam_data['K_mat']
-      obs_pose_inv = np.linalg.inv(
-          scene_state[obs_cam]['extrinsics'][frame_idx])
+      obs_pose_inv = np.linalg.inv(scene_state[obs_cam]['extrinsics'][frame_idx])
 
       for tgt_cam in cams:
         if obs_cam == tgt_cam:
@@ -371,23 +441,38 @@ def render_cross_camera_axes(scene_constants, scene_state, axis_len=0.15,
         if pts_cam[2, 0] < 0:
           continue
         uv = K_mat @ pts_cam
-        org, px, py, pz = map(
-            tuple, (uv[:2] / uv[2]).astype(int).T)
+        org, px, py, pz = map(tuple, (uv[:2] / uv[2]).astype(int).T)
         if 0 <= org[0] < w_img and 0 <= org[1] < h_img:
           cv2.line(img_rgb, org, px, (255, 0, 0), 3)
           cv2.line(img_rgb, org, py, (0, 255, 0), 3)
           cv2.line(img_rgb, org, pz, (0, 0, 255), 3)
           cv2.circle(img_rgb, org, 5, (0, 0, 0), -1)
           cv2.circle(img_rgb, org, 2, (255, 255, 255), -1)
-          cv2.putText(img_rgb, f"Cam {tgt_cam}", (org[0]+8, org[1]-8),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
-          cv2.putText(img_rgb, f"Cam {tgt_cam}", (org[0]+8, org[1]-8),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+          cv2.putText(
+            img_rgb,
+            f"Cam {tgt_cam}",
+            (org[0] + 8, org[1] - 8),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 0, 0),
+            3,
+          )
+          cv2.putText(
+            img_rgb,
+            f"Cam {tgt_cam}",
+            (org[0] + 8, org[1] - 8),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2,
+          )
 
-      cv2.putText(img_rgb, f"View: {obs_cam}", (15, 35),
-                  cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3)
-      cv2.putText(img_rgb, f"View: {obs_cam}", (15, 35),
-                  cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+      cv2.putText(
+        img_rgb, f"View: {obs_cam}", (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3
+      )
+      cv2.putText(
+        img_rgb, f"View: {obs_cam}", (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2
+      )
       camera_views.append(img_rgb)
 
     row_concat = np.concatenate(camera_views, axis=1)
@@ -407,13 +492,20 @@ def get_look_at_matrix(eye, target, up=(0, 0, 1)):
   return view_matrix
 
 
-def render_cinematic_4d_orbit(scene_constants, scene_state,
-                              max_render_points=400000,
-                              width=640, height=360,
-                              orbit_center=(0.4, 0.0, 0.0),
-                              orbit_radius=1.2, camera_height=0.5,
-                              angle_start=None, max_frames=None):
+def render_cinematic_4d_orbit(
+  scene_constants,
+  scene_state,
+  max_render_points=400000,
+  width=640,
+  height=360,
+  orbit_center=(0.4, 0.0, 0.0),
+  orbit_radius=1.2,
+  camera_height=0.5,
+  angle_start=None,
+  max_frames=None,
+):
   import pyrender
+
   if angle_start is None:
     angle_start = np.pi / 2
 
@@ -424,12 +516,11 @@ def render_cinematic_4d_orbit(scene_constants, scene_state,
 
   scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 1.0])
   cam_node = scene.add(
-      pyrender.PerspectiveCamera(yfov=np.pi / 3.0,
-                                 aspectRatio=width / height),
-      pose=np.eye(4))
+    pyrender.PerspectiveCamera(yfov=np.pi / 3.0, aspectRatio=width / height), pose=np.eye(4)
+  )
   light_node = scene.add(
-      pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=4.0),
-      pose=np.eye(4))
+    pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=4.0), pose=np.eye(4)
+  )
   renderer = pyrender.OffscreenRenderer(width, height)
 
   video_frames = []
@@ -439,10 +530,11 @@ def render_cinematic_4d_orbit(scene_constants, scene_state,
       cam_data = scene_constants['camera'][cam_id]
       cam_state = scene_state[cam_id]
       points_3d, colors_rgb = core.geometry.unproject_to_3d(
-          cam_data['raw_depth'][frame_idx],
-          cam_data['video_rgb'][frame_idx],
-          cam_data['K_mat'],
-          T_cam2world=cam_state['extrinsics'][frame_idx])
+        cam_data['raw_depth'][frame_idx],
+        cam_data['video_rgb'][frame_idx],
+        cam_data['K_mat'],
+        T_cam2world=cam_state['extrinsics'][frame_idx],
+      )
       points.append(points_3d)
       colors.append(colors_rgb)
     points = np.vstack(points)
@@ -451,21 +543,29 @@ def render_cinematic_4d_orbit(scene_constants, scene_state,
     points, colors = points[sample_idx], colors[sample_idx]
 
     angle = angle_start + (frame_idx * np.pi / n_frames)
-    eye_pos = [orbit_center[0] + orbit_radius * np.cos(angle),
-               orbit_center[1] + orbit_radius * np.sin(angle),
-               camera_height]
+    eye_pos = [
+      orbit_center[0] + orbit_radius * np.cos(angle),
+      orbit_center[1] + orbit_radius * np.sin(angle),
+      camera_height,
+    ]
     viz_pose = get_look_at_matrix(eye_pos, orbit_center)
     scene.set_pose(cam_node, pose=viz_pose)
     scene.set_pose(light_node, pose=viz_pose)
 
-    mesh_node = scene.add(
-        pyrender.Mesh.from_points(points, colors=colors))
+    mesh_node = scene.add(pyrender.Mesh.from_points(points, colors=colors))
     color_img, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
     scene.remove_node(mesh_node)
 
     img_rgb = color_img[:, :, :3].copy()
-    cv2.putText(img_rgb, f"Frame: {frame_idx:03d}", (30, 50),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(
+      img_rgb,
+      f"Frame: {frame_idx:03d}",
+      (30, 50),
+      cv2.FONT_HERSHEY_SIMPLEX,
+      0.7,
+      (255, 255, 255),
+      2,
+    )
     video_frames.append(img_rgb)
 
   renderer.delete()
@@ -473,17 +573,29 @@ def render_cinematic_4d_orbit(scene_constants, scene_state,
 
 
 def render_4d_orbit_with_tracks(
-    scene_constants, scene_state,
-    tracks_3d=None, track_colors=None, track_vis=None,
-    track_history=5, track_sphere_radius=0.008,
-    frustum_depth=0.15, frustum_fov_y=60.0, frustum_aspect=4.0 / 3.0,
-    max_render_points=400000, max_render_tracks=500,
-    width=640, height=360,
-    orbit_center=(0.4, 0.0, 0.0),
-    orbit_radius=1.2, camera_height=0.5,
-    angle_start=None, max_frames=None):
+  scene_constants,
+  scene_state,
+  tracks_3d=None,
+  track_colors=None,
+  track_vis=None,
+  track_history=5,
+  track_sphere_radius=0.008,
+  frustum_depth=0.15,
+  frustum_fov_y=60.0,
+  frustum_aspect=4.0 / 3.0,
+  max_render_points=400000,
+  max_render_tracks=500,
+  width=640,
+  height=360,
+  orbit_center=(0.4, 0.0, 0.0),
+  orbit_radius=1.2,
+  camera_height=0.5,
+  angle_start=None,
+  max_frames=None,
+):
   import pyrender
   import trimesh
+
   if angle_start is None:
     angle_start = np.pi / 2
 
@@ -509,40 +621,43 @@ def render_4d_orbit_with_tracks(
 
   half_h = frustum_depth * np.tan(np.radians(frustum_fov_y / 2))
   half_w = half_h * frustum_aspect
-  corners_cam = np.array([
+  corners_cam = np.array(
+    [
       [0, 0, 0],
       [-half_w, -half_h, frustum_depth],
-      [ half_w, -half_h, frustum_depth],
-      [ half_w,  half_h, frustum_depth],
-      [-half_w,  half_h, frustum_depth]])
-  frustum_edges = [(0,1),(0,2),(0,3),(0,4),(1,2),(2,3),(3,4),(4,1)]
-  cam_colors_rgb = np.array([
+      [half_w, -half_h, frustum_depth],
+      [half_w, half_h, frustum_depth],
+      [-half_w, half_h, frustum_depth],
+    ]
+  )
+  frustum_edges = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (2, 3), (3, 4), (4, 1)]
+  cam_colors_rgb = np.array(
+    [
       [1.0, 0.4, 0.2, 1.0],
       [0.2, 0.8, 0.2, 1.0],
       [0.2, 0.4, 1.0, 1.0],
       [1.0, 1.0, 0.2, 1.0],
-  ], dtype=np.float32)
+    ],
+    dtype=np.float32,
+  )
 
   if tracks_3d is not None:
-    sphere_template = trimesh.creation.icosphere(
-        subdivisions=1, radius=track_sphere_radius)
+    sphere_template = trimesh.creation.icosphere(subdivisions=1, radius=track_sphere_radius)
     tpl_v = sphere_template.vertices
     tpl_f = sphere_template.faces
     n_v, n_f = len(tpl_v), len(tpl_f)
 
   scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 1.0])
   cam_node = scene.add(
-      pyrender.PerspectiveCamera(
-          yfov=np.pi / 3.0, aspectRatio=width / height),
-      pose=np.eye(4))
+    pyrender.PerspectiveCamera(yfov=np.pi / 3.0, aspectRatio=width / height), pose=np.eye(4)
+  )
   light_node = scene.add(
-      pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=4.0),
-      pose=np.eye(4))
+    pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=4.0), pose=np.eye(4)
+  )
   renderer = pyrender.OffscreenRenderer(width, height)
 
   video_frames = []
-  for frame_idx in tqdm(range(n_frames),
-                        desc="Rendering 4D orbit + tracks"):
+  for frame_idx in tqdm(range(n_frames), desc="Rendering 4D orbit + tracks"):
     nodes_to_remove = []
 
     points, colors = [], []
@@ -550,10 +665,11 @@ def render_4d_orbit_with_tracks(
       cam_data = scene_constants['camera'][cam_id]
       cam_state = scene_state[cam_id]
       pts_3d, cols_rgb = core.geometry.unproject_to_3d(
-          cam_data['raw_depth'][frame_idx],
-          cam_data['video_rgb'][frame_idx],
-          cam_data['K_mat'],
-          T_cam2world=cam_state['extrinsics'][frame_idx])
+        cam_data['raw_depth'][frame_idx],
+        cam_data['video_rgb'][frame_idx],
+        cam_data['K_mat'],
+        T_cam2world=cam_state['extrinsics'][frame_idx],
+      )
       points.append(pts_3d)
       colors.append(cols_rgb)
     points = np.vstack(points)
@@ -562,20 +678,20 @@ def render_4d_orbit_with_tracks(
     points, colors = points[sample_idx], colors[sample_idx]
 
     angle = angle_start + (frame_idx * np.pi / n_frames)
-    eye_pos = [orbit_center[0] + orbit_radius * np.cos(angle),
-               orbit_center[1] + orbit_radius * np.sin(angle),
-               camera_height]
+    eye_pos = [
+      orbit_center[0] + orbit_radius * np.cos(angle),
+      orbit_center[1] + orbit_radius * np.sin(angle),
+      camera_height,
+    ]
     viz_pose = get_look_at_matrix(eye_pos, orbit_center)
     scene.set_pose(cam_node, pose=viz_pose)
     scene.set_pose(light_node, pose=viz_pose)
 
-    pcl_node = scene.add(
-        pyrender.Mesh.from_points(points, colors=colors))
+    pcl_node = scene.add(pyrender.Mesh.from_points(points, colors=colors))
     nodes_to_remove.append(pcl_node)
 
     if tracks_3d is not None:
-      vis = track_vis[frame_idx] if track_vis is not None \
-          else np.ones(n_tracks, dtype=bool)
+      vis = track_vis[frame_idx] if track_vis is not None else np.ones(n_tracks, dtype=bool)
       vis_pts = tracks_3d[frame_idx][vis]
       vis_cols = track_colors[vis]
 
@@ -589,9 +705,9 @@ def render_4d_orbit_with_tracks(
         all_faces = np.tile(tpl_f, (N, 1))
         all_faces += np.repeat(offsets, n_f)[:, np.newaxis]
 
-        face_rgba = np.column_stack([
-            np.repeat(vis_cols, n_f, axis=0),
-            np.full(N * n_f, 255)]).astype(np.uint8)
+        face_rgba = np.column_stack(
+          [np.repeat(vis_cols, n_f, axis=0), np.full(N * n_f, 255)]
+        ).astype(np.uint8)
         mesh = trimesh.Trimesh(vertices=all_verts, faces=all_faces)
         mesh.visual.face_colors = face_rgba
         tk_node = scene.add(pyrender.Mesh.from_trimesh(mesh, smooth=False))
@@ -615,12 +731,9 @@ def render_4d_orbit_with_tracks(
       if trail_pos:
         line_pos = np.concatenate(trail_pos).astype(np.float32)
         line_col = np.concatenate(trail_col).astype(np.float32)
-        line_rgba = np.column_stack(
-            [line_col, np.ones(len(line_col))]).astype(np.float32)
-        trail_prim = pyrender.Primitive(
-            positions=line_pos, color_0=line_rgba, mode=1)
-        trail_node = scene.add(
-            pyrender.Mesh(primitives=[trail_prim]))
+        line_rgba = np.column_stack([line_col, np.ones(len(line_col))]).astype(np.float32)
+        trail_prim = pyrender.Primitive(positions=line_pos, color_0=line_rgba, mode=1)
+        trail_node = scene.add(pyrender.Mesh(primitives=[trail_prim]))
         nodes_to_remove.append(trail_node)
 
     frust_pos, frust_col = [], []
@@ -636,10 +749,8 @@ def render_4d_orbit_with_tracks(
     if frust_pos:
       frust_pos = np.array(frust_pos, dtype=np.float32)
       frust_col = np.array(frust_col, dtype=np.float32)
-      frust_prim = pyrender.Primitive(
-          positions=frust_pos, color_0=frust_col, mode=1)
-      frust_node = scene.add(
-          pyrender.Mesh(primitives=[frust_prim]))
+      frust_prim = pyrender.Primitive(positions=frust_pos, color_0=frust_col, mode=1)
+      frust_node = scene.add(pyrender.Mesh(primitives=[frust_prim]))
       nodes_to_remove.append(frust_node)
 
     color_img, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
@@ -647,11 +758,16 @@ def render_4d_orbit_with_tracks(
       scene.remove_node(node)
 
     img_rgb = color_img[:, :, :3].copy()
-    cv2.putText(img_rgb, f"Frame: {frame_idx:03d}", (30, 50),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(
+      img_rgb,
+      f"Frame: {frame_idx:03d}",
+      (30, 50),
+      cv2.FONT_HERSHEY_SIMPLEX,
+      0.7,
+      (255, 255, 255),
+      2,
+    )
     video_frames.append(img_rgb)
 
   renderer.delete()
   return video_frames
-
-

@@ -18,8 +18,7 @@ import core.runner
 
 
 @torch.no_grad()
-def evaluate_extrinsics(scene_constants, scene_state, device,
-                        pb_renderer=None):
+def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=None):
   wrist_cam = scene_constants["meta"]["wrist_serial"]
   ext_cams = [c for c in scene_constants["camera"].keys() if c != wrist_cam]
   cam1, cam2 = ext_cams[0], ext_cams[1]
@@ -29,9 +28,8 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
   metrics = {}
 
   if pb_renderer is not None:
-    for cam_id, key_prefix in [(cam1, "cam1"), (cam2, "cam2"),
-                                (wrist_cam, "wrist")]:
-      is_wrist = (cam_id == wrist_cam)
+    for cam_id, key_prefix in [(cam1, "cam1"), (cam2, "cam2"), (wrist_cam, "wrist")]:
+      is_wrist = cam_id == wrist_cam
       K_np = scene_constants["camera"][cam_id]["K_mat"]
       K_t = torch.tensor(K_np, dtype=torch.float32, device=device)
 
@@ -41,31 +39,26 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
         gripper = scene_constants["robot"]["gripper_positions"][t]
         pb_renderer.update_robot_pose(joints, gripper)
 
-        d_obs = scene_constants["camera"][cam_id]["raw_depth"][t].astype(
-            np.float32)
+        d_obs = scene_constants["camera"][cam_id]["raw_depth"][t].astype(np.float32)
         T_cam_np = scene_state[cam_id]["extrinsics"][t]
 
         if is_wrist:
           pts = core.physics.get_foreground_gripper_points(
-              T_cam_np, K_np, d_obs, pb_renderer, device)
+            T_cam_np, K_np, d_obs, pb_renderer, device
+          )
           if pts is None:
             continue
           T_world_to_ee = np.linalg.inv(T_ee_all[t])
           pts_world = (T_cam_np @ pts)[:3, :].T
-          pts_ee = (T_world_to_ee[:3, :3] @ pts_world.T
-                    + T_world_to_ee[:3, 3:4]).T
-          cache_X.append(
-              torch.tensor(pts_ee, dtype=torch.float32, device=device))
+          pts_ee = (T_world_to_ee[:3, :3] @ pts_world.T + T_world_to_ee[:3, 3:4]).T
+          cache_X.append(torch.tensor(pts_ee, dtype=torch.float32, device=device))
         else:
-          pts = core.physics.get_foreground_robot_points(
-              T_cam_np, K_np, d_obs, pb_renderer, device)
+          pts = core.physics.get_foreground_robot_points(T_cam_np, K_np, d_obs, pb_renderer, device)
           if pts is None:
             continue
           cache_X.append(pts)
 
-        cache_obs.append(
-            torch.tensor(d_obs, dtype=torch.float32,
-                         device=device)[None, ...])
+        cache_obs.append(torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
 
       if not cache_X:
         metrics[f"robot_loss_{key_prefix}"] = float("nan")
@@ -74,8 +67,8 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
       batch_X = torch.stack(cache_X)
       batch_obs = torch.stack(cache_obs)
       T_opt = torch.tensor(
-          scene_state[cam_id]["base_extrinsic"],
-          dtype=torch.float32, device=device)
+        scene_state[cam_id]["base_extrinsic"], dtype=torch.float32, device=device
+      )
 
       if is_wrist:
         loss = core.physics.compute_wrist_loss_batched(batch_X, T_opt, K_t, batch_obs)
@@ -83,15 +76,9 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
         loss = core.physics.compute_robot_loss_batched(batch_X, T_opt, K_t, batch_obs)
       metrics[f"robot_loss_{key_prefix}"] = loss.item()
 
-  T1 = torch.tensor(
-      scene_state[cam1]["base_extrinsic"],
-      dtype=torch.float32, device=device)
-  T2 = torch.tensor(
-      scene_state[cam2]["base_extrinsic"],
-      dtype=torch.float32, device=device)
-  Tw = torch.tensor(
-      scene_state[wrist_cam]["base_extrinsic"],
-      dtype=torch.float32, device=device)
+  T1 = torch.tensor(scene_state[cam1]["base_extrinsic"], dtype=torch.float32, device=device)
+  T2 = torch.tensor(scene_state[cam2]["base_extrinsic"], dtype=torch.float32, device=device)
+  Tw = torch.tensor(scene_state[wrist_cam]["base_extrinsic"], dtype=torch.float32, device=device)
 
   sum_l12, sum_l1w, sum_l2w = 0.0, 0.0, 0.0
   sum_o12, sum_o1w, sum_o2w = 0.0, 0.0, 0.0
@@ -99,11 +86,14 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
 
   for t in range(n_frames):
     pc1 = compute_extrinsics.get_cam_points_local_t(
-        t, scene_constants["camera"][cam1], device, n_points=5000)
+      t, scene_constants["camera"][cam1], device, n_points=5000
+    )
     pc2 = compute_extrinsics.get_cam_points_local_t(
-        t, scene_constants["camera"][cam2], device, n_points=5000)
+      t, scene_constants["camera"][cam2], device, n_points=5000
+    )
     pcw = compute_extrinsics.get_cam_points_local_t(
-        t, scene_constants["camera"][wrist_cam], device, n_points=5000)
+      t, scene_constants["camera"][wrist_cam], device, n_points=5000
+    )
     if pc1 is None or pc2 is None or pcw is None:
       continue
 
@@ -163,8 +153,7 @@ def print_metrics(metrics, stage_name=""):
 
   shift_keys = [k for k in sorted(metrics.keys()) if k.startswith("shift_mm_")]
   if shift_keys:
-    shifts = [f"{k.replace('shift_mm_', '')}={metrics[k]:.1f}mm"
-              for k in shift_keys]
+    shifts = [f"{k.replace('shift_mm_', '')}={metrics[k]:.1f}mm" for k in shift_keys]
     print(f"  Shift from 0:  {', '.join(shifts)}")
   print()
 
@@ -183,8 +172,8 @@ def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
 
 
 def compute_depth_residual_per_camera(
-    scene_constants, scene_state,
-    final_traj_3d, final_per_cam_vis, n_static, n_robot):
+  scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static, n_robot
+):
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = final_traj_3d.shape[0]
 
@@ -202,33 +191,38 @@ def compute_depth_residual_per_camera(
       vis_t = final_per_cam_vis[cam_id][t]
 
       if n_static > 0:
-        cam_static.append(compute_depth_residual_mm(
-            final_traj_3d[t, :n_static][vis_t[:n_static]],
-            K, ext, raw_depth, w_img, h_img))
+        cam_static.append(
+          compute_depth_residual_mm(
+            final_traj_3d[t, :n_static][vis_t[:n_static]], K, ext, raw_depth, w_img, h_img
+          )
+        )
 
       if n_robot > 0:
-        cam_robot.append(compute_depth_residual_mm(
-            final_traj_3d[t, n_static:][vis_t[n_static:]],
-            K, ext, raw_depth, w_img, h_img))
+        cam_robot.append(
+          compute_depth_residual_mm(
+            final_traj_3d[t, n_static:][vis_t[n_static:]], K, ext, raw_depth, w_img, h_img
+          )
+        )
 
-      cam_all.append(compute_depth_residual_mm(
-          final_traj_3d[t, vis_t], K, ext, raw_depth, w_img, h_img))
+      cam_all.append(
+        compute_depth_residual_mm(final_traj_3d[t, vis_t], K, ext, raw_depth, w_img, h_img)
+      )
 
     per_camera[cam_id] = {
-        "static": np.concatenate(cam_static) if cam_static else np.array([], dtype=np.float32),
-        "robot": np.concatenate(cam_robot) if cam_robot else np.array([], dtype=np.float32),
-        "all": np.concatenate(cam_all) if cam_all else np.array([], dtype=np.float32),
+      "static": np.concatenate(cam_static) if cam_static else np.array([], dtype=np.float32),
+      "robot": np.concatenate(cam_robot) if cam_robot else np.array([], dtype=np.float32),
+      "all": np.concatenate(cam_all) if cam_all else np.array([], dtype=np.float32),
     }
 
   return per_camera
 
 
 def compute_track_depth_consistency(
-    scene_constants, scene_state,
-    final_traj_3d, final_per_cam_vis, n_static, n_robot):
+  scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static, n_robot
+):
   per_camera = compute_depth_residual_per_camera(
-      scene_constants, scene_state,
-      final_traj_3d, final_per_cam_vis, n_static, n_robot)
+    scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static, n_robot
+  )
 
   all_static = [v["static"] for v in per_camera.values()]
   all_robot = [v["robot"] for v in per_camera.values()]
@@ -245,17 +239,16 @@ def compute_track_depth_consistency(
   o_med, o_mean = _stats(all_overall)
 
   return {
-      "depth_residual_static_median_mm": s_med,
-      "depth_residual_static_mean_mm": s_mean,
-      "depth_residual_robot_median_mm": r_med,
-      "depth_residual_robot_mean_mm": r_mean,
-      "depth_residual_overall_median_mm": o_med,
-      "depth_residual_overall_mean_mm": o_mean,
+    "depth_residual_static_median_mm": s_med,
+    "depth_residual_static_mean_mm": s_mean,
+    "depth_residual_robot_median_mm": r_med,
+    "depth_residual_robot_mean_mm": r_mean,
+    "depth_residual_overall_median_mm": o_med,
+    "depth_residual_overall_mean_mm": o_mean,
   }
 
 
-def compute_track_visibility_stats(
-    final_per_cam_vis, n_static, n_robot):
+def compute_track_visibility_stats(final_per_cam_vis, n_static, n_robot):
   stats = {}
   all_static_vis, all_robot_vis, all_total_vis = [], [], []
 
@@ -282,8 +275,7 @@ def compute_track_visibility_stats(
   return stats
 
 
-def compute_reprojection_error(traj_3d, traj_2d, vis_2d,
-                               intrinsics, extrinsics_w2c):
+def compute_reprojection_error(traj_3d, traj_2d, vis_2d, intrinsics, extrinsics_w2c):
   T, N, _ = traj_3d.shape
   fx, fy, cx, cy = intrinsics
 
@@ -309,16 +301,11 @@ def compute_reprojection_error(traj_3d, traj_2d, vis_2d,
   return errors[valid].astype(np.float32)
 
 
-def compute_reprojection_stats(traj_3d, per_cam_tracks_2d, tracks_root,
-                               episode_id):
-  ep_dir = os.path.abspath(
-      os.path.expanduser(os.path.join(tracks_root, episode_id)))
+def compute_reprojection_stats(traj_3d, per_cam_tracks_2d, tracks_root, episode_id):
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(tracks_root, episode_id)))
 
   all_errors = []
-  cam_dirs = sorted([
-      d for d in os.listdir(ep_dir)
-      if os.path.isdir(os.path.join(ep_dir, d))
-  ])
+  cam_dirs = sorted([d for d in os.listdir(ep_dir) if os.path.isdir(os.path.join(ep_dir, d))])
 
   for cam_dir_name in cam_dirs:
     cam_dir = os.path.join(ep_dir, cam_dir_name)
@@ -326,8 +313,7 @@ def compute_reprojection_stats(traj_3d, per_cam_tracks_2d, tracks_root,
     intrinsics_path = os.path.join(cam_dir, "intrinsics.npy")
     extrinsics_path = os.path.join(cam_dir, "extrinsics_w2c.npy")
 
-    if not all(os.path.exists(p) for p in
-               [tracks_2d_path, intrinsics_path, extrinsics_path]):
+    if not all(os.path.exists(p) for p in [tracks_2d_path, intrinsics_path, extrinsics_path]):
       continue
 
     cam_data = np.load(tracks_2d_path)
@@ -336,8 +322,7 @@ def compute_reprojection_stats(traj_3d, per_cam_tracks_2d, tracks_root,
     intrinsics = np.load(intrinsics_path)
     extrinsics_w2c = np.load(extrinsics_path)
 
-    errs = compute_reprojection_error(
-        traj_3d, traj_2d, vis_2d, intrinsics, extrinsics_w2c)
+    errs = compute_reprojection_error(traj_3d, traj_2d, vis_2d, intrinsics, extrinsics_w2c)
     if len(errs) > 0:
       all_errors.append(errs)
 
@@ -346,9 +331,9 @@ def compute_reprojection_stats(traj_3d, per_cam_tracks_2d, tracks_root,
 
   all_errs = np.concatenate(all_errors)
   return {
-      "reproj_mean_px": float(np.mean(all_errs)),
-      "reproj_median_px": float(np.median(all_errs)),
-      "reproj_p95_px": float(np.percentile(all_errs, 95)),
+    "reproj_mean_px": float(np.mean(all_errs)),
+    "reproj_median_px": float(np.median(all_errs)),
+    "reproj_p95_px": float(np.percentile(all_errs, 95)),
   }
 
 
@@ -366,12 +351,12 @@ def compute_motion_stats(scene_constants):
   ee_travel = float(np.sum(ee_deltas))
 
   return {
-      "joint_range_mean_rad": float(np.mean(joint_ranges)),
-      "joint_range_max_rad": float(np.max(joint_ranges)),
-      "joint_std_mean_rad": float(np.mean(joint_stds)),
-      "gripper_range": float(gripper.max() - gripper.min()),
-      "ee_travel_m": ee_travel,
-      "n_frames": int(len(joints)),
+    "joint_range_mean_rad": float(np.mean(joint_ranges)),
+    "joint_range_max_rad": float(np.max(joint_ranges)),
+    "joint_std_mean_rad": float(np.mean(joint_stds)),
+    "gripper_range": float(gripper.max() - gripper.min()),
+    "ee_travel_m": ee_travel,
+    "n_frames": int(len(joints)),
   }
 
 
@@ -394,11 +379,11 @@ def compute_scene_metadata(scene_constants):
     h, w = 0, 0
 
   return {
-      "site": site,
-      "robot_id": robot_id,
-      "n_cameras": len(camera_ids),
-      "image_resolution": f"{h}x{w}",
-      "wrist_serial": scene_constants["meta"].get("wrist_serial", ""),
+    "site": site,
+    "robot_id": robot_id,
+    "n_cameras": len(camera_ids),
+    "image_resolution": f"{h}x{w}",
+    "wrist_serial": scene_constants["meta"].get("wrist_serial", ""),
   }
 
 
@@ -427,12 +412,18 @@ def compute_depth_coverage_stats(scene_constants):
   return stats
 
 
-def evaluate_episode(scene_constants, scene_state, device,
-                     final_traj_3d=None, final_per_cam_vis=None,
-                     n_static=0, n_robot=0,
-                     tracks_root=None,
-                     compute_extrinsics_metrics=True,
-                     pb_renderer=None):
+def evaluate_episode(
+  scene_constants,
+  scene_state,
+  device,
+  final_traj_3d=None,
+  final_per_cam_vis=None,
+  n_static=0,
+  n_robot=0,
+  tracks_root=None,
+  compute_extrinsics_metrics=True,
+  pb_renderer=None,
+):
   ep_id = scene_constants["meta"]["episode_id"]
   metrics = {"episode_id": ep_id}
 
@@ -443,9 +434,7 @@ def evaluate_episode(scene_constants, scene_state, device,
   metrics.update(compute_depth_coverage_stats(scene_constants))
 
   if compute_extrinsics_metrics:
-    ext_metrics = evaluate_extrinsics(
-        scene_constants, scene_state, device,
-        pb_renderer=pb_renderer)
+    ext_metrics = evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=pb_renderer)
     metrics.update(ext_metrics)
 
   if final_traj_3d is not None and final_per_cam_vis is not None:
@@ -454,24 +443,23 @@ def evaluate_episode(scene_constants, scene_state, device,
     metrics["n_total_tracks"] = n_static + n_robot
     metrics["n_track_frames"] = final_traj_3d.shape[0]
 
-    metrics.update(compute_track_depth_consistency(
-        scene_constants, scene_state,
-        final_traj_3d, final_per_cam_vis, n_static, n_robot))
+    metrics.update(
+      compute_track_depth_consistency(
+        scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static, n_robot
+      )
+    )
 
-    metrics.update(compute_track_visibility_stats(
-        final_per_cam_vis, n_static, n_robot))
+    metrics.update(compute_track_visibility_stats(final_per_cam_vis, n_static, n_robot))
 
     if tracks_root is not None:
-      reproj = compute_reprojection_stats(
-          final_traj_3d, None, tracks_root, ep_id)
+      reproj = compute_reprojection_stats(final_traj_3d, None, tracks_root, ep_id)
       metrics.update(reproj)
 
   return metrics
 
 
 def load_track_data(episode_id, tracks_root):
-  ep_dir = os.path.abspath(
-      os.path.expanduser(os.path.join(tracks_root, episode_id)))
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(tracks_root, episode_id)))
 
   tracks_path = os.path.join(ep_dir, "tracks_3d.npz")
   meta_path = os.path.join(ep_dir, "track_metadata.npz")
@@ -494,19 +482,19 @@ def load_track_data(episode_id, tracks_root):
     return None
 
   return {
-      "traj_3d": tracks_data["traj_3d"],
-      "vis_global": tracks_data["vis_global"],
-      "per_cam_tracks": per_cam_tracks,
-      "per_cam_vis": per_cam_vis,
-      "n_static": int(meta_data["n_static"]),
-      "n_robot": int(meta_data["n_robot"]),
+    "traj_3d": tracks_data["traj_3d"],
+    "vis_global": tracks_data["vis_global"],
+    "per_cam_tracks": per_cam_tracks,
+    "per_cam_vis": per_cam_vis,
+    "n_static": int(meta_data["n_static"]),
+    "n_robot": int(meta_data["n_robot"]),
   }
 
 
-def evaluate_single_episode(episode_id, depth_root, extrinsics_root,
-                            tracks_root, device, pb_renderer):
-  scene_constants = core.io.load_depth_data(
-      episode_id, depth_root, load_video="first_frame")
+def evaluate_single_episode(
+  episode_id, depth_root, extrinsics_root, tracks_root, device, pb_renderer
+):
+  scene_constants = core.io.load_depth_data(episode_id, depth_root, load_video="first_frame")
   scene_state = core.io.load_extrinsics(scene_constants, extrinsics_root)
 
   tracks = load_track_data(episode_id, tracks_root)
@@ -517,14 +505,16 @@ def evaluate_single_episode(episode_id, depth_root, extrinsics_root,
   n_robot = tracks["n_robot"] if has_tracks else 0
 
   metrics = evaluate_episode(
-      scene_constants, scene_state, device,
-      final_traj_3d=final_traj_3d,
-      final_per_cam_vis=final_per_cam_vis,
-      n_static=n_static,
-      n_robot=n_robot,
-      tracks_root=tracks_root,
-      compute_extrinsics_metrics=True,
-      pb_renderer=pb_renderer,
+    scene_constants,
+    scene_state,
+    device,
+    final_traj_3d=final_traj_3d,
+    final_per_cam_vis=final_per_cam_vis,
+    n_static=n_static,
+    n_robot=n_robot,
+    tracks_root=tracks_root,
+    compute_extrinsics_metrics=True,
+    pb_renderer=pb_renderer,
   )
   metrics["has_tracks"] = has_tracks
 
@@ -558,18 +548,22 @@ def _log_failure(path, ep_id, err):
 
 def main():
   parser = argparse.ArgumentParser(
-      description="Batch quality metrics evaluation for DROID episodes")
+    description="Batch quality metrics evaluation for DROID episodes"
+  )
   core.runner.add_sharding_args(parser)
-  parser.add_argument("--depth_root", type=str,
-                      default=os.path.join(core.io.OUTPUT_ROOT, "depth"))
-  parser.add_argument("--extrinsics_root", type=str,
-                      default=os.path.join(core.io.OUTPUT_ROOT, "extrinsics"))
-  parser.add_argument("--tracks_root", type=str,
-                      default=os.path.join(core.io.OUTPUT_ROOT, "tracks"))
-  parser.add_argument("--output_dir", type=str,
-                      default=os.path.join(core.io.OUTPUT_ROOT, "metrics"))
-  parser.add_argument("--require_tracks", action="store_true",
-                      help="Only evaluate episodes with track data")
+  parser.add_argument("--depth_root", type=str, default=os.path.join(core.io.OUTPUT_ROOT, "depth"))
+  parser.add_argument(
+    "--extrinsics_root", type=str, default=os.path.join(core.io.OUTPUT_ROOT, "extrinsics")
+  )
+  parser.add_argument(
+    "--tracks_root", type=str, default=os.path.join(core.io.OUTPUT_ROOT, "tracks")
+  )
+  parser.add_argument(
+    "--output_dir", type=str, default=os.path.join(core.io.OUTPUT_ROOT, "metrics")
+  )
+  parser.add_argument(
+    "--require_tracks", action="store_true", help="Only evaluate episodes with track data"
+  )
   args = parser.parse_args()
 
   output_dir = os.path.abspath(os.path.expanduser(args.output_dir))
@@ -577,8 +571,9 @@ def main():
   csv_path = os.path.join(output_dir, "metrics.csv")
   fail_path = os.path.join(output_dir, "failures.txt")
 
-  available = (core.runner.list_episode_dirs(args.depth_root)
-               & core.runner.list_episode_dirs(args.extrinsics_root))
+  available = core.runner.list_episode_dirs(args.depth_root) & core.runner.list_episode_dirs(
+    args.extrinsics_root
+  )
   if args.require_tracks:
     available &= core.runner.list_episode_dirs(args.tracks_root)
   print(f"Found {len(available)} episodes with depth + extrinsics")
@@ -589,19 +584,24 @@ def main():
   def evaluate(ep_id):
     t0 = time.time()
     metrics = evaluate_single_episode(
-        ep_id, args.depth_root, args.extrinsics_root,
-        args.tracks_root, device, pb_renderer)
+      ep_id, args.depth_root, args.extrinsics_root, args.tracks_root, device, pb_renderer
+    )
     _append_row(csv_path, metrics)
-    print(f"  [OK] Done in {time.time() - t0:.1f}s | "
-          f"chamfer={metrics.get('chamfer_total', float('nan')):.4f} | "
-          f"depth_residual_median="
-          f"{metrics.get('depth_residual_overall_median_mm', float('nan')):.1f}mm")
+    print(
+      f"  [OK] Done in {time.time() - t0:.1f}s | "
+      f"chamfer={metrics.get('chamfer_total', float('nan')):.4f} | "
+      f"depth_residual_median="
+      f"{metrics.get('depth_residual_overall_median_mm', float('nan')):.1f}mm"
+    )
 
   core.runner.run_episodes(
-      core.runner.shard_episodes(available, args.rank, args.world_size, args.limit),
-      evaluate,
-      rank=args.rank, world_size=args.world_size,
-      done=_read_done(csv_path), stage="Evaluation")
+    core.runner.shard_episodes(available, args.rank, args.world_size, args.limit),
+    evaluate,
+    rank=args.rank,
+    world_size=args.world_size,
+    done=_read_done(csv_path),
+    stage="Evaluation",
+  )
   print(f"   Output: {csv_path}")
 
 

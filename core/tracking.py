@@ -22,8 +22,9 @@ class URDFKinematicsTracker:
     T[:3, 3] = pos
     return T
 
-  def extract_robot_tracks(self, src_cam, scene_constants, scene_state,
-                           safe_margin=7, max_robot_pts=None):
+  def extract_robot_tracks(
+    self, src_cam, scene_constants, scene_state, safe_margin=7, max_robot_pts=None
+  ):
     print(f"    URDF tracking [{src_cam}]")
     src_data = scene_constants["camera"][src_cam]
     src_state = scene_state[src_cam]
@@ -38,17 +39,15 @@ class URDFKinematicsTracker:
     seed_pts_2d = np.stack([xx.ravel(), yy.ravel()], axis=-1)
 
     self.pb.update_robot_pose(
-        scene_constants["robot"]["joint_positions"][0],
-        gripper_state=scene_constants["robot"]["gripper_positions"][0])
+      scene_constants["robot"]["joint_positions"][0],
+      gripper_state=scene_constants["robot"]["gripper_positions"][0],
+    )
 
-    obj_ids, link_ids, urdf_depth = self.pb.render_segmentation(
-        extrinsics[0], K_mat, w_img, h_img)
-    is_robot = ((obj_ids == self.pb.robot_id) |
-                (obj_ids == self.pb.ghost_id))
+    obj_ids, link_ids, urdf_depth = self.pb.render_segmentation(extrinsics[0], K_mat, w_img, h_img)
+    is_robot = (obj_ids == self.pb.robot_id) | (obj_ids == self.pb.ghost_id)
 
     kernel = np.ones((safe_margin, safe_margin), np.uint8)
-    is_robot_safe = cv2.erode(
-        is_robot.astype(np.uint8), kernel, iterations=1) > 0
+    is_robot_safe = cv2.erode(is_robot.astype(np.uint8), kernel, iterations=1) > 0
 
     u0 = np.clip(np.round(seed_pts_2d[:, 0]).astype(int), 0, w_img - 1)
     v0 = np.clip(np.round(seed_pts_2d[:, 1]).astype(int), 0, h_img - 1)
@@ -66,9 +65,8 @@ class URDFKinematicsTracker:
     z0 = urdf_depth[v0[robot_indices], u0[robot_indices]]
 
     pts_world_t0 = core.geometry.unproject_points(
-        seed_pts_2d[robot_indices, 0],
-        seed_pts_2d[robot_indices, 1],
-        z0, K_mat, extrinsics[0])
+      seed_pts_2d[robot_indices, 0], seed_pts_2d[robot_indices, 1], z0, K_mat, extrinsics[0]
+    )
 
     unique_parts = set(zip(robot_objs, robot_links))
     local_pts_dict = {}
@@ -88,8 +86,9 @@ class URDFKinematicsTracker:
 
     for t in range(n_frames):
       self.pb.update_robot_pose(
-          scene_constants["robot"]["joint_positions"][t],
-          gripper_state=scene_constants["robot"]["gripper_positions"][t])
+        scene_constants["robot"]["joint_positions"][t],
+        gripper_state=scene_constants["robot"]["gripper_positions"][t],
+      )
 
       for oid, lid in unique_parts:
         mask, P_local = local_pts_dict[(oid, lid)]
@@ -97,8 +96,7 @@ class URDFKinematicsTracker:
         P_world_t = T_link_t @ P_local
         traj_3d[t, mask, :] = P_world_t[:3, :].T
 
-      u_t, v_t, z_pred = core.geometry.project_points(
-          traj_3d[t], K_mat, extrinsics[t])
+      u_t, v_t, z_pred = core.geometry.project_points(traj_3d[t], K_mat, extrinsics[t])
       traj_2d[t, :, 0] = u_t
       traj_2d[t, :, 1] = v_t
 
@@ -109,8 +107,7 @@ class URDFKinematicsTracker:
       ui = np.clip(np.round(u_t).astype(int), 0, w_img - 1)
       vi = np.clip(np.round(v_t).astype(int), 0, h_img - 1)
 
-      in_bounds = ((u_t >= 0) & (u_t < w_img) &
-                   (v_t >= 0) & (v_t < h_img) & (z_pred > 0))
+      in_bounds = (u_t >= 0) & (u_t < w_img) & (v_t >= 0) & (v_t < h_img) & (z_pred > 0)
       z_urdf = urdf_depth_t[vi, ui]
       not_self_occ = (z_urdf > 0) & (z_pred <= z_urdf + 0.015)
       z_sensor = raw_depth_t[vi, ui]
@@ -142,15 +139,14 @@ class URDFKinematicsTracker:
         cache_key = (cam_id, t)
         if cache_key not in cache:
           self.pb.update_robot_pose(
-              scene_constants["robot"]["joint_positions"][t],
-              gripper_state=scene_constants["robot"]["gripper_positions"][t])
-          cache[cache_key] = self.pb.render_depth(
-              cam_state["extrinsics"][t], K, w_img, h_img)
+            scene_constants["robot"]["joint_positions"][t],
+            gripper_state=scene_constants["robot"]["gripper_positions"][t],
+          )
+          cache[cache_key] = self.pb.render_depth(cam_state["extrinsics"][t], K, w_img, h_img)
 
         urdf_depth_t = cache[cache_key]
 
-        u_t, v_t, z_pred = core.geometry.project_points(
-            traj_3d[t], K, cam_state["extrinsics"][t])
+        u_t, v_t, z_pred = core.geometry.project_points(traj_3d[t], K, cam_state["extrinsics"][t])
         cam_traj_2d[t, :, 0] = u_t
         cam_traj_2d[t, :, 1] = v_t
 
@@ -159,8 +155,7 @@ class URDFKinematicsTracker:
         ui = np.clip(np.round(u_t).astype(int), 0, w_img - 1)
         vi = np.clip(np.round(v_t).astype(int), 0, h_img - 1)
 
-        in_bounds = ((u_t >= 0) & (u_t < w_img) &
-                     (v_t >= 0) & (v_t < h_img) & (z_pred > 0))
+        in_bounds = (u_t >= 0) & (u_t < w_img) & (v_t >= 0) & (v_t < h_img) & (z_pred > 0)
         z_urdf = urdf_depth_t[vi, ui]
         not_self_occ = (z_urdf > 0) & (z_pred <= z_urdf + 0.015)
         z_sensor = raw_depth_t[vi, ui]

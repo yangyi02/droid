@@ -11,13 +11,17 @@ import core.runner
 import core.tracking
 
 
-def find_static_candidates(scene_constants, scene_state, pb_renderer,
-                           match_radius=0.005,
-                           num_points=None,
-                           safe_margin=15,
-                           tau=0.015,
-                           min_run_frames=30,
-                           flicker=0.10):
+def find_static_candidates(
+  scene_constants,
+  scene_state,
+  pb_renderer,
+  match_radius=0.005,
+  num_points=None,
+  safe_margin=15,
+  tau=0.015,
+  min_run_frames=30,
+  flicker=0.10,
+):
   camera_ids = list(scene_constants["camera"].keys())
   wrist_serial = scene_constants["meta"].get("wrist_serial")
 
@@ -25,8 +29,9 @@ def find_static_candidates(scene_constants, scene_state, pb_renderer,
   print(f"  Querying at frame 0 on all {len(camera_ids)} cameras (dense)")
 
   pb_renderer.update_robot_pose(
-      scene_constants["robot"]["joint_positions"][0],
-      gripper_state=scene_constants["robot"]["gripper_positions"][0])
+    scene_constants["robot"]["joint_positions"][0],
+    gripper_state=scene_constants["robot"]["gripper_positions"][0],
+  )
 
   per_cam_pts = {}
   per_cam_rgb = {}
@@ -39,8 +44,7 @@ def find_static_candidates(scene_constants, scene_state, pb_renderer,
 
     robot_mask = pb_renderer.render_mask(ext, K, w_img, h_img)
     kernel = np.ones((safe_margin, safe_margin), np.uint8)
-    robot_mask_dilated = cv2.dilate(
-        robot_mask.astype(np.uint8), kernel, iterations=1) > 0
+    robot_mask_dilated = cv2.dilate(robot_mask.astype(np.uint8), kernel, iterations=1) > 0
 
     depth = cam_data["raw_depth"][0]
     is_env = ~robot_mask_dilated
@@ -64,8 +68,10 @@ def find_static_candidates(scene_constants, scene_state, pb_renderer,
     per_cam_rgb[cam_id] = rgb
     n_robot = np.sum(robot_mask_dilated & has_depth)
     n_no_depth = np.sum(is_env & ~has_depth)
-    print(f"    [{cam_id}] {len(us)} env / {n_robot} robot / "
-          f"{n_no_depth} no-depth  (dense {w_img}×{h_img})")
+    print(
+      f"    [{cam_id}] {len(us)} env / {n_robot} robot / "
+      f"{n_no_depth} no-depth  (dense {w_img}×{h_img})"
+    )
 
   all_verified_pts = []
   all_verified_rgb = []
@@ -90,8 +96,7 @@ def find_static_candidates(scene_constants, scene_state, pb_renderer,
       ui_d = np.clip(np.round(u_d).astype(int), 0, dst_w - 1)
       vi_d = np.clip(np.round(v_d).astype(int), 0, dst_h - 1)
 
-      in_bounds = ((u_d >= 0) & (u_d < dst_w) &
-                   (v_d >= 0) & (v_d < dst_h) & (z_pred > 0))
+      in_bounds = (u_d >= 0) & (u_d < dst_w) & (v_d >= 0) & (v_d < dst_h) & (z_pred > 0)
 
       z_obs = dst_data["raw_depth"][0, vi_d, ui_d]
       depth_ok = (z_obs > 0.05) & (np.abs(z_pred - z_obs) < match_radius)
@@ -110,30 +115,43 @@ def find_static_candidates(scene_constants, scene_state, pb_renderer,
   all_rgb = np.concatenate(all_verified_rgb, axis=0)
   print(f"\n  Total verified points (pre-dedup): {len(all_pts)}")
 
-  dedup_pts, dedup_rgb = _voxel_dedup(all_pts, all_rgb,
-                                       voxel_size=match_radius * 2)
+  dedup_pts, dedup_rgb = _voxel_dedup(all_pts, all_rgb, voxel_size=match_radius * 2)
   if len(dedup_pts) < len(all_pts):
     print(f"  After dedup: {len(dedup_pts)}")
 
   n_before = len(dedup_pts)
-  stats = _measure_depth_gaps(dedup_pts, scene_constants, scene_state,
-                              static_cams, pb_renderer, tau=tau,
-                              safe_margin=safe_margin)
+  stats = _measure_depth_gaps(
+    dedup_pts,
+    scene_constants,
+    scene_state,
+    static_cams,
+    pb_renderer,
+    tau=tau,
+    safe_margin=safe_margin,
+  )
   gone = _filter_support_left(stats, min_run_frames=min_run_frames)
-  jitters = (_filter_visibility_flicker(stats, flicker=flicker)
-             if flicker is not None else np.zeros(n_before, dtype=bool))
+  jitters = (
+    _filter_visibility_flicker(stats, flicker=flicker)
+    if flicker is not None
+    else np.zeros(n_before, dtype=bool)
+  )
   keep = ~(gone | jitters)
   dedup_pts, dedup_rgb = dedup_pts[keep], dedup_rgb[keep]
-  print(f"  Static verification ({stats['n_frames']} frames, tau "
-        f"{tau * 1000:.0f}mm): {n_before} -> {len(dedup_pts)} points")
-  print(f"    support left ({min_run_frames}+ consecutive frames past the "
-        f"surface): {int(gone.sum())}")
+  print(
+    f"  Static verification ({stats['n_frames']} frames, tau "
+    f"{tau * 1000:.0f}mm): {n_before} -> {len(dedup_pts)} points"
+  )
+  print(
+    f"    support left ({min_run_frames}+ consecutive frames past the surface): {int(gone.sum())}"
+  )
   if flicker is None:
     print("    visibility flicker: disabled")
   else:
-    print(f"    visibility flicker (>{flicker:.0%} of frames): "
-          f"{int(jitters.sum())} ({int((jitters & ~gone).sum())} for this "
-          f"reason alone)")
+    print(
+      f"    visibility flicker (>{flicker:.0%} of frames): "
+      f"{int(jitters.sum())} ({int((jitters & ~gone).sum())} for this "
+      f"reason alone)"
+    )
 
   if num_points is not None and len(dedup_pts) > num_points:
     rng = np.random.default_rng(42)
@@ -151,9 +169,11 @@ def _voxel_dedup(pts, rgb, voxel_size=0.01):
     return pts, rgb
 
   voxel_indices = np.floor(pts / voxel_size).astype(np.int64)
-  keys = (voxel_indices[:, 0].astype(np.int64) * 1000000 +
-          voxel_indices[:, 1].astype(np.int64) * 1000 +
-          voxel_indices[:, 2].astype(np.int64))
+  keys = (
+    voxel_indices[:, 0].astype(np.int64) * 1000000
+    + voxel_indices[:, 1].astype(np.int64) * 1000
+    + voxel_indices[:, 2].astype(np.int64)
+  )
 
   unique_keys, inverse = np.unique(keys, return_inverse=True)
   N_unique = len(unique_keys)
@@ -169,8 +189,9 @@ def _voxel_dedup(pts, rgb, voxel_size=0.01):
   return out_pts, out_rgb
 
 
-def _measure_depth_gaps(pts, scene_constants, scene_state, static_cams,
-                        pb_renderer, tau=0.015, safe_margin=15, patch=5):
+def _measure_depth_gaps(
+  pts, scene_constants, scene_state, static_cams, pb_renderer, tau=0.015, safe_margin=15, patch=5
+):
   N = len(pts)
   S = len(static_cams)
   T_frames = len(scene_constants["camera"][static_cams[0]]["video_rgb"])
@@ -184,13 +205,14 @@ def _measure_depth_gaps(pts, scene_constants, scene_state, static_cams,
 
   kernel = np.ones((safe_margin, safe_margin), np.uint8)
   rad = patch // 2
-  dy, dx = np.mgrid[-rad:rad + 1, -rad:rad + 1].reshape(2, -1)
+  dy, dx = np.mgrid[-rad : rad + 1, -rad : rad + 1].reshape(2, -1)
   min_valid = max(1, (patch * patch) // 6)
 
   for t in range(T_frames):
     pb_renderer.update_robot_pose(
-        scene_constants["robot"]["joint_positions"][t],
-        gripper_state=scene_constants["robot"]["gripper_positions"][t])
+      scene_constants["robot"]["joint_positions"][t],
+      gripper_state=scene_constants["robot"]["gripper_positions"][t],
+    )
 
     for s, cam_id in enumerate(static_cams):
       cam_data = scene_constants["camera"][cam_id]
@@ -199,17 +221,14 @@ def _measure_depth_gaps(pts, scene_constants, scene_state, static_cams,
       h_img, w_img = cam_data["video_rgb"][0].shape[:2]
 
       robot_mask = pb_renderer.render_mask(ext, K, w_img, h_img)
-      robot_mask_dilated = cv2.dilate(
-          robot_mask.astype(np.uint8), kernel, iterations=1) > 0
+      robot_mask_dilated = cv2.dilate(robot_mask.astype(np.uint8), kernel, iterations=1) > 0
 
       u, v, z_pred = core.geometry.project_points(pts, K, ext)
       ok = np.isfinite(u) & np.isfinite(v) & (z_pred > 0)
       ui = np.round(np.where(ok, u, 0)).astype(int)
       vi = np.round(np.where(ok, v, 0)).astype(int)
-      ok &= ((ui >= rad) & (ui < w_img - rad) &
-             (vi >= rad) & (vi < h_img - rad))
-      ok &= ~robot_mask_dilated[np.clip(vi, 0, h_img - 1),
-                                np.clip(ui, 0, w_img - 1)]
+      ok &= (ui >= rad) & (ui < w_img - rad) & (vi >= rad) & (vi < h_img - rad)
+      ok &= ~robot_mask_dilated[np.clip(vi, 0, h_img - 1), np.clip(ui, 0, w_img - 1)]
 
       gap = np.full(N, np.nan, dtype=np.float32)
       if ok.any():
@@ -233,8 +252,7 @@ def _measure_depth_gaps(pts, scene_constants, scene_state, static_cams,
       prev_vis[s] = vis
       seen[s] += measurable
 
-  return dict(streak=streak, onquery=onquery, flips=flips, seen=seen,
-              n_frames=T_frames)
+  return dict(streak=streak, onquery=onquery, flips=flips, seen=seen, n_frames=T_frames)
 
 
 def _filter_support_left(stats, min_run_frames=30):
@@ -245,9 +263,9 @@ def _filter_visibility_flicker(stats, flicker=0.10):
   return (stats["flips"] / max(stats["n_frames"] - 1, 1) > flicker).any(axis=0)
 
 
-def project_static_tracks(static_pts_3d, scene_constants, scene_state,
-                          pb_renderer, depth_tolerance=0.05,
-                          safe_margin=15):
+def project_static_tracks(
+  static_pts_3d, scene_constants, scene_state, pb_renderer, depth_tolerance=0.05, safe_margin=15
+):
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
   N = len(static_pts_3d)
@@ -261,8 +279,9 @@ def project_static_tracks(static_pts_3d, scene_constants, scene_state,
   robot_masks_dilated = {cam: [] for cam in camera_ids}
   for t in range(T_frames):
     pb_renderer.update_robot_pose(
-        scene_constants["robot"]["joint_positions"][t],
-        gripper_state=scene_constants["robot"]["gripper_positions"][t])
+      scene_constants["robot"]["joint_positions"][t],
+      gripper_state=scene_constants["robot"]["gripper_positions"][t],
+    )
     for cam_id in camera_ids:
       cam_data = scene_constants["camera"][cam_id]
       ext = scene_state[cam_id]["extrinsics"][t]
@@ -287,8 +306,7 @@ def project_static_tracks(static_pts_3d, scene_constants, scene_state,
       tracks[t, :, 0] = u
       tracks[t, :, 1] = v
 
-      in_bounds = ((u >= 0) & (u < w_img) &
-                   (v >= 0) & (v < h_img) & (z_pred > 0))
+      in_bounds = (u >= 0) & (u < w_img) & (v >= 0) & (v < h_img) & (z_pred > 0)
 
       ui = np.clip(np.round(u).astype(int), 0, w_img - 1)
       vi = np.clip(np.round(v).astype(int), 0, h_img - 1)
@@ -308,8 +326,7 @@ def project_static_tracks(static_pts_3d, scene_constants, scene_state,
   return per_cam_tracks, per_cam_vis
 
 
-def compute_robot_tracks(scene_constants, scene_state, pb_renderer,
-                         max_robot_pts_per_cam=None):
+def compute_robot_tracks(scene_constants, scene_state, pb_renderer, max_robot_pts_per_cam=None):
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
 
@@ -321,17 +338,16 @@ def compute_robot_tracks(scene_constants, scene_state, pb_renderer,
   robot_per_cam_vis_all = {cam: [] for cam in camera_ids}
 
   for src_cam in camera_ids:
-    traj_3d_rob, traj_2d_rob, vis_rob, robot_indices = \
-        urdf_tracker.extract_robot_tracks(
-            src_cam, scene_constants, scene_state,
-            max_robot_pts=max_robot_pts_per_cam)
+    traj_3d_rob, traj_2d_rob, vis_rob, robot_indices = urdf_tracker.extract_robot_tracks(
+      src_cam, scene_constants, scene_state, max_robot_pts=max_robot_pts_per_cam
+    )
 
     if traj_3d_rob is None or len(robot_indices) == 0:
       continue
 
-    rob_per_cam_2d, rob_per_cam_vis = \
-        urdf_tracker.project_to_all_views(
-            traj_3d_rob, scene_constants, scene_state)
+    rob_per_cam_2d, rob_per_cam_vis = urdf_tracker.project_to_all_views(
+      traj_3d_rob, scene_constants, scene_state
+    )
 
     rob_per_cam_2d[src_cam] = traj_2d_rob
     rob_per_cam_vis[src_cam] = vis_rob
@@ -344,29 +360,32 @@ def compute_robot_tracks(scene_constants, scene_state, pb_renderer,
   if robot_traj_3d_all:
     robot_traj_3d = np.concatenate(robot_traj_3d_all, axis=1)
     robot_per_cam_tracks = {
-        cam: np.concatenate(robot_per_cam_tracks_all[cam], axis=1)
-        for cam in camera_ids}
+      cam: np.concatenate(robot_per_cam_tracks_all[cam], axis=1) for cam in camera_ids
+    }
     robot_per_cam_vis = {
-        cam: np.concatenate(robot_per_cam_vis_all[cam], axis=1)
-        for cam in camera_ids}
+      cam: np.concatenate(robot_per_cam_vis_all[cam], axis=1) for cam in camera_ids
+    }
     n_robot = robot_traj_3d.shape[1]
     print(f"  Total robot points: {n_robot}")
   else:
     robot_traj_3d = np.zeros((T_frames, 0, 3), dtype=np.float32)
-    robot_per_cam_tracks = {
-        cam: np.zeros((T_frames, 0, 2), dtype=np.float32)
-        for cam in camera_ids}
-    robot_per_cam_vis = {
-        cam: np.zeros((T_frames, 0), dtype=bool)
-        for cam in camera_ids}
+    robot_per_cam_tracks = {cam: np.zeros((T_frames, 0, 2), dtype=np.float32) for cam in camera_ids}
+    robot_per_cam_vis = {cam: np.zeros((T_frames, 0), dtype=bool) for cam in camera_ids}
     n_robot = 0
 
   return robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis, n_robot
 
 
-def merge_tracks(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
-                 robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis,
-                 camera_ids, T_frames):
+def merge_tracks(
+  static_pts_3d,
+  static_per_cam_tracks,
+  static_per_cam_vis,
+  robot_traj_3d,
+  robot_per_cam_tracks,
+  robot_per_cam_vis,
+  camera_ids,
+  T_frames,
+):
   n_static = len(static_pts_3d)
   n_robot = robot_traj_3d.shape[1]
 
@@ -374,9 +393,7 @@ def merge_tracks(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
   print(f"  Static: {n_static} | Robot: {n_robot} | Total: {n_static + n_robot}")
 
   if n_static > 0:
-    static_traj_3d = np.broadcast_to(
-        static_pts_3d[None, :, :], (T_frames, n_static, 3)
-    ).copy()
+    static_traj_3d = np.broadcast_to(static_pts_3d[None, :, :], (T_frames, n_static, 3)).copy()
   else:
     static_traj_3d = np.zeros((T_frames, 0, 3), dtype=np.float32)
 
@@ -395,37 +412,48 @@ def merge_tracks(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
     robot_vis_global = np.zeros((T_frames, 0), dtype=bool)
 
   final_traj_3d = np.concatenate([static_traj_3d, robot_traj_3d], axis=1)
-  final_vis_global = np.concatenate(
-      [static_vis_global, robot_vis_global], axis=1)
+  final_vis_global = np.concatenate([static_vis_global, robot_vis_global], axis=1)
   final_per_cam_tracks = {
-      cam: np.concatenate(
-          [static_per_cam_tracks[cam], robot_per_cam_tracks[cam]], axis=1)
-      for cam in camera_ids}
+    cam: np.concatenate([static_per_cam_tracks[cam], robot_per_cam_tracks[cam]], axis=1)
+    for cam in camera_ids
+  }
   final_per_cam_vis = {
-      cam: np.concatenate(
-          [static_per_cam_vis[cam], robot_per_cam_vis[cam]], axis=1)
-      for cam in camera_ids}
+    cam: np.concatenate([static_per_cam_vis[cam], robot_per_cam_vis[cam]], axis=1)
+    for cam in camera_ids
+  }
 
-  return (final_traj_3d, final_vis_global, final_per_cam_tracks,
-          final_per_cam_vis, n_static, n_robot)
+  return (
+    final_traj_3d,
+    final_vis_global,
+    final_per_cam_tracks,
+    final_per_cam_vis,
+    n_static,
+    n_robot,
+  )
 
 
-def export_tracks(scene_constants, scene_state, final_traj_3d,
-                  final_vis_global, final_per_cam_tracks, final_per_cam_vis,
-                  n_static, n_robot,
-                  export_root=os.path.join(core.io.OUTPUT_ROOT, "tracks")):
+def export_tracks(
+  scene_constants,
+  scene_state,
+  final_traj_3d,
+  final_vis_global,
+  final_per_cam_tracks,
+  final_per_cam_vis,
+  n_static,
+  n_robot,
+  export_root=os.path.join(core.io.OUTPUT_ROOT, "tracks"),
+):
   ep_id = scene_constants["meta"]["episode_id"]
   camera_ids = list(scene_constants["camera"].keys())
-  ep_dir = os.path.abspath(
-      os.path.expanduser(os.path.join(export_root, ep_id)))
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_id)))
   os.makedirs(ep_dir, exist_ok=True)
 
   T, N, _ = final_traj_3d.shape
 
   np.savez_compressed(
-      os.path.join(ep_dir, "tracks_3d.npz"),
-      traj_3d=final_traj_3d.astype(np.float32),
-      vis_global=final_vis_global,
+    os.path.join(ep_dir, "tracks_3d.npz"),
+    traj_3d=final_traj_3d.astype(np.float32),
+    vis_global=final_vis_global,
   )
 
   for cam_id in camera_ids:
@@ -437,37 +465,44 @@ def export_tracks(scene_constants, scene_state, final_traj_3d,
     traj_2d[~vis] = -1000.0
 
     np.savez_compressed(
-        os.path.join(cam_dir, "tracks_2d.npz"),
-        traj_2d=traj_2d.astype(np.float32),
-        vis_2d=vis,
+      os.path.join(cam_dir, "tracks_2d.npz"),
+      traj_2d=traj_2d.astype(np.float32),
+      vis_2d=vis,
     )
 
     cam_data = scene_constants["camera"][cam_id]
     K = cam_data["K_mat"]
-    np.save(os.path.join(cam_dir, "intrinsics.npy"),
-            np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]],
-                     dtype=np.float32))
+    np.save(
+      os.path.join(cam_dir, "intrinsics.npy"),
+      np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]], dtype=np.float32),
+    )
 
-    np.save(os.path.join(cam_dir, "extrinsics_w2c.npy"),
-            np.linalg.inv(
-                scene_state[cam_id]["extrinsics"]).astype(np.float32))
+    np.save(
+      os.path.join(cam_dir, "extrinsics_w2c.npy"),
+      np.linalg.inv(scene_state[cam_id]["extrinsics"]).astype(np.float32),
+    )
 
   np.savez_compressed(
-      os.path.join(ep_dir, "track_metadata.npz"),
-      n_static=np.array(n_static),
-      n_robot=np.array(n_robot),
-      point_type=np.array(
-          [0] * n_static + [1] * n_robot, dtype=np.uint8),
+    os.path.join(ep_dir, "track_metadata.npz"),
+    n_static=np.array(n_static),
+    n_robot=np.array(n_robot),
+    point_type=np.array([0] * n_static + [1] * n_robot, dtype=np.uint8),
   )
 
   print(f"  Exported {N} tracks × {T} frames to {ep_dir}")
   return ep_dir
 
 
-def process_episode(episode_id, pb_renderer, device,
-                    depth_root, extrinsics_root, export_root,
-                    num_static_points=300,
-                    max_robot_pts_per_cam=100):
+def process_episode(
+  episode_id,
+  pb_renderer,
+  device,
+  depth_root,
+  extrinsics_root,
+  export_root,
+  num_static_points=300,
+  max_robot_pts_per_cam=100,
+):
   print(f"\nProcessing Episode: {episode_id}")
 
   scene_constants = core.io.load_depth_data(episode_id, depth_root, load_video="full")
@@ -479,57 +514,85 @@ def process_episode(episode_id, pb_renderer, device,
 
   print(f"\nDense at t=0 -> Cross-View Consensus -> Static Points")
   static_pts_3d, static_rgb = find_static_candidates(
-      scene_constants, scene_state, pb_renderer,
-      num_points=num_static_points)
+    scene_constants, scene_state, pb_renderer, num_points=num_static_points
+  )
 
   if len(static_pts_3d) > 0:
     static_per_cam_tracks, static_per_cam_vis = project_static_tracks(
-        static_pts_3d, scene_constants, scene_state, pb_renderer)
+      static_pts_3d, scene_constants, scene_state, pb_renderer
+    )
   else:
     static_per_cam_tracks = {
-        cam: np.zeros((T_frames, 0, 2), dtype=np.float32)
-        for cam in camera_ids}
-    static_per_cam_vis = {
-        cam: np.zeros((T_frames, 0), dtype=bool)
-        for cam in camera_ids}
+      cam: np.zeros((T_frames, 0, 2), dtype=np.float32) for cam in camera_ids
+    }
+    static_per_cam_vis = {cam: np.zeros((T_frames, 0), dtype=bool) for cam in camera_ids}
 
-  robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis, n_robot = \
-      compute_robot_tracks(scene_constants, scene_state, pb_renderer,
-                          max_robot_pts_per_cam=max_robot_pts_per_cam)
+  robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis, n_robot = compute_robot_tracks(
+    scene_constants, scene_state, pb_renderer, max_robot_pts_per_cam=max_robot_pts_per_cam
+  )
 
-  (final_traj_3d, final_vis_global, final_per_cam_tracks,
-   final_per_cam_vis, n_static, n_robot) = merge_tracks(
-      static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
-      robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis,
-      camera_ids, T_frames)
+  (final_traj_3d, final_vis_global, final_per_cam_tracks, final_per_cam_vis, n_static, n_robot) = (
+    merge_tracks(
+      static_pts_3d,
+      static_per_cam_tracks,
+      static_per_cam_vis,
+      robot_traj_3d,
+      robot_per_cam_tracks,
+      robot_per_cam_vis,
+      camera_ids,
+      T_frames,
+    )
+  )
 
-  export_tracks(scene_constants, scene_state,
-                final_traj_3d, final_vis_global,
-                final_per_cam_tracks, final_per_cam_vis,
-                n_static, n_robot, export_root)
+  export_tracks(
+    scene_constants,
+    scene_state,
+    final_traj_3d,
+    final_vis_global,
+    final_per_cam_tracks,
+    final_per_cam_vis,
+    n_static,
+    n_robot,
+    export_root,
+  )
 
-  print(f"\n  Episode {episode_id}: {n_static} static + {n_robot} robot "
-        f"= {n_static + n_robot} tracks exported.")
+  print(
+    f"\n  Episode {episode_id}: {n_static} static + {n_robot} robot "
+    f"= {n_static + n_robot} tracks exported."
+  )
   return n_static + n_robot
 
 
 if __name__ == "__main__":
-  parser = argparse.ArgumentParser(
-      description="DROID Stage 3: Static Background + Robot Tracks")
+  parser = argparse.ArgumentParser(description="DROID Stage 3: Static Background + Robot Tracks")
   core.runner.add_sharding_args(parser)
-  parser.add_argument("--depth_root", type=str,
-                      default=os.path.join(core.io.OUTPUT_ROOT, "depth"),
-                      help="Root directory of depth outputs")
-  parser.add_argument("--extrinsics_root", type=str,
-                      default=os.path.join(core.io.OUTPUT_ROOT, "extrinsics"),
-                      help="Root directory of extrinsics outputs")
-  parser.add_argument("--export_root", type=str,
-                      default=os.path.join(core.io.OUTPUT_ROOT, "tracks"),
-                      help="Root directory for tracks output")
-  parser.add_argument("--num_static_points", type=int, default=300,
-                      help="Number of static background points to sample")
-  parser.add_argument("--max_robot_pts_per_cam", type=int, default=100,
-                      help="Max robot surface points per camera")
+  parser.add_argument(
+    "--depth_root",
+    type=str,
+    default=os.path.join(core.io.OUTPUT_ROOT, "depth"),
+    help="Root directory of depth outputs",
+  )
+  parser.add_argument(
+    "--extrinsics_root",
+    type=str,
+    default=os.path.join(core.io.OUTPUT_ROOT, "extrinsics"),
+    help="Root directory of extrinsics outputs",
+  )
+  parser.add_argument(
+    "--export_root",
+    type=str,
+    default=os.path.join(core.io.OUTPUT_ROOT, "tracks"),
+    help="Root directory for tracks output",
+  )
+  parser.add_argument(
+    "--num_static_points",
+    type=int,
+    default=300,
+    help="Number of static background points to sample",
+  )
+  parser.add_argument(
+    "--max_robot_pts_per_cam", type=int, default=100, help="Max robot surface points per camera"
+  )
   args = parser.parse_args()
 
   print("DROID Stage 3: Static Background + Robot Tracks")
@@ -537,18 +600,25 @@ if __name__ == "__main__":
   pb_renderer = core.physics.PyBulletRenderer()
 
   target = core.runner.shard_episodes(
-      core.runner.list_episode_dirs(args.extrinsics_root),
-      args.rank, args.world_size, args.limit)
+    core.runner.list_episode_dirs(args.extrinsics_root), args.rank, args.world_size, args.limit
+  )
   export_abs = os.path.abspath(os.path.expanduser(args.export_root))
-  done = {ep for ep in target
-          if os.path.exists(os.path.join(export_abs, ep, "tracks_3d.npz"))}
+  done = {ep for ep in target if os.path.exists(os.path.join(export_abs, ep, "tracks_3d.npz"))}
 
   core.runner.run_episodes(
-      target,
-      lambda ep_id: process_episode(
-          ep_id, pb_renderer, device,
-          args.depth_root, args.extrinsics_root, args.export_root,
-          num_static_points=args.num_static_points,
-          max_robot_pts_per_cam=args.max_robot_pts_per_cam),
-      rank=args.rank, world_size=args.world_size,
-      done=done, stage="Stage 3")
+    target,
+    lambda ep_id: process_episode(
+      ep_id,
+      pb_renderer,
+      device,
+      args.depth_root,
+      args.extrinsics_root,
+      args.export_root,
+      num_static_points=args.num_static_points,
+      max_robot_pts_per_cam=args.max_robot_pts_per_cam,
+    ),
+    rank=args.rank,
+    world_size=args.world_size,
+    done=done,
+    stage="Stage 3",
+  )

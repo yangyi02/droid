@@ -32,8 +32,7 @@ def project_points(pts_world, K, T_cam2world):
   return u, v, z_cam
 
 
-def unproject_to_3d(depth, color_img, K_mat, T_cam2world=None,
-                    min_depth=0., max_depth=1.5):
+def unproject_to_3d(depth, color_img, K_mat, T_cam2world=None, min_depth=0.0, max_depth=1.5):
   mask = (depth > min_depth) & (depth < max_depth)
   v, u = np.where(mask)
   if T_cam2world is None:
@@ -50,17 +49,28 @@ def make_4x4(vec_6d):
 
 
 def axis_angle_to_matrix(rot_vec):
-  theta2 = torch.sum(rot_vec ** 2)
+  theta2 = torch.sum(rot_vec**2)
   theta = torch.sqrt(theta2 + 1e-16)
   k = rot_vec / theta
 
   K = torch.zeros((3, 3), device=rot_vec.device)
   K[0, 1], K[0, 2], K[1, 0], K[1, 2], K[2, 0], K[2, 1] = -k[2], k[1], k[2], -k[0], -k[1], k[0]
 
-  R_exact = torch.eye(3, device=rot_vec.device) + torch.sin(theta) * K + (1 - torch.cos(theta)) * torch.mm(K, K)
+  R_exact = (
+    torch.eye(3, device=rot_vec.device)
+    + torch.sin(theta) * K
+    + (1 - torch.cos(theta)) * torch.mm(K, K)
+  )
 
   K_approx = torch.zeros_like(K)
-  K_approx[0, 1], K_approx[0, 2], K_approx[1, 0], K_approx[1, 2], K_approx[2, 0], K_approx[2, 1] = -rot_vec[2], rot_vec[1], rot_vec[2], -rot_vec[0], -rot_vec[1], rot_vec[0]
+  K_approx[0, 1], K_approx[0, 2], K_approx[1, 0], K_approx[1, 2], K_approx[2, 0], K_approx[2, 1] = (
+    -rot_vec[2],
+    rot_vec[1],
+    rot_vec[2],
+    -rot_vec[0],
+    -rot_vec[1],
+    rot_vec[0],
+  )
 
   return torch.where(theta2 < 1e-8, torch.eye(3, device=rot_vec.device) + K_approx, R_exact)
 
@@ -69,5 +79,5 @@ def make_T(delta, device):
   rot = axis_angle_to_matrix(delta[:3])
   t = delta[3:].unsqueeze(1)
   T_top = torch.cat([rot, t], dim=1)
-  T_bottom = torch.tensor([[0., 0., 0., 1.]], device=device, dtype=torch.float32)
+  T_bottom = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=device, dtype=torch.float32)
   return torch.cat([T_top, T_bottom], dim=0)

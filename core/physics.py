@@ -11,8 +11,10 @@ import torch.nn.functional as F
 
 _SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_URDF = os.path.join(
-    _SCRIPT_DIR, "assets", "franka_description",
-    "franka_panda_robotiq_2f85_og.urdf",
+  _SCRIPT_DIR,
+  "assets",
+  "franka_description",
+  "franka_panda_robotiq_2f85_og.urdf",
 )
 
 
@@ -51,6 +53,7 @@ def _trimmed_urdf(src, hidden):
     tree.write(out)
   return out
 
+
 class PyBulletRenderer:
   def __init__(self, ghost_urdf=None, gpu=False):
     import pybullet_data
@@ -64,24 +67,26 @@ class PyBulletRenderer:
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
     self.gpu = bool(gpu) and _load_egl()
-    self.renderer = (p.ER_BULLET_HARDWARE_OPENGL if self.gpu
-                     else p.ER_TINY_RENDERER)
+    self.renderer = p.ER_BULLET_HARDWARE_OPENGL if self.gpu else p.ER_TINY_RENDERER
 
-    robot_urdf = os.path.join(pybullet_data.getDataPath(),
-                              "franka_panda", "panda.urdf")
+    robot_urdf = os.path.join(pybullet_data.getDataPath(), "franka_panda", "panda.urdf")
     if self.gpu:
       robot_urdf = _trimmed_urdf(robot_urdf, _hidden_on_arm)
     self.robot_id = p.loadURDF(robot_urdf, useFixedBase=True)
     self.arm_joints = [
-        i for i in range(p.getNumJoints(self.robot_id))
-        if "panda_joint" in p.getJointInfo(self.robot_id, i)[1].decode()
-        and p.getJointInfo(self.robot_id, i)[2] != p.JOINT_FIXED
+      i
+      for i in range(p.getNumJoints(self.robot_id))
+      if "panda_joint" in p.getJointInfo(self.robot_id, i)[1].decode()
+      and p.getJointInfo(self.robot_id, i)[2] != p.JOINT_FIXED
     ]
 
     self.hidden_robot_links = []
     for i in range(-1, p.getNumJoints(self.robot_id)):
-      name = (p.getBodyInfo(self.robot_id)[0].decode() if i == -1
-              else p.getJointInfo(self.robot_id, i)[12].decode())
+      name = (
+        p.getBodyInfo(self.robot_id)[0].decode()
+        if i == -1
+        else p.getJointInfo(self.robot_id, i)[12].decode()
+      )
       if _hidden_on_arm(name):
         if not self.gpu:
           p.changeVisualShape(self.robot_id, i, rgbaColor=[0, 0, 0, 0])
@@ -91,9 +96,10 @@ class PyBulletRenderer:
       ghost_urdf = _trimmed_urdf(ghost_urdf, _hidden_on_ghost)
     self.ghost_id = p.loadURDF(ghost_urdf, useFixedBase=True)
     self.ghost_arm_joints = [
-        i for i in range(p.getNumJoints(self.ghost_id))
-        if "panda_joint" in p.getJointInfo(self.ghost_id, i)[1].decode()
-        and p.getJointInfo(self.ghost_id, i)[2] != p.JOINT_FIXED
+      i
+      for i in range(p.getNumJoints(self.ghost_id))
+      if "panda_joint" in p.getJointInfo(self.ghost_id, i)[1].decode()
+      and p.getJointInfo(self.ghost_id, i)[2] != p.JOINT_FIXED
     ]
 
     self.gripper_joints = []
@@ -111,24 +117,24 @@ class PyBulletRenderer:
 
     self.hidden_ghost_links = []
     for i in range(-1, p.getNumJoints(self.ghost_id)):
-      name = (p.getBodyInfo(self.ghost_id)[0].decode() if i == -1
-              else p.getJointInfo(self.ghost_id, i)[12].decode())
+      name = (
+        p.getBodyInfo(self.ghost_id)[0].decode()
+        if i == -1
+        else p.getJointInfo(self.ghost_id, i)[12].decode()
+      )
       if _hidden_on_ghost(name):
         if not self.gpu:
           p.changeVisualShape(self.ghost_id, i, rgbaColor=[0, 0, 0, 0])
         self.hidden_ghost_links.append(i)
 
-  def update_robot_pose(self, joint_angles, gripper_state=None,
-                        gripper_width_offset=0.08):
+  def update_robot_pose(self, joint_angles, gripper_state=None, gripper_width_offset=0.08):
     for i, angle in zip(self.arm_joints, joint_angles):
       p.resetJointState(self.robot_id, i, angle)
     for i, angle in zip(self.ghost_arm_joints, joint_angles):
       p.resetJointState(self.ghost_id, i, angle)
 
     if gripper_state is not None and self.gripper_joints:
-      raw_val = (gripper_state[0]
-                 if isinstance(gripper_state, (list, np.ndarray))
-                 else gripper_state)
+      raw_val = gripper_state[0] if isinstance(gripper_state, (list, np.ndarray)) else gripper_state
       raw_val = np.clip(raw_val, 0.0, 1.0)
       angle = (raw_val * 0.8028) - gripper_width_offset
       for i, sign in zip(self.gripper_joints, self.gripper_signs):
@@ -138,23 +144,38 @@ class PyBulletRenderer:
     fx, fy = K[0, 0], K[1, 1]
     cx, cy = K[0, 2], K[1, 2]
     return [
-        2.0 * fx / w, 0.0, 0.0, 0.0,
-        0.0, 2.0 * fy / h, 0.0, 0.0,
-        1.0 - 2.0 * cx / w, 2.0 * cy / h - 1.0,
-        (far + near) / (near - far), -1.0,
-        0.0, 0.0, 2.0 * far * near / (near - far), 0.0,
+      2.0 * fx / w,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      2.0 * fy / h,
+      0.0,
+      0.0,
+      1.0 - 2.0 * cx / w,
+      2.0 * cy / h - 1.0,
+      (far + near) / (near - far),
+      -1.0,
+      0.0,
+      0.0,
+      2.0 * far * near / (near - far),
+      0.0,
     ]
 
   def _render_raw(self, extrinsic, K, w, h):
     cam_pos = extrinsic[:3, 3]
     view_matrix = p.computeViewMatrix(
-        cam_pos.tolist(), (cam_pos + extrinsic[:3, 2]).tolist(),
-        (-extrinsic[:3, 1]).tolist())
+      cam_pos.tolist(), (cam_pos + extrinsic[:3, 2]).tolist(), (-extrinsic[:3, 1]).tolist()
+    )
     proj_matrix = self._get_projection_matrix(K, w, h)
     _, _, _, depth_buf, seg_buf = p.getCameraImage(
-        w, h, viewMatrix=view_matrix, projectionMatrix=proj_matrix,
-        renderer=self.renderer,
-        flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX)
+      w,
+      h,
+      viewMatrix=view_matrix,
+      projectionMatrix=proj_matrix,
+      renderer=self.renderer,
+      flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
+    )
     return depth_buf, seg_buf
 
   def render_depth(self, extrinsic, K, w, h):
@@ -167,10 +188,8 @@ class PyBulletRenderer:
     seg_array = np.reshape(seg_buf, (h, w)).astype(np.int32)
     obj_ids = seg_array & 0xFFFFFF
     link_ids = (seg_array >> 24) - 1
-    valid_robot = ((obj_ids == self.robot_id) &
-                   ~np.isin(link_ids, self.hidden_robot_links))
-    valid_ghost = ((obj_ids == self.ghost_id) &
-                   ~np.isin(link_ids, self.hidden_ghost_links))
+    valid_robot = (obj_ids == self.robot_id) & ~np.isin(link_ids, self.hidden_robot_links)
+    valid_ghost = (obj_ids == self.ghost_id) & ~np.isin(link_ids, self.hidden_ghost_links)
     return valid_robot | valid_ghost
 
   def render_segmentation(self, extrinsic, K, w, h):
@@ -183,8 +202,9 @@ class PyBulletRenderer:
     return obj_ids, link_ids, metric
 
 
-def get_foreground_robot_points(T_init, K, obs_depth, pb_renderer, device,
-                                max_pts=2000, min_pts=100):
+def get_foreground_robot_points(
+  T_init, K, obs_depth, pb_renderer, device, max_pts=2000, min_pts=100
+):
   h_img, w_img = obs_depth.shape
   render_d = pb_renderer.render_depth(T_init, K, w_img, h_img)
 
@@ -193,58 +213,67 @@ def get_foreground_robot_points(T_init, K, obs_depth, pb_renderer, device,
   if len(z_r) < min_pts:
     return None
 
-  P_cam_r = np.stack([
+  P_cam_r = np.stack(
+    [
       (u_r - K[0, 2]) * z_r / K[0, 0],
       (v_r - K[1, 2]) * z_r / K[1, 1],
       z_r,
       np.ones_like(z_r),
-  ])
+    ]
+  )
   pts_robot_world = (T_init @ P_cam_r)[:3, :].T
 
   idx = np.random.choice(
-      len(pts_robot_world), max_pts,
-      replace=(len(pts_robot_world) < max_pts),
+    len(pts_robot_world),
+    max_pts,
+    replace=(len(pts_robot_world) < max_pts),
   )
   return torch.tensor(
-      pts_robot_world[idx], dtype=torch.float32, device=device,
+    pts_robot_world[idx],
+    dtype=torch.float32,
+    device=device,
   )
 
 
-def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer,
-                                  device, max_pts=2000):
+def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer, device, max_pts=2000):
   h_img, w_img = obs_depth.shape
 
   cam_pos = T_cam_world[:3, 3]
   target_pos = T_cam_world[:3, 3] + T_cam_world[:3, 2]
   view_matrix = p.computeViewMatrix(
-      cam_pos.tolist(), target_pos.tolist(), (-T_cam_world[:3, 1]).tolist(),
+    cam_pos.tolist(),
+    target_pos.tolist(),
+    (-T_cam_world[:3, 1]).tolist(),
   )
   proj_matrix = pb_renderer._get_projection_matrix(K, w_img, h_img)
 
   _, _, _, depth_buffer, seg_buffer = p.getCameraImage(
-      w_img, h_img,
-      viewMatrix=view_matrix,
-      projectionMatrix=proj_matrix,
-      renderer=pb_renderer.renderer,
-      flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
+    w_img,
+    h_img,
+    viewMatrix=view_matrix,
+    projectionMatrix=proj_matrix,
+    renderer=pb_renderer.renderer,
+    flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
   )
 
   metric_depth = 0.1 / (10.0 - 9.99 * np.reshape(depth_buffer, (h_img, w_img)))
   seg_array = np.reshape(seg_buffer, (h_img, w_img)).astype(np.int32)
   obj_ids = seg_array & 0xFFFFFF
-  valid_ghost = (obj_ids == pb_renderer.ghost_id)
+  valid_ghost = obj_ids == pb_renderer.ghost_id
 
   v_r, u_r = np.where((metric_depth < 9.9) & valid_ghost)
   z_r = metric_depth[v_r, u_r]
   if len(z_r) < 100:
     return None
 
-  P_cam_r = np.stack([
+  P_cam_r = np.stack(
+    [
       (u_r - K[0, 2]) * z_r / K[0, 0],
       (v_r - K[1, 2]) * z_r / K[1, 1],
       z_r,
       np.ones_like(z_r),
-  ])
+    ]
+  )
 
   idx = np.random.choice(len(z_r), max_pts, replace=(len(z_r) < max_pts))
   return P_cam_r[:, idx]
@@ -259,21 +288,35 @@ def compute_robot_loss_batched(batch_X, T_opt, K, batch_obs):
   u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
   v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
 
-  grid = torch.stack([
+  grid = torch.stack(
+    [
       (u / (w_img - 1)) * 2 - 1,
       (v / (h_img - 1)) * 2 - 1,
-  ], dim=-1).unsqueeze(1)
+    ],
+    dim=-1,
+  ).unsqueeze(1)
 
-  Z_obs_raw = F.grid_sample(
-      batch_obs, grid, mode='bilinear', padding_mode='border',
+  Z_obs_raw = (
+    F.grid_sample(
+      batch_obs,
+      grid,
+      mode='bilinear',
+      padding_mode='border',
       align_corners=True,
-  ).squeeze(1).squeeze(1)
+    )
+    .squeeze(1)
+    .squeeze(1)
+  )
 
   valid_mask = (
-      (Z_pred > 0.) & (Z_pred < 1.5) &
-      (Z_obs_raw > 0.) & (Z_obs_raw < 1.5) &
-      (u >= 0) & (u < w_img - 1) &
-      (v >= 0) & (v < h_img - 1)
+    (Z_pred > 0.0)
+    & (Z_pred < 1.5)
+    & (Z_obs_raw > 0.0)
+    & (Z_obs_raw < 1.5)
+    & (u >= 0)
+    & (u < w_img - 1)
+    & (v >= 0)
+    & (v < h_img - 1)
   )
 
   diff = torch.abs(Z_obs_raw[valid_mask] - Z_pred[valid_mask])
@@ -290,21 +333,35 @@ def compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K, batch_obs):
   u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
   v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
 
-  grid = torch.stack([
+  grid = torch.stack(
+    [
       (u / (w_img - 1)) * 2 - 1,
       (v / (h_img - 1)) * 2 - 1,
-  ], dim=-1).unsqueeze(1)
+    ],
+    dim=-1,
+  ).unsqueeze(1)
 
-  Z_obs_raw = F.grid_sample(
-      batch_obs, grid, mode='bilinear', padding_mode='border',
+  Z_obs_raw = (
+    F.grid_sample(
+      batch_obs,
+      grid,
+      mode='bilinear',
+      padding_mode='border',
       align_corners=True,
-  ).squeeze(1).squeeze(1)
+    )
+    .squeeze(1)
+    .squeeze(1)
+  )
 
   valid_mask = (
-      (Z_pred > 0.) & (Z_pred < 1.5) &
-      (Z_obs_raw > 0.) & (Z_obs_raw < 1.5) &
-      (u >= 0) & (u < w_img - 1) &
-      (v >= 0) & (v < h_img - 1)
+    (Z_pred > 0.0)
+    & (Z_pred < 1.5)
+    & (Z_obs_raw > 0.0)
+    & (Z_obs_raw < 1.5)
+    & (u >= 0)
+    & (u < w_img - 1)
+    & (v >= 0)
+    & (v < h_img - 1)
   )
 
   diff = torch.abs(Z_obs_raw[valid_mask] - Z_pred[valid_mask])

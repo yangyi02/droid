@@ -6,8 +6,7 @@ import mediapy as media
 import numpy as np
 import torch
 
-DATA_ROOT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+DATA_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 META_ROOT = os.path.join(DATA_ROOT, "meta", "1.0.1")
 INPUT_ROOT = os.path.join(DATA_ROOT, "input")
 OUTPUT_ROOT = os.path.join(DATA_ROOT, "output", "droid")
@@ -25,10 +24,10 @@ def load_metadata(meta_root=META_ROOT):
 
   base_url = "https://huggingface.co/KarlP/droid/resolve/main"
   files = [
-      "camera_serials.json",
-      "episode_id_to_path.json",
-      "keep_ranges_1_0_1.json",
-      "cam2base_extrinsic_superset.json",
+    "camera_serials.json",
+    "episode_id_to_path.json",
+    "keep_ranges_1_0_1.json",
+    "cam2base_extrinsic_superset.json",
   ]
 
   print(f"Synchronizing metadata to {root_path}...")
@@ -41,32 +40,31 @@ def load_metadata(meta_root=META_ROOT):
     with open(os.path.join(root_path, name), "r") as fh:
       return json.load(fh)
 
-  serials_db    = _load("camera_serials.json")
-  id_to_path    = _load("episode_id_to_path.json")
-  keep_ranges   = _load("keep_ranges_1_0_1.json")
+  serials_db = _load("camera_serials.json")
+  id_to_path = _load("episode_id_to_path.json")
+  keep_ranges = _load("keep_ranges_1_0_1.json")
   extrinsics_db = _load("cam2base_extrinsic_superset.json")
 
-  valid_ids = sorted(
-      set(serials_db.keys()) & set(id_to_path.keys()) & set(extrinsics_db.keys())
-  )
+  valid_ids = sorted(set(serials_db.keys()) & set(id_to_path.keys()) & set(extrinsics_db.keys()))
   print(f"Metadata ready: {len(valid_ids)} episodes with pre-calibrated extrinsics.")
   return serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids
 
 
-def load_depth_data(episode_id, depth_root=os.path.join(OUTPUT_ROOT, "depth"),
-                    load_video="first_frame", inspection=False):
-  ep_dir = os.path.abspath(
-      os.path.expanduser(os.path.join(depth_root, episode_id))
-  )
+def load_depth_data(
+  episode_id,
+  depth_root=os.path.join(OUTPUT_ROOT, "depth"),
+  load_video="first_frame",
+  inspection=False,
+):
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(depth_root, episode_id)))
   print(f"  Loading depth data from {ep_dir}...")
 
   robot_data = np.load(os.path.join(ep_dir, "robot.npz"), allow_pickle=True)
-  wrist_serial = (str(robot_data["wrist_serial"])
-                  if "wrist_serial" in robot_data else None)
+  wrist_serial = str(robot_data["wrist_serial"]) if "wrist_serial" in robot_data else None
 
   robot = {
-      "joint_positions": robot_data["joint_positions"].astype(np.float32),
-      "gripper_positions": robot_data["gripper_positions"].astype(np.float32),
+    "joint_positions": robot_data["joint_positions"].astype(np.float32),
+    "gripper_positions": robot_data["gripper_positions"].astype(np.float32),
   }
   if "T_ee_base_all" in robot_data:
     robot["T_ee_base_all"] = robot_data["T_ee_base_all"].astype(np.float32)
@@ -77,15 +75,15 @@ def load_depth_data(episode_id, depth_root=os.path.join(OUTPUT_ROOT, "depth"),
 
   _NON_DIR_NAMES = {"robot.npz"}
   cam_dirs = [
-      d for d in os.listdir(ep_dir)
-      if d not in _NON_DIR_NAMES and not d.endswith((".npz", ".json", ".txt"))
+    d
+    for d in os.listdir(ep_dir)
+    if d not in _NON_DIR_NAMES and not d.endswith((".npz", ".json", ".txt"))
   ]
 
   camera = {}
   for cam_id in sorted(cam_dirs):
     cam_path = os.path.join(ep_dir, cam_id)
     cam_data = {}
-
 
     calib_path = os.path.join(cam_path, "calibration.npz")
     if os.path.exists(calib_path):
@@ -104,11 +102,13 @@ def load_depth_data(episode_id, depth_root=os.path.join(OUTPUT_ROOT, "depth"),
       cam_data["sam_real_masks"] = np.load(mask_path)["mask"]
 
     if inspection:
-      for fname, key in [("original_raw_depth.npz", "original_raw_depth"),
-                         ("gripper_depth.npz", "empirical_gripper_depth")]:
+      for fname, key in [
+        ("original_raw_depth.npz", "original_raw_depth"),
+        ("gripper_depth.npz", "empirical_gripper_depth"),
+      ]:
         path = os.path.join(cam_path, fname)
         if os.path.exists(path):
-          cam_data[key] = (np.load(path)["depth"].astype(np.float32) / 1000.0)
+          cam_data[key] = np.load(path)["depth"].astype(np.float32) / 1000.0
 
     video_path = os.path.join(cam_path, "video_left.mp4")
     if load_video == "first_frame":
@@ -120,19 +120,18 @@ def load_depth_data(episode_id, depth_root=os.path.join(OUTPUT_ROOT, "depth"),
     elif load_video == "full":
       cam_data["video_rgb"] = media.read_video(video_path)
       if inspection:
-        cam_data["video_right"] = media.read_video(
-            os.path.join(cam_path, "video_right.mp4"))
+        cam_data["video_right"] = media.read_video(os.path.join(cam_path, "video_right.mp4"))
 
     camera[cam_id] = cam_data
 
   scene_constants = {
-      "meta": {
-          "episode_id": episode_id,
-          "wrist_serial": wrist_serial,
-          "valid_indices": valid_indices,
-      },
-      "robot": robot,
-      "camera": camera,
+    "meta": {
+      "episode_id": episode_id,
+      "wrist_serial": wrist_serial,
+      "valid_indices": valid_indices,
+    },
+    "robot": robot,
+    "camera": camera,
   }
 
   n_frames = len(robot["joint_positions"])
@@ -141,12 +140,9 @@ def load_depth_data(episode_id, depth_root=os.path.join(OUTPUT_ROOT, "depth"),
   return scene_constants
 
 
-def load_extrinsics(scene_constants,
-                    extrinsics_root=os.path.join(OUTPUT_ROOT, "extrinsics")):
+def load_extrinsics(scene_constants, extrinsics_root=os.path.join(OUTPUT_ROOT, "extrinsics")):
   ep_id = scene_constants["meta"]["episode_id"]
-  ep_dir = os.path.abspath(
-      os.path.expanduser(os.path.join(extrinsics_root, ep_id))
-  )
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(extrinsics_root, ep_id)))
 
   scene_state = {}
   for cam_id in scene_constants["camera"]:
@@ -156,9 +152,8 @@ def load_extrinsics(scene_constants,
       payload = json.load(f)
 
     scene_state[cam_id] = {
-        "base_extrinsic": np.array(payload["base_extrinsic"],
-                                   dtype=np.float32),
-        "extrinsics": np.array(payload["extrinsics"], dtype=np.float32),
+      "base_extrinsic": np.array(payload["base_extrinsic"], dtype=np.float32),
+      "extrinsics": np.array(payload["extrinsics"], dtype=np.float32),
     }
 
   print(f"  Loaded extrinsics for {len(scene_state)} cameras.")
