@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 import pybullet as p
-
+import pybullet_data
 import torch
 import torch.nn.functional as F
 
@@ -56,8 +56,6 @@ def _trimmed_urdf(src, hidden):
 
 class PyBulletRenderer:
   def __init__(self, ghost_urdf=None, gpu=False):
-    import pybullet_data
-
     if ghost_urdf is None:
       ghost_urdf = _DEFAULT_URDF
 

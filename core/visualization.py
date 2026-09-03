@@ -1,14 +1,17 @@
 import cv2
 import matplotlib.pyplot as plt
+import mediapy as media
 import numpy as np
+import plotly.graph_objects as go
+import pyrender
+import torch
+import trimesh
 from tqdm import tqdm
 
 import core.geometry
 
 
 def inspect_dict_structure(data, name="scene_constants", indent=0):
-  import torch
-
   spacing = "  " * indent
   if isinstance(data, dict):
     print(f"{spacing}{name} (dict, {len(data)} keys)")
@@ -37,8 +40,6 @@ def show_plotly_point_cloud(
   width=1000,
   renderer=None,
 ):
-  import plotly.graph_objects as go
-
   idx = np.random.permutation(len(pts))[:max_points]
   p, c = pts[idx], cols[idx]
   fig = go.Figure(
@@ -114,8 +115,6 @@ def render_fused_point_cloud(
 
 
 def render_distilled_gripper_3d(median_depth, K_mat, rgb_img):
-  import plotly.graph_objects as go
-
   v, u = np.where(median_depth > 0)
   z = median_depth[v, u]
   x = (u - K_mat[0, 2]) * z / K_mat[0, 0]
@@ -229,8 +228,6 @@ def visualize_disparity_video(disp_array, vmax=100.0):
 def render_multicam_disparity_video(
   scene_constants, tgt_size=(128, 228), disp_vmax=100.0, max_frames=None
 ):
-  import mediapy as media
-
   camera_rows = []
   for cam_data in scene_constants['camera'].values():
     video_rgb = cam_data['video_rgb']
@@ -262,8 +259,6 @@ def render_2d_tracking_video(
   tgt_size=None,
   max_frames=None,
 ):
-  import mediapy as media
-
   if max_frames is not None:
     video_frames = video_frames[:max_frames]
     tracks = tracks[:max_frames]
@@ -501,8 +496,6 @@ def render_cinematic_4d_orbit(
   angle_start=None,
   max_frames=None,
 ):
-  import pyrender
-
   if angle_start is None:
     angle_start = np.pi / 2
 
@@ -590,9 +583,6 @@ def render_4d_orbit_with_tracks(
   angle_start=None,
   max_frames=None,
 ):
-  import pyrender
-  import trimesh
-
   if angle_start is None:
     angle_start = np.pi / 2
 
