@@ -93,11 +93,11 @@ def robot_depth_loss(batch_X, T_opt, K, batch_obs, is_wrist):
           else compute_robot_loss_batched(batch_X, T_opt, K, batch_obs))
 
 
-def phase2_per_camera_alignment(scene_constants, pb_renderer, phase1_scene_state,
-                                device, outer_steps=1, inner_steps=500):
-  print("\nPhase 2: Unified camera-robot alignment (external + wrist)...")
+def per_camera_alignment(scene_constants, pb_renderer, prev_scene_state,
+                         device, outer_steps=1, inner_steps=500):
+  print("\nUnified camera-robot alignment (external + wrist)...")
   wrist_cam = scene_constants['meta']['wrist_serial']
-  phase2_scene_state = copy.deepcopy(phase1_scene_state)
+  scene_state = copy.deepcopy(prev_scene_state)
   T_ee_base_all = scene_constants['robot']['T_ee_base_all']
   n_frames = len(scene_constants['robot']['joint_positions'])
 
@@ -108,7 +108,7 @@ def phase2_per_camera_alignment(scene_constants, pb_renderer, phase1_scene_state
 
     K_t = torch.tensor(scene_constants['camera'][cam]['K_mat'],
                        dtype=torch.float32, device=device)
-    T_init_t = torch.tensor(phase1_scene_state[cam]['base_extrinsic'],
+    T_init_t = torch.tensor(prev_scene_state[cam]['base_extrinsic'],
                             dtype=torch.float32, device=device)
     d_ext = torch.zeros(6, requires_grad=True, device=device)
     optimizer = optim.Adam([d_ext], lr=0.001)
@@ -145,13 +145,13 @@ def phase2_per_camera_alignment(scene_constants, pb_renderer, phase1_scene_state
       print(f"  [{cam}] Alignment done! Loss: {loss_rob.item():.4f} "
             f"(shift: {shift_mm:.2f}mm, rot: {rot_deg:.2f}°)")
 
-      phase2_scene_state[cam]['base_extrinsic'] = T_final_np
-      phase2_scene_state[cam]['extrinsics'] = (
+      scene_state[cam]['base_extrinsic'] = T_final_np
+      scene_state[cam]['extrinsics'] = (
           T_ee_base_all @ T_final_np if is_wrist
           else np.tile(T_final_np, (n_frames, 1, 1))
       )
 
-  return phase2_scene_state
+  return scene_state
 
 
 def batched_chamfer_distance(p1, p2, device):
@@ -193,11 +193,11 @@ def get_cam_points_local_t(t, cam_data, device, n_points=2000):
   return torch.tensor(P_cam[:, idx], dtype=torch.float32, device=device)
 
 
-def phase3_global_joint_alignment(scene_constants, prev_scene_state, pb_renderer,
-                                  device, lr=0.001, n_steps=500,
-                                  chamfer_weight=1.0, robot_weight=1.0,
-                                  chamfer_n_points=2000, phase_name="Phase 3"):
-  print(f"\n{phase_name}: Global joint optimization "
+def global_joint_alignment(scene_constants, prev_scene_state, pb_renderer,
+                           device, lr=0.001, n_steps=500,
+                           chamfer_weight=1.0, robot_weight=1.0,
+                           chamfer_n_points=2000):
+  print(f"\nGlobal joint optimization "
         f"(Chamfer + Robot + Wrist, lr={lr})...")
   wrist_cam = scene_constants['meta']['wrist_serial']
   ext_cams = [c for c in scene_constants['camera'].keys() if c != wrist_cam]
@@ -295,7 +295,7 @@ def phase3_global_joint_alignment(scene_constants, prev_scene_state, pb_renderer
     final_p2 = (T2_init_t @ make_T(d2, device)).cpu().numpy()
     final_cam_ee = (Tee_init_t @ make_T(dhe, device)).cpu().numpy()
 
-  print(f"\n{phase_name} complete!")
+  print("\nGlobal joint optimization complete!")
 
   ultimate_scene_state = {c: {} for c in scene_constants['camera'].keys()}
   ultimate_scene_state[cam1].update({
@@ -315,12 +315,11 @@ def phase3_global_joint_alignment(scene_constants, prev_scene_state, pb_renderer
 
 
 def export_extrinsics(scene_constants, scene_state,
-                      export_root=os.path.join(OUTPUT_ROOT, "extrinsics"),
-                      phase_suffix=None):
+                      export_root=os.path.join(OUTPUT_ROOT, "extrinsics")):
   ep_str = scene_constants["meta"]["episode_id"]
   wrist_serial = scene_constants["meta"]["wrist_serial"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_str)))
-  fname = f"extrinsics_{phase_suffix}.json" if phase_suffix else "extrinsics.json"
+  fname = "extrinsics.json"
 
   for cam_id, state in scene_state.items():
     if state.get("base_extrinsic") is None or state.get("extrinsics") is None:
@@ -353,20 +352,20 @@ def _has_final_extrinsics(ep_dir):
 
 def process_episode(ep_id, pb_renderer, extrinsics_db, depth_root, export_root,
                     device):
-  scene_constants = phase1_state = phase2_state = phase3_state = None
+  scene_constants = init_state = aligned_state = joint_state = None
   try:
     scene_constants = load_depth_data(ep_id, depth_root)
 
-    phase1_state = init_camera_states(scene_constants, extrinsics_db)
+    init_state = init_camera_states(scene_constants, extrinsics_db)
 
-    phase2_state = phase2_per_camera_alignment(
-        scene_constants, pb_renderer, phase1_state, device)
+    aligned_state = per_camera_alignment(
+        scene_constants, pb_renderer, init_state, device)
 
-    phase3_state = phase3_global_joint_alignment(
-        scene_constants, phase2_state, pb_renderer, device,
-        lr=0.001, n_steps=500, robot_weight=1.0, phase_name="Phase 3")
+    joint_state = global_joint_alignment(
+        scene_constants, aligned_state, pb_renderer, device,
+        lr=0.001, n_steps=500, robot_weight=1.0)
 
-    export_extrinsics(scene_constants, phase3_state, export_root=export_root)
+    export_extrinsics(scene_constants, joint_state, export_root=export_root)
   finally:
     gc.collect()
     torch.cuda.empty_cache()

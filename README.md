@@ -67,11 +67,11 @@ robot.npz                      # joint_positions, T_ee_base_all, T_cam_ee_init, 
 
 Multi-stage camera extrinsics calibration: the robot is rasterised from each camera's current pose estimate, and the resulting point cloud is aligned against the observed depth.
 
-| Stage | Description |
-|-------|-------------|
-| Stage 0 | Read pre-calibrated dataset extrinsics from metadata |
-| Stage 1 | Per-camera independent depth & robot alignment |
-| Stage 2 | Global joint optimization (Chamfer + Robot + Wrist) |
+| Step | Description |
+|------|-------------|
+| `init_camera_states` | Read pre-calibrated dataset extrinsics from metadata |
+| `per_camera_alignment` | Per-camera independent depth & robot alignment |
+| `global_joint_alignment` | Global joint optimization (Chamfer + Robot + Wrist) |
 
 **Output** (`data/output/mv-tap/droid/extrinsics/<episode_id>/`):
 ```
@@ -83,12 +83,12 @@ Multi-stage camera extrinsics calibration: the robot is rasterised from each cam
 
 Dense multi-view 3D point tracking via static background prior + URDF forward kinematics (model-free).
 
-| Phase | Description |
-|-------|-------------|
-| Phase 1 | Multi-view depth consensus to sample static background points |
-| Phase 2 | Project static background 3D points into per-view 2D trajectories |
-| Phase 3 | Sample robot CAD surface points + URDF FK forward propagation |
-| Phase 4 | Merge static background & robot tracks with global visibility masks |
+| Step | Description |
+|------|-------------|
+| `find_static_candidates` | Multi-view depth consensus to sample static background points |
+| `project_static_tracks` | Project static background 3D points into per-view 2D trajectories |
+| `compute_robot_tracks` | Sample robot CAD surface points + URDF FK forward propagation |
+| `merge_tracks` | Merge static background & robot tracks with global visibility masks |
 
 **Output** (`data/output/mv-tap/droid/tracks/<episode_id>/`):
 ```

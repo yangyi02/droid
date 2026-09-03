@@ -12,13 +12,13 @@ from core.runner import (add_sharding_args, list_episode_dirs,
 from core.tracking import URDFKinematicsTracker
 
 
-def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
-                                  match_radius=0.005,
-                                  num_points=None,
-                                  safe_margin=15,
-                                  tau=0.015,
-                                  min_run_frames=30,
-                                  flicker=0.10):
+def find_static_candidates(scene_constants, scene_state, pb_renderer,
+                           match_radius=0.005,
+                           num_points=None,
+                           safe_margin=15,
+                           tau=0.015,
+                           min_run_frames=30,
+                           flicker=0.10):
   camera_ids = list(scene_constants["camera"].keys())
   wrist_serial = scene_constants["meta"].get("wrist_serial")
 
@@ -246,14 +246,14 @@ def _filter_visibility_flicker(stats, flicker=0.10):
   return (stats["flips"] / max(stats["n_frames"] - 1, 1) > flicker).any(axis=0)
 
 
-def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
-                                  pb_renderer, depth_tolerance=0.05,
-                                  safe_margin=15):
+def project_static_tracks(static_pts_3d, scene_constants, scene_state,
+                          pb_renderer, depth_tolerance=0.05,
+                          safe_margin=15):
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
   N = len(static_pts_3d)
 
-  print(f"\nPhase 2: Project {N} Static Points -> {len(camera_ids)} Views x {T_frames} Frames")
+  print(f"\nProject {N} Static Points -> {len(camera_ids)} Views x {T_frames} Frames")
 
   per_cam_tracks = {cam: np.zeros((T_frames, N, 2), dtype=np.float32) for cam in camera_ids}
   per_cam_vis = {cam: np.zeros((T_frames, N), dtype=bool) for cam in camera_ids}
@@ -309,12 +309,12 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
   return per_cam_tracks, per_cam_vis
 
 
-def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
-                        max_robot_pts_per_cam=None):
+def compute_robot_tracks(scene_constants, scene_state, pb_renderer,
+                         max_robot_pts_per_cam=None):
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
 
-  print(f"\nPhase 3: URDF FK Robot Tracking (max {max_robot_pts_per_cam} pts/cam)")
+  print(f"\nURDF FK Robot Tracking (max {max_robot_pts_per_cam} pts/cam)")
 
   urdf_tracker = URDFKinematicsTracker(pb_renderer)
   robot_traj_3d_all = []
@@ -365,13 +365,13 @@ def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
   return robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis, n_robot
 
 
-def phase4_merge(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
+def merge_tracks(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
                  robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis,
                  camera_ids, T_frames):
   n_static = len(static_pts_3d)
   n_robot = robot_traj_3d.shape[1]
 
-  print("\nPhase 4: Merging Static Background + Robot Tracks")
+  print("\nMerging Static Background + Robot Tracks")
   print(f"  Static: {n_static} | Robot: {n_robot} | Total: {n_static + n_robot}")
 
   if n_static > 0:
@@ -478,13 +478,13 @@ def process_episode(episode_id, pb_renderer, device,
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
   print(f"  {len(camera_ids)} cameras × {T_frames} frames (full video)")
 
-  print(f"\nPhase 1: Dense at t=0 -> Cross-View Consensus -> Static Points")
-  static_pts_3d, static_rgb = phase1_find_static_candidates(
+  print(f"\nDense at t=0 -> Cross-View Consensus -> Static Points")
+  static_pts_3d, static_rgb = find_static_candidates(
       scene_constants, scene_state, pb_renderer,
       num_points=num_static_points)
 
   if len(static_pts_3d) > 0:
-    static_per_cam_tracks, static_per_cam_vis = phase2_project_static_tracks(
+    static_per_cam_tracks, static_per_cam_vis = project_static_tracks(
         static_pts_3d, scene_constants, scene_state, pb_renderer)
   else:
     static_per_cam_tracks = {
@@ -495,11 +495,11 @@ def process_episode(episode_id, pb_renderer, device,
         for cam in camera_ids}
 
   robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis, n_robot = \
-      phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
+      compute_robot_tracks(scene_constants, scene_state, pb_renderer,
                           max_robot_pts_per_cam=max_robot_pts_per_cam)
 
   (final_traj_3d, final_vis_global, final_per_cam_tracks,
-   final_per_cam_vis, n_static, n_robot) = phase4_merge(
+   final_per_cam_vis, n_static, n_robot) = merge_tracks(
       static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
       robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis,
       camera_ids, T_frames)
