@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from core.geometry import unproject_to_3d
+import core.geometry
 
 
 def inspect_dict_structure(data, name="scene_constants", indent=0):
@@ -62,7 +62,7 @@ def render_fused_point_cloud(scene_constants, scene_state, frame_idx=0,
     cam_data = scene_constants['camera'][cam_id]
     cam_state = scene_state[cam_id]
     raw_depth = cam_data['raw_depth'][frame_idx].astype(np.float32)
-    points_3d, colors_rgb = unproject_to_3d(
+    points_3d, colors_rgb = core.geometry.unproject_to_3d(
         raw_depth, cam_data['video_rgb'][frame_idx],
         cam_data['K_mat'], T_cam2world=cam_state['extrinsics'][frame_idx])
     if use_tint:
@@ -438,7 +438,7 @@ def render_cinematic_4d_orbit(scene_constants, scene_state,
     for cam_id in camera_ids:
       cam_data = scene_constants['camera'][cam_id]
       cam_state = scene_state[cam_id]
-      points_3d, colors_rgb = unproject_to_3d(
+      points_3d, colors_rgb = core.geometry.unproject_to_3d(
           cam_data['raw_depth'][frame_idx],
           cam_data['video_rgb'][frame_idx],
           cam_data['K_mat'],
@@ -549,7 +549,7 @@ def render_4d_orbit_with_tracks(
     for cam_id in camera_ids:
       cam_data = scene_constants['camera'][cam_id]
       cam_state = scene_state[cam_id]
-      pts_3d, cols_rgb = unproject_to_3d(
+      pts_3d, cols_rgb = core.geometry.unproject_to_3d(
           cam_data['raw_depth'][frame_idx],
           cam_data['video_rgb'][frame_idx],
           cam_data['K_mat'],

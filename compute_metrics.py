@@ -10,16 +10,11 @@ import pybullet as p
 import torch
 import torch.nn.functional as F
 
-from compute_extrinsics import (batched_chamfer_distance,
-                                get_cam_points_local_t)
-from core.geometry import project_points
-from core.io import OUTPUT_ROOT, load_depth_data, load_extrinsics, get_accelerator
-from core.physics import (PyBulletRenderer, compute_robot_loss_batched,
-                          compute_wrist_loss_batched,
-                          get_foreground_gripper_points,
-                          get_foreground_robot_points)
-from core.runner import (add_sharding_args, list_episode_dirs,
-                         run_episodes, shard_episodes)
+import compute_extrinsics
+import core.geometry
+import core.io
+import core.physics
+import core.runner
 
 
 @torch.no_grad()
@@ -52,7 +47,7 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
           T_cam_np = scene_state[cam_id]["extrinsics"][t]
 
           if is_wrist:
-            pts = get_foreground_gripper_points(
+            pts = core.physics.get_foreground_gripper_points(
                 T_cam_np, K_np, d_obs, pb_renderer, device)
             if pts is None:
               continue
@@ -63,7 +58,7 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
             cache_X.append(
                 torch.tensor(pts_ee, dtype=torch.float32, device=device))
           else:
-            pts = get_foreground_robot_points(
+            pts = core.physics.get_foreground_robot_points(
                 T_cam_np, K_np, d_obs, pb_renderer, device)
             if pts is None:
               continue
@@ -84,9 +79,9 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
             dtype=torch.float32, device=device)
 
         if is_wrist:
-          loss = compute_wrist_loss_batched(batch_X, T_opt, K_t, batch_obs)
+          loss = core.physics.compute_wrist_loss_batched(batch_X, T_opt, K_t, batch_obs)
         else:
-          loss = compute_robot_loss_batched(batch_X, T_opt, K_t, batch_obs)
+          loss = core.physics.compute_robot_loss_batched(batch_X, T_opt, K_t, batch_obs)
         metrics[f"robot_loss_{key_prefix}"] = loss.item()
       except Exception as e:
         metrics[f"robot_loss_{key_prefix}"] = float("nan")
@@ -107,9 +102,11 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
     n_valid = 0
 
     for t in range(n_frames):
-      pc1 = get_cam_points_local_t(t, scene_constants["camera"][cam1], device, n_points=5000)
-      pc2 = get_cam_points_local_t(t, scene_constants["camera"][cam2], device, n_points=5000)
-      pcw = get_cam_points_local_t(
+      pc1 = compute_extrinsics.get_cam_points_local_t(
+          t, scene_constants["camera"][cam1], device, n_points=5000)
+      pc2 = compute_extrinsics.get_cam_points_local_t(
+          t, scene_constants["camera"][cam2], device, n_points=5000)
+      pcw = compute_extrinsics.get_cam_points_local_t(
           t, scene_constants["camera"][wrist_cam], device, n_points=5000)
       if pc1 is None or pc2 is None or pcw is None:
         continue
@@ -120,9 +117,9 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
       w2 = (T2 @ pc2)[:3, :].T.unsqueeze(0)
       ww = ((T_ee_t @ Tw) @ pcw)[:3, :].T.unsqueeze(0)
 
-      l12, o12 = batched_chamfer_distance(w1, w2, device)
-      l1w, o1w = batched_chamfer_distance(w1, ww, device)
-      l2w, o2w = batched_chamfer_distance(w2, ww, device)
+      l12, o12 = compute_extrinsics.batched_chamfer_distance(w1, w2, device)
+      l1w, o1w = compute_extrinsics.batched_chamfer_distance(w1, ww, device)
+      l2w, o2w = compute_extrinsics.batched_chamfer_distance(w2, ww, device)
 
       sum_l12 += l12.item()
       sum_l1w += l1w.item()
@@ -182,7 +179,7 @@ def print_metrics(metrics, stage_name=""):
 def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
   if len(pts_3d) == 0:
     return np.array([], dtype=np.float32)
-  u_proj, v_proj, z_proj = project_points(pts_3d, K, extrinsics)
+  u_proj, v_proj, z_proj = core.geometry.project_points(pts_3d, K, extrinsics)
   ui = np.clip(np.round(u_proj).astype(int), 0, w_img - 1)
   vi = np.clip(np.round(v_proj).astype(int), 0, h_img - 1)
   z_obs = raw_depth[vi, ui]
@@ -521,9 +518,9 @@ def load_track_data(episode_id, tracks_root):
 
 def evaluate_single_episode(episode_id, depth_root, extrinsics_root,
                             tracks_root, device, pb_renderer):
-  scene_constants = load_depth_data(
+  scene_constants = core.io.load_depth_data(
       episode_id, depth_root, load_video="first_frame")
-  scene_state = load_extrinsics(scene_constants, extrinsics_root)
+  scene_state = core.io.load_extrinsics(scene_constants, extrinsics_root)
 
   tracks = load_track_data(episode_id, tracks_root)
   has_tracks = tracks is not None
@@ -575,15 +572,15 @@ def _log_failure(path, ep_id, err):
 def main():
   parser = argparse.ArgumentParser(
       description="Batch quality metrics evaluation for DROID episodes")
-  add_sharding_args(parser)
+  core.runner.add_sharding_args(parser)
   parser.add_argument("--depth_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "depth"))
+                      default=os.path.join(core.io.OUTPUT_ROOT, "depth"))
   parser.add_argument("--extrinsics_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "extrinsics"))
+                      default=os.path.join(core.io.OUTPUT_ROOT, "extrinsics"))
   parser.add_argument("--tracks_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "tracks"))
+                      default=os.path.join(core.io.OUTPUT_ROOT, "tracks"))
   parser.add_argument("--output_dir", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "metrics"))
+                      default=os.path.join(core.io.OUTPUT_ROOT, "metrics"))
   parser.add_argument("--require_tracks", action="store_true",
                       help="Only evaluate episodes with track data")
   args = parser.parse_args()
@@ -593,14 +590,14 @@ def main():
   csv_path = os.path.join(output_dir, "metrics.csv")
   fail_path = os.path.join(output_dir, "failures.txt")
 
-  available = list_episode_dirs(args.depth_root) & list_episode_dirs(
-      args.extrinsics_root)
+  available = (core.runner.list_episode_dirs(args.depth_root)
+               & core.runner.list_episode_dirs(args.extrinsics_root))
   if args.require_tracks:
-    available &= list_episode_dirs(args.tracks_root)
+    available &= core.runner.list_episode_dirs(args.tracks_root)
   print(f"Found {len(available)} episodes with depth + extrinsics")
 
-  device = get_accelerator()
-  pb_renderer = PyBulletRenderer()
+  device = core.io.get_accelerator()
+  pb_renderer = core.physics.PyBulletRenderer()
 
   def evaluate(ep_id):
     t0 = time.time()
@@ -617,8 +614,8 @@ def main():
           f"depth_residual_median="
           f"{metrics.get('depth_residual_overall_median_mm', float('nan')):.1f}mm")
 
-  run_episodes(
-      shard_episodes(available, args.rank, args.world_size, args.limit),
+  core.runner.run_episodes(
+      core.runner.shard_episodes(available, args.rank, args.world_size, args.limit),
       evaluate,
       rank=args.rank, world_size=args.world_size,
       done=_read_done(csv_path), stage="Evaluation")

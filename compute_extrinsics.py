@@ -9,14 +9,10 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from core.geometry import make_4x4, make_T
-from core.io import OUTPUT_ROOT, get_accelerator, load_depth_data, load_metadata
-from core.physics import (PyBulletRenderer, compute_robot_loss_batched,
-                          compute_wrist_loss_batched,
-                          get_foreground_gripper_points,
-                          get_foreground_robot_points)
-from core.runner import (add_sharding_args, list_episode_dirs,
-                         run_episodes, shard_episodes)
+import core.geometry
+import core.io
+import core.physics
+import core.runner
 
 
 def init_camera_states(scene_constants, extrinsics_db):
@@ -37,7 +33,7 @@ def init_camera_states(scene_constants, extrinsics_db):
     elif cam_id in episode_extrinsics:
       ext_data = episode_extrinsics[cam_id]
       ext_vec = ext_data.get("extrinsics", ext_data) if isinstance(ext_data, dict) else ext_data
-      base_ext = make_4x4(ext_vec)
+      base_ext = core.geometry.make_4x4(ext_vec)
       cam_trajectory = np.tile(base_ext, (n_frames, 1, 1))
       print(f"    Loaded pre-calibrated extrinsics for camera [{cam_id}] from metadata.")
     else:
@@ -68,14 +64,14 @@ def extract_robot_clouds(cam_id, scene_constants, pb_renderer, base_extrinsic,
     d_obs = cam_data['raw_depth'][t].astype(np.float32)
 
     if is_wrist:
-      pts_cam = get_foreground_gripper_points(
+      pts_cam = core.physics.get_foreground_gripper_points(
           T_ee_base_all[t] @ base_extrinsic, K_mat, d_obs, pb_renderer, device)
       if pts_cam is None:
         continue
       cache_X.append(torch.tensor((base_extrinsic @ pts_cam)[:3, :].T,
                                   dtype=torch.float32, device=device))
     else:
-      pts_world = get_foreground_robot_points(
+      pts_world = core.physics.get_foreground_robot_points(
           base_extrinsic, K_mat, d_obs, pb_renderer, device)
       if pts_world is None:
         continue
@@ -89,8 +85,9 @@ def extract_robot_clouds(cam_id, scene_constants, pb_renderer, base_extrinsic,
 
 
 def robot_depth_loss(batch_X, T_opt, K, batch_obs, is_wrist):
-  return (compute_wrist_loss_batched(batch_X, T_opt, K, batch_obs) if is_wrist
-          else compute_robot_loss_batched(batch_X, T_opt, K, batch_obs))
+  if is_wrist:
+    return core.physics.compute_wrist_loss_batched(batch_X, T_opt, K, batch_obs)
+  return core.physics.compute_robot_loss_batched(batch_X, T_opt, K, batch_obs)
 
 
 def per_camera_alignment(scene_constants, pb_renderer, prev_scene_state,
@@ -118,13 +115,14 @@ def per_camera_alignment(scene_constants, pb_renderer, prev_scene_state,
           f"re-rendering the cloud between them...")
     for outer in range(outer_steps):
       with torch.no_grad():
-        T_cur = (T_init_t @ make_T(d_ext, device)).cpu().numpy()
+        T_cur = (T_init_t @ core.geometry.make_T(d_ext, device)).cpu().numpy()
       batch_X, batch_obs = extract_robot_clouds(
           cam, scene_constants, pb_renderer, T_cur, device)
       for _ in range(inner_steps):
         optimizer.zero_grad()
         loss_rob = robot_depth_loss(
-            batch_X, T_init_t @ make_T(d_ext, device), K_t, batch_obs, is_wrist)
+            batch_X, T_init_t @ core.geometry.make_T(d_ext, device), K_t,
+            batch_obs, is_wrist)
         loss_rob.backward()
         optimizer.step()
 
@@ -139,7 +137,7 @@ def per_camera_alignment(scene_constants, pb_renderer, prev_scene_state,
       continue
 
     with torch.no_grad():
-      T_final_np = (T_init_t @ make_T(d_ext, device)).cpu().numpy()
+      T_final_np = (T_init_t @ core.geometry.make_T(d_ext, device)).cpu().numpy()
       shift_mm = torch.norm(d_ext[3:]).item() * 1000.0
       rot_deg = torch.norm(d_ext[:3]).item() * (180.0 / np.pi)
       print(f"  [{cam}] Alignment done! Loss: {loss_rob.item():.4f} "
@@ -250,9 +248,9 @@ def global_joint_alignment(scene_constants, prev_scene_state, pb_renderer,
   for step in range(n_steps):
     optimizer.zero_grad()
 
-    T1_opt = T1_init_t @ make_T(d1, device)
-    T2_opt = T2_init_t @ make_T(d2, device)
-    Tee_opt = Tee_init_t @ make_T(dhe, device)
+    T1_opt = T1_init_t @ core.geometry.make_T(d1, device)
+    T2_opt = T2_init_t @ core.geometry.make_T(d2, device)
+    Tee_opt = Tee_init_t @ core.geometry.make_T(dhe, device)
 
     bc1 = (T1_opt @ batch_Pc1)[:, :3, :].transpose(1, 2)
     bc2 = (T2_opt @ batch_Pc2)[:, :3, :].transpose(1, 2)
@@ -291,9 +289,9 @@ def global_joint_alignment(scene_constants, prev_scene_state, pb_renderer,
       print(f"    {' | '.join(log_parts)}")
 
   with torch.no_grad():
-    final_p1 = (T1_init_t @ make_T(d1, device)).cpu().numpy()
-    final_p2 = (T2_init_t @ make_T(d2, device)).cpu().numpy()
-    final_cam_ee = (Tee_init_t @ make_T(dhe, device)).cpu().numpy()
+    final_p1 = (T1_init_t @ core.geometry.make_T(d1, device)).cpu().numpy()
+    final_p2 = (T2_init_t @ core.geometry.make_T(d2, device)).cpu().numpy()
+    final_cam_ee = (Tee_init_t @ core.geometry.make_T(dhe, device)).cpu().numpy()
 
   print("\nGlobal joint optimization complete!")
 
@@ -315,7 +313,7 @@ def global_joint_alignment(scene_constants, prev_scene_state, pb_renderer,
 
 
 def export_extrinsics(scene_constants, scene_state,
-                      export_root=os.path.join(OUTPUT_ROOT, "extrinsics")):
+                      export_root=os.path.join(core.io.OUTPUT_ROOT, "extrinsics")):
   ep_str = scene_constants["meta"]["episode_id"]
   wrist_serial = scene_constants["meta"]["wrist_serial"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_str)))
@@ -354,7 +352,7 @@ def process_episode(ep_id, pb_renderer, extrinsics_db, depth_root, export_root,
                     device):
   scene_constants = init_state = aligned_state = joint_state = None
   try:
-    scene_constants = load_depth_data(ep_id, depth_root)
+    scene_constants = core.io.load_depth_data(ep_id, depth_root)
 
     init_state = init_camera_states(scene_constants, extrinsics_db)
 
@@ -374,28 +372,29 @@ def process_episode(ep_id, pb_renderer, extrinsics_db, depth_root, export_root,
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(
       description="DROID Stage 2: Camera Extrinsics Calibration")
-  add_sharding_args(parser)
+  core.runner.add_sharding_args(parser)
   parser.add_argument("--depth_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "depth"),
+                      default=os.path.join(core.io.OUTPUT_ROOT, "depth"),
                       help="Root directory of depth outputs")
   parser.add_argument("--export_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "extrinsics"),
+                      default=os.path.join(core.io.OUTPUT_ROOT, "extrinsics"),
                       help="Root directory for extrinsics output")
   args = parser.parse_args()
 
   print("DROID Stage 2: Camera Extrinsics Calibration Pipeline")
-  device = get_accelerator()
-  serials_db, _, _, extrinsics_db, _ = load_metadata()
-  pb_renderer = PyBulletRenderer(gpu=True)
+  device = core.io.get_accelerator()
+  serials_db, _, _, extrinsics_db, _ = core.io.load_metadata()
+  pb_renderer = core.physics.PyBulletRenderer(gpu=True)
   print(f"  Using PyBulletRenderer (EGL: {pb_renderer.gpu})")
 
-  target = shard_episodes(list_episode_dirs(args.depth_root),
-                          args.rank, args.world_size, args.limit)
+  target = core.runner.shard_episodes(
+      core.runner.list_episode_dirs(args.depth_root),
+      args.rank, args.world_size, args.limit)
   export_abs = os.path.abspath(os.path.expanduser(args.export_root))
   done = {ep for ep in target
           if _has_final_extrinsics(os.path.join(export_abs, ep))}
 
-  run_episodes(
+  core.runner.run_episodes(
       target,
       lambda ep_id: process_episode(
           ep_id, pb_renderer, extrinsics_db,

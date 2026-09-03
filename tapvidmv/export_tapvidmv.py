@@ -7,9 +7,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.io import OUTPUT_ROOT, load_depth_data, load_extrinsics
-from core.runner import (add_sharding_args, list_episode_dirs,
-                         run_episodes, shard_episodes)
+import core.io
+import core.runner
 
 
 def read_episode_list(path):
@@ -80,7 +79,7 @@ def export_to_tapvid3d(
     final_traj_3d,
     final_per_cam_tracks,
     final_per_cam_vis,
-    output_root=os.path.join(OUTPUT_ROOT, "tapvidmv"),
+    output_root=os.path.join(core.io.OUTPUT_ROOT, "tapvidmv"),
     include_depth=True,
     include_foreground_mask=True,
     jpeg_quality=95,
@@ -170,9 +169,9 @@ def export_to_tapvid3d(
 
 def process_episode(episode_id, args):
   print(f"\nLoading pipeline outputs for [{episode_id}]...")
-  scene_constants = load_depth_data(
+  scene_constants = core.io.load_depth_data(
       episode_id, args.depth_root, load_video="full")
-  scene_state = load_extrinsics(scene_constants, args.extrinsics_root)
+  scene_state = core.io.load_extrinsics(scene_constants, args.extrinsics_root)
 
   tracks_dir = os.path.abspath(os.path.expanduser(
       os.path.join(args.tracks_root, episode_id)))
@@ -204,7 +203,7 @@ def process_episode(episode_id, args):
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(
       description="Export DROID pipeline outputs to TAPVid-3D format")
-  add_sharding_args(parser)
+  core.runner.add_sharding_args(parser)
   parser.add_argument("--episode_id", type=str, default=None,
                       help="Process a single episode (overrides everything else)")
   parser.add_argument("--episode_list", type=str,
@@ -217,14 +216,14 @@ if __name__ == "__main__":
                            "everything. Pass 'all' to export every episode "
                            "that has tracks instead")
   parser.add_argument("--output_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "tapvidmv"),
+                      default=os.path.join(core.io.OUTPUT_ROOT, "tapvidmv"),
                       help="Root output directory")
   parser.add_argument("--depth_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "depth"))
+                      default=os.path.join(core.io.OUTPUT_ROOT, "depth"))
   parser.add_argument("--extrinsics_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "extrinsics"))
+                      default=os.path.join(core.io.OUTPUT_ROOT, "extrinsics"))
   parser.add_argument("--tracks_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "tracks"))
+                      default=os.path.join(core.io.OUTPUT_ROOT, "tracks"))
   parser.add_argument("--no_depth", action="store_true",
                       help="Skip depth.npy export")
   parser.add_argument("--no_foreground_mask", action="store_true",
@@ -238,16 +237,16 @@ if __name__ == "__main__":
   if args.episode_id:
     process_episode(args.episode_id, args)
   else:
-    with_tracks = list_episode_dirs(args.tracks_root)
+    with_tracks = core.runner.list_episode_dirs(args.tracks_root)
     if args.episode_list == "all":
       available = with_tracks
       print(f"Exporting all {len(available)} episodes with tracks")
     else:
       available = read_episode_list(args.episode_list)
       print(f"Read {len(available)} episodes from {args.episode_list}")
-    run_episodes(
-        shard_episodes(available, args.rank, args.world_size, args.limit),
+    core.runner.run_episodes(
+        core.runner.shard_episodes(available, args.rank, args.world_size, args.limit),
         lambda ep_id: process_episode(ep_id, args),
         rank=args.rank, world_size=args.world_size,
-        done=list_episode_dirs(args.output_root),
+        done=core.runner.list_episode_dirs(args.output_root),
         stage="Export")

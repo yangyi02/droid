@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.io import OUTPUT_ROOT
+import core.io
 
 
 def load_metrics(csv_path):
@@ -114,7 +114,7 @@ def main():
   parser = argparse.ArgumentParser(
       description="Select evaluation episodes from metrics CSV")
   parser.add_argument("--input", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "metrics", "metrics.csv"),
+                      default=os.path.join(core.io.OUTPUT_ROOT, "metrics", "metrics.csv"),
                       help="Path to metrics CSV")
   parser.add_argument("--n", type=int, default=50,
                       help="Number of episodes to select")

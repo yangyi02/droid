@@ -11,14 +11,13 @@ from scipy.spatial.transform import Rotation as R
 import torch
 from tqdm import tqdm
 
-from core.depth import (build_universal_gripper_mask, compute_stereo_depth,
-                        distill_empirical_gripper_depth, inject_gripper_depth)
-from core.geometry import make_4x4
-from core.io import INPUT_ROOT, OUTPUT_ROOT, get_accelerator, load_metadata
-from core.runner import add_sharding_args, run_episodes, shard_episodes
+import core.depth
+import core.geometry
+import core.io
+import core.runner
 
 def init_all_models():
-  device = get_accelerator()
+  device = core.io.get_accelerator()
   print(f"Launching models onto {device} | CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}")
   repo_dir = os.path.dirname(os.path.abspath(__file__))
   vendor_dir = os.path.join(repo_dir, "third_party")
@@ -216,7 +215,8 @@ def parse_robot_kinematics(scene_constants):
   scene_constants["robot"] = {
       "joint_positions": joint_poses,
       "gripper_positions": gripper_poses,
-      "T_cam_ee_init": np.linalg.inv(make_4x4(ee_poses[0])) @ make_4x4(wrist_ext),
+      "T_cam_ee_init": (np.linalg.inv(core.geometry.make_4x4(ee_poses[0]))
+                        @ core.geometry.make_4x4(wrist_ext)),
       "T_ee_base_all": T_ee_all,
       "timestamps": timestamps,
   }
@@ -262,7 +262,8 @@ def _write_mp4(path, frames, fps=10.0):
   writer.release()
 
 
-def export_depth(scene_constants, export_root=os.path.join(OUTPUT_ROOT, "depth")):
+def export_depth(scene_constants,
+                 export_root=os.path.join(core.io.OUTPUT_ROOT, "depth")):
   ep_id = scene_constants["meta"]["episode_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_id)))
   os.makedirs(ep_dir, exist_ok=True)
@@ -356,7 +357,7 @@ def process_episode(ep_id, models, dbs, raw_root, min_frames, max_frames,
       scene_constants, min_frames=min_frames, max_frames=max_frames)
   scene_constants = parse_robot_kinematics(scene_constants)
   scene_constants = align_temporal_streams(scene_constants)
-  scene_constants = compute_stereo_depth(
+  scene_constants = core.depth.compute_stereo_depth(
       scene_constants, s2m2_model, run_stereo_matching, device)
 
   wrist_serial = scene_constants["meta"].get("wrist_serial")
@@ -364,15 +365,16 @@ def process_episode(ep_id, models, dbs, raw_root, min_frames, max_frames,
   if "raw_depth" in wrist_data:
     wrist_data["original_raw_depth"] = wrist_data["raw_depth"].copy()
 
-  scene_constants = build_universal_gripper_mask(scene_constants, sam_predictor)
-  scene_constants = distill_empirical_gripper_depth(scene_constants)
-  scene_constants = inject_gripper_depth(scene_constants)
+  scene_constants = core.depth.build_universal_gripper_mask(
+      scene_constants, sam_predictor)
+  scene_constants = core.depth.distill_empirical_gripper_depth(scene_constants)
+  scene_constants = core.depth.inject_gripper_depth(scene_constants)
   export_depth(scene_constants, export_root=export_root)
 
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="DROID Stage 1: Stereo Depth")
-  add_sharding_args(parser)
+  core.runner.add_sharding_args(parser)
   parser.add_argument("--min_frames", type=int, default=48,
                       help="Skip episodes with fewer than this many frames "
                            "(default: 48, -1 to disable)")
@@ -380,23 +382,24 @@ if __name__ == "__main__":
                       help="Skip episodes with more than this many frames "
                            "(default: 250, -1 to disable)")
   parser.add_argument("--export_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "depth"),
+                      default=os.path.join(core.io.OUTPUT_ROOT, "depth"),
                       help="Root directory for depth output")
   args = parser.parse_args()
 
   print("DROID Stage 1: Stereo Depth")
-  device = get_accelerator()
+  device = core.io.get_accelerator()
   s2m2_model, sam_predictor, run_stereo_matching = init_all_models()
-  serials_db, id_to_path, keep_ranges, _, valid_ids = load_metadata()
+  serials_db, id_to_path, keep_ranges, _, valid_ids = core.io.load_metadata()
   raw_root = os.path.expanduser(
-      os.path.join(INPUT_ROOT, "robotics", "droid_raw", "1.0.1"))
+      os.path.join(core.io.INPUT_ROOT, "robotics", "droid_raw", "1.0.1"))
 
-  target = shard_episodes(valid_ids, args.rank, args.world_size, args.limit)
+  target = core.runner.shard_episodes(
+      valid_ids, args.rank, args.world_size, args.limit)
   export_abs = os.path.abspath(os.path.expanduser(args.export_root))
   done = {ep for ep in target
           if os.path.exists(os.path.join(export_abs, ep, "robot.npz"))}
 
-  run_episodes(
+  core.runner.run_episodes(
       target,
       lambda ep_id: process_episode(
           ep_id, (s2m2_model, sam_predictor, run_stereo_matching, device),

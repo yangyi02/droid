@@ -4,12 +4,11 @@ import os
 import cv2
 import numpy as np
 
-from core.geometry import project_points, unproject_points
-from core.io import OUTPUT_ROOT, get_accelerator, load_depth_data, load_extrinsics
-from core.physics import PyBulletRenderer
-from core.runner import (add_sharding_args, list_episode_dirs,
-                         run_episodes, shard_episodes)
-from core.tracking import URDFKinematicsTracker
+import core.geometry
+import core.io
+import core.physics
+import core.runner
+import core.tracking
 
 
 def find_static_candidates(scene_constants, scene_state, pb_renderer,
@@ -57,7 +56,7 @@ def find_static_candidates(scene_constants, scene_state, pb_renderer,
     u_f = us.astype(np.float32)
     v_f = vs.astype(np.float32)
 
-    pts_3d = unproject_points(u_f, v_f, z, K, ext)
+    pts_3d = core.geometry.unproject_points(u_f, v_f, z, K, ext)
 
     rgb = cam_data["video_rgb"][0][vs, us]
 
@@ -87,7 +86,7 @@ def find_static_candidates(scene_constants, scene_state, pb_renderer,
       dst_K = dst_data["K_mat"]
       dst_h, dst_w = dst_data["video_rgb"][0].shape[:2]
 
-      u_d, v_d, z_pred = project_points(pts, dst_K, dst_ext)
+      u_d, v_d, z_pred = core.geometry.project_points(pts, dst_K, dst_ext)
       ui_d = np.clip(np.round(u_d).astype(int), 0, dst_w - 1)
       vi_d = np.clip(np.round(v_d).astype(int), 0, dst_h - 1)
 
@@ -203,7 +202,7 @@ def _measure_depth_gaps(pts, scene_constants, scene_state, static_cams,
       robot_mask_dilated = cv2.dilate(
           robot_mask.astype(np.uint8), kernel, iterations=1) > 0
 
-      u, v, z_pred = project_points(pts, K, ext)
+      u, v, z_pred = core.geometry.project_points(pts, K, ext)
       ok = np.isfinite(u) & np.isfinite(v) & (z_pred > 0)
       ui = np.round(np.where(ok, u, 0)).astype(int)
       vi = np.round(np.where(ok, v, 0)).astype(int)
@@ -284,7 +283,7 @@ def project_static_tracks(static_pts_3d, scene_constants, scene_state,
     for t in range(T_frames):
       ext = scene_state[cam_id]["extrinsics"][t]
 
-      u, v, z_pred = project_points(static_pts_3d, K, ext)
+      u, v, z_pred = core.geometry.project_points(static_pts_3d, K, ext)
       tracks[t, :, 0] = u
       tracks[t, :, 1] = v
 
@@ -316,7 +315,7 @@ def compute_robot_tracks(scene_constants, scene_state, pb_renderer,
 
   print(f"\nURDF FK Robot Tracking (max {max_robot_pts_per_cam} pts/cam)")
 
-  urdf_tracker = URDFKinematicsTracker(pb_renderer)
+  urdf_tracker = core.tracking.URDFKinematicsTracker(pb_renderer)
   robot_traj_3d_all = []
   robot_per_cam_tracks_all = {cam: [] for cam in camera_ids}
   robot_per_cam_vis_all = {cam: [] for cam in camera_ids}
@@ -414,7 +413,7 @@ def merge_tracks(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
 def export_tracks(scene_constants, scene_state, final_traj_3d,
                   final_vis_global, final_per_cam_tracks, final_per_cam_vis,
                   n_static, n_robot,
-                  export_root=os.path.join(OUTPUT_ROOT, "tracks")):
+                  export_root=os.path.join(core.io.OUTPUT_ROOT, "tracks")):
   ep_id = scene_constants["meta"]["episode_id"]
   camera_ids = list(scene_constants["camera"].keys())
   ep_dir = os.path.abspath(
@@ -471,8 +470,8 @@ def process_episode(episode_id, pb_renderer, device,
                     max_robot_pts_per_cam=100):
   print(f"\nProcessing Episode: {episode_id}")
 
-  scene_constants = load_depth_data(episode_id, depth_root, load_video="full")
-  scene_state = load_extrinsics(scene_constants, extrinsics_root)
+  scene_constants = core.io.load_depth_data(episode_id, depth_root, load_video="full")
+  scene_state = core.io.load_extrinsics(scene_constants, extrinsics_root)
 
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
@@ -517,15 +516,15 @@ def process_episode(episode_id, pb_renderer, device,
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(
       description="DROID Stage 3: Static Background + Robot Tracks")
-  add_sharding_args(parser)
+  core.runner.add_sharding_args(parser)
   parser.add_argument("--depth_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "depth"),
+                      default=os.path.join(core.io.OUTPUT_ROOT, "depth"),
                       help="Root directory of depth outputs")
   parser.add_argument("--extrinsics_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "extrinsics"),
+                      default=os.path.join(core.io.OUTPUT_ROOT, "extrinsics"),
                       help="Root directory of extrinsics outputs")
   parser.add_argument("--export_root", type=str,
-                      default=os.path.join(OUTPUT_ROOT, "tracks"),
+                      default=os.path.join(core.io.OUTPUT_ROOT, "tracks"),
                       help="Root directory for tracks output")
   parser.add_argument("--num_static_points", type=int, default=300,
                       help="Number of static background points to sample")
@@ -534,16 +533,17 @@ if __name__ == "__main__":
   args = parser.parse_args()
 
   print("DROID Stage 3: Static Background + Robot Tracks")
-  device = get_accelerator()
-  pb_renderer = PyBulletRenderer()
+  device = core.io.get_accelerator()
+  pb_renderer = core.physics.PyBulletRenderer()
 
-  target = shard_episodes(list_episode_dirs(args.extrinsics_root),
-                          args.rank, args.world_size, args.limit)
+  target = core.runner.shard_episodes(
+      core.runner.list_episode_dirs(args.extrinsics_root),
+      args.rank, args.world_size, args.limit)
   export_abs = os.path.abspath(os.path.expanduser(args.export_root))
   done = {ep for ep in target
           if os.path.exists(os.path.join(export_abs, ep, "tracks_3d.npz"))}
 
-  run_episodes(
+  core.runner.run_episodes(
       target,
       lambda ep_id: process_episode(
           ep_id, pb_renderer, device,
