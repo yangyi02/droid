@@ -2,6 +2,7 @@ import json
 import os
 
 import cv2
+import mediapy as media
 import numpy as np
 import torch
 
@@ -52,18 +53,6 @@ def load_metadata(meta_root=META_ROOT):
   return serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids
 
 
-def _read_video(path):
-  cap = cv2.VideoCapture(path)
-  frames = []
-  while True:
-    ret, frame = cap.read()
-    if not ret:
-      break
-    frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-  cap.release()
-  return np.array(frames, dtype=np.uint8) if frames else None
-
-
 def load_depth_data(episode_id, depth_root=os.path.join(OUTPUT_ROOT, "depth"),
                     load_video="first_frame", inspection=False):
   ep_dir = os.path.abspath(
@@ -98,34 +87,28 @@ def load_depth_data(episode_id, depth_root=os.path.join(OUTPUT_ROOT, "depth"),
     cam_data = {}
 
 
-    try:
-      calib = np.load(os.path.join(cam_path, "calibration.npz"))
+    calib_path = os.path.join(cam_path, "calibration.npz")
+    if os.path.exists(calib_path):
+      calib = np.load(calib_path)
       cam_data["K_mat"] = calib["K_calib_left"].astype(np.float32)
       if "baseline" in calib:
         cam_data["baseline"] = float(calib["baseline"])
-    except FileNotFoundError:
-      pass
 
-    try:
-      depth_uint16 = np.load(os.path.join(cam_path, "raw_depth.npz"))["depth"]
+    depth_path = os.path.join(cam_path, "raw_depth.npz")
+    if os.path.exists(depth_path):
+      depth_uint16 = np.load(depth_path)["depth"]
       cam_data["raw_depth"] = depth_uint16.astype(np.float32) / 1000.0
-    except FileNotFoundError:
-      pass
 
-    try:
-      cam_data["sam_real_masks"] = np.load(
-          os.path.join(cam_path, "gripper_mask.npz"))["mask"]
-    except FileNotFoundError:
-      pass
+    mask_path = os.path.join(cam_path, "gripper_mask.npz")
+    if os.path.exists(mask_path):
+      cam_data["sam_real_masks"] = np.load(mask_path)["mask"]
 
     if inspection:
       for fname, key in [("original_raw_depth.npz", "original_raw_depth"),
                          ("gripper_depth.npz", "empirical_gripper_depth")]:
-        try:
-          cam_data[key] = (np.load(os.path.join(cam_path, fname))["depth"]
-                           .astype(np.float32) / 1000.0)
-        except FileNotFoundError:
-          pass
+        path = os.path.join(cam_path, fname)
+        if os.path.exists(path):
+          cam_data[key] = (np.load(path)["depth"].astype(np.float32) / 1000.0)
 
     video_path = os.path.join(cam_path, "video_left.mp4")
     if load_video == "first_frame":
@@ -135,11 +118,10 @@ def load_depth_data(episode_id, depth_root=os.path.join(OUTPUT_ROOT, "depth"),
       if ret:
         cam_data["first_frame_rgb"] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     elif load_video == "full":
-      cam_data["video_rgb"] = _read_video(video_path)
+      cam_data["video_rgb"] = media.read_video(video_path)
       if inspection:
-        right = _read_video(os.path.join(cam_path, "video_right.mp4"))
-        if right is not None:
-          cam_data["video_right"] = right
+        cam_data["video_right"] = media.read_video(
+            os.path.join(cam_path, "video_right.mp4"))
 
     camera[cam_id] = cam_data
 

@@ -161,11 +161,8 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
 
 
 def _worker(episode_id, tracks_root, depth_root):
-  try:
-    return compute_all_episode_stats(
-        episode_id, tracks_root, depth_root)
-  except Exception as e:
-    return {"episode_id": episode_id, "_error": str(e)}
+  return compute_all_episode_stats(
+      episode_id, tracks_root, depth_root)
 
 
 def main():
@@ -281,10 +278,7 @@ def main():
       for r in metric_rows:
         v = r.get(key, "")
         if v and v != "nan":
-          try:
-            vals.append(float(v))
-          except ValueError:
-            pass
+          vals.append(float(v))
       return vals
 
     s_med = _extract_metric("depth_residual_static_median_mm")

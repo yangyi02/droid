@@ -22,10 +22,7 @@ def load_metrics(csv_path):
 def safe_float(val, default=float("nan")):
   if val is None or val == "" or val == "nan":
     return default
-  try:
-    return float(val)
-  except (ValueError, TypeError):
-    return default
+  return float(val)
 
 
 def apply_quality_filter(rows, max_chamfer, max_depth_residual,

@@ -341,32 +341,28 @@ def export_extrinsics(scene_constants, scene_state,
 
 
 def _has_final_extrinsics(ep_dir):
-  try:
-    return any(os.path.exists(os.path.join(ep_dir, cam, "extrinsics.json"))
-               for cam in os.listdir(ep_dir))
-  except OSError:
-    return False
+  return os.path.isdir(ep_dir) and any(
+      os.path.exists(os.path.join(ep_dir, cam, "extrinsics.json"))
+      for cam in os.listdir(ep_dir))
 
 
 def process_episode(ep_id, pb_renderer, extrinsics_db, depth_root, export_root,
                     device):
-  scene_constants = init_state = aligned_state = joint_state = None
-  try:
-    scene_constants = core.io.load_depth_data(ep_id, depth_root)
+  scene_constants = core.io.load_depth_data(ep_id, depth_root)
 
-    init_state = init_camera_states(scene_constants, extrinsics_db)
+  init_state = init_camera_states(scene_constants, extrinsics_db)
 
-    aligned_state = per_camera_alignment(
-        scene_constants, pb_renderer, init_state, device)
+  aligned_state = per_camera_alignment(
+      scene_constants, pb_renderer, init_state, device)
 
-    joint_state = global_joint_alignment(
-        scene_constants, aligned_state, pb_renderer, device,
-        lr=0.001, n_steps=500, robot_weight=1.0)
+  joint_state = global_joint_alignment(
+      scene_constants, aligned_state, pb_renderer, device,
+      lr=0.001, n_steps=500, robot_weight=1.0)
 
-    export_extrinsics(scene_constants, joint_state, export_root=export_root)
-  finally:
-    gc.collect()
-    torch.cuda.empty_cache()
+  export_extrinsics(scene_constants, joint_state, export_root=export_root)
+
+  gc.collect()
+  torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

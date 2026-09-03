@@ -32,10 +32,7 @@ def _load_egl():
   spec = importlib.util.find_spec("eglRenderer")
   if spec is None:
     return False
-  try:
-    return p.loadPlugin(spec.origin, "_eglRendererPlugin") >= 0
-  except p.error:
-    return False
+  return p.loadPlugin(spec.origin, "_eglRendererPlugin") >= 0
 
 
 def _trimmed_urdf(src, hidden):

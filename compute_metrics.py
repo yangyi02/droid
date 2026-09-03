@@ -31,112 +31,105 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
   if pb_renderer is not None:
     for cam_id, key_prefix in [(cam1, "cam1"), (cam2, "cam2"),
                                 (wrist_cam, "wrist")]:
-      try:
-        is_wrist = (cam_id == wrist_cam)
-        K_np = scene_constants["camera"][cam_id]["K_mat"]
-        K_t = torch.tensor(K_np, dtype=torch.float32, device=device)
+      is_wrist = (cam_id == wrist_cam)
+      K_np = scene_constants["camera"][cam_id]["K_mat"]
+      K_t = torch.tensor(K_np, dtype=torch.float32, device=device)
 
-        cache_X, cache_obs = [], []
-        for t in range(n_frames):
-          joints = scene_constants["robot"]["joint_positions"][t]
-          gripper = scene_constants["robot"]["gripper_positions"][t]
-          pb_renderer.update_robot_pose(joints, gripper)
+      cache_X, cache_obs = [], []
+      for t in range(n_frames):
+        joints = scene_constants["robot"]["joint_positions"][t]
+        gripper = scene_constants["robot"]["gripper_positions"][t]
+        pb_renderer.update_robot_pose(joints, gripper)
 
-          d_obs = scene_constants["camera"][cam_id]["raw_depth"][t].astype(
-              np.float32)
-          T_cam_np = scene_state[cam_id]["extrinsics"][t]
-
-          if is_wrist:
-            pts = core.physics.get_foreground_gripper_points(
-                T_cam_np, K_np, d_obs, pb_renderer, device)
-            if pts is None:
-              continue
-            T_world_to_ee = np.linalg.inv(T_ee_all[t])
-            pts_world = (T_cam_np @ pts)[:3, :].T
-            pts_ee = (T_world_to_ee[:3, :3] @ pts_world.T
-                      + T_world_to_ee[:3, 3:4]).T
-            cache_X.append(
-                torch.tensor(pts_ee, dtype=torch.float32, device=device))
-          else:
-            pts = core.physics.get_foreground_robot_points(
-                T_cam_np, K_np, d_obs, pb_renderer, device)
-            if pts is None:
-              continue
-            cache_X.append(pts)
-
-          cache_obs.append(
-              torch.tensor(d_obs, dtype=torch.float32,
-                           device=device)[None, ...])
-
-        if not cache_X:
-          metrics[f"robot_loss_{key_prefix}"] = float("nan")
-          continue
-
-        batch_X = torch.stack(cache_X)
-        batch_obs = torch.stack(cache_obs)
-        T_opt = torch.tensor(
-            scene_state[cam_id]["base_extrinsic"],
-            dtype=torch.float32, device=device)
+        d_obs = scene_constants["camera"][cam_id]["raw_depth"][t].astype(
+            np.float32)
+        T_cam_np = scene_state[cam_id]["extrinsics"][t]
 
         if is_wrist:
-          loss = core.physics.compute_wrist_loss_batched(batch_X, T_opt, K_t, batch_obs)
+          pts = core.physics.get_foreground_gripper_points(
+              T_cam_np, K_np, d_obs, pb_renderer, device)
+          if pts is None:
+            continue
+          T_world_to_ee = np.linalg.inv(T_ee_all[t])
+          pts_world = (T_cam_np @ pts)[:3, :].T
+          pts_ee = (T_world_to_ee[:3, :3] @ pts_world.T
+                    + T_world_to_ee[:3, 3:4]).T
+          cache_X.append(
+              torch.tensor(pts_ee, dtype=torch.float32, device=device))
         else:
-          loss = core.physics.compute_robot_loss_batched(batch_X, T_opt, K_t, batch_obs)
-        metrics[f"robot_loss_{key_prefix}"] = loss.item()
-      except Exception as e:
+          pts = core.physics.get_foreground_robot_points(
+              T_cam_np, K_np, d_obs, pb_renderer, device)
+          if pts is None:
+            continue
+          cache_X.append(pts)
+
+        cache_obs.append(
+            torch.tensor(d_obs, dtype=torch.float32,
+                         device=device)[None, ...])
+
+      if not cache_X:
         metrics[f"robot_loss_{key_prefix}"] = float("nan")
-
-  try:
-    T1 = torch.tensor(
-        scene_state[cam1]["base_extrinsic"],
-        dtype=torch.float32, device=device)
-    T2 = torch.tensor(
-        scene_state[cam2]["base_extrinsic"],
-        dtype=torch.float32, device=device)
-    Tw = torch.tensor(
-        scene_state[wrist_cam]["base_extrinsic"],
-        dtype=torch.float32, device=device)
-
-    sum_l12, sum_l1w, sum_l2w = 0.0, 0.0, 0.0
-    sum_o12, sum_o1w, sum_o2w = 0.0, 0.0, 0.0
-    n_valid = 0
-
-    for t in range(n_frames):
-      pc1 = compute_extrinsics.get_cam_points_local_t(
-          t, scene_constants["camera"][cam1], device, n_points=5000)
-      pc2 = compute_extrinsics.get_cam_points_local_t(
-          t, scene_constants["camera"][cam2], device, n_points=5000)
-      pcw = compute_extrinsics.get_cam_points_local_t(
-          t, scene_constants["camera"][wrist_cam], device, n_points=5000)
-      if pc1 is None or pc2 is None or pcw is None:
         continue
 
-      T_ee_t = torch.tensor(T_ee_all[t], dtype=torch.float32, device=device)
+      batch_X = torch.stack(cache_X)
+      batch_obs = torch.stack(cache_obs)
+      T_opt = torch.tensor(
+          scene_state[cam_id]["base_extrinsic"],
+          dtype=torch.float32, device=device)
 
-      w1 = (T1 @ pc1)[:3, :].T.unsqueeze(0)
-      w2 = (T2 @ pc2)[:3, :].T.unsqueeze(0)
-      ww = ((T_ee_t @ Tw) @ pcw)[:3, :].T.unsqueeze(0)
+      if is_wrist:
+        loss = core.physics.compute_wrist_loss_batched(batch_X, T_opt, K_t, batch_obs)
+      else:
+        loss = core.physics.compute_robot_loss_batched(batch_X, T_opt, K_t, batch_obs)
+      metrics[f"robot_loss_{key_prefix}"] = loss.item()
 
-      l12, o12 = compute_extrinsics.batched_chamfer_distance(w1, w2, device)
-      l1w, o1w = compute_extrinsics.batched_chamfer_distance(w1, ww, device)
-      l2w, o2w = compute_extrinsics.batched_chamfer_distance(w2, ww, device)
+  T1 = torch.tensor(
+      scene_state[cam1]["base_extrinsic"],
+      dtype=torch.float32, device=device)
+  T2 = torch.tensor(
+      scene_state[cam2]["base_extrinsic"],
+      dtype=torch.float32, device=device)
+  Tw = torch.tensor(
+      scene_state[wrist_cam]["base_extrinsic"],
+      dtype=torch.float32, device=device)
 
-      sum_l12 += l12.item()
-      sum_l1w += l1w.item()
-      sum_l2w += l2w.item()
-      sum_o12 += o12
-      sum_o1w += o1w
-      sum_o2w += o2w
-      n_valid += 1
+  sum_l12, sum_l1w, sum_l2w = 0.0, 0.0, 0.0
+  sum_o12, sum_o1w, sum_o2w = 0.0, 0.0, 0.0
+  n_valid = 0
 
-    metrics["chamfer_12"] = sum_l12 / n_valid
-    metrics["chamfer_1w"] = sum_l1w / n_valid
-    metrics["chamfer_2w"] = sum_l2w / n_valid
-    metrics["chamfer_total"] = (sum_l12 + sum_l1w + sum_l2w) / n_valid
-    metrics["bg_overlap_pct"] = (sum_o12 + sum_o1w + sum_o2w) / (3.0 * n_valid) * 100
-  except Exception as e:
-    metrics["chamfer_total"] = float("nan")
-    metrics["bg_overlap_pct"] = float("nan")
+  for t in range(n_frames):
+    pc1 = compute_extrinsics.get_cam_points_local_t(
+        t, scene_constants["camera"][cam1], device, n_points=5000)
+    pc2 = compute_extrinsics.get_cam_points_local_t(
+        t, scene_constants["camera"][cam2], device, n_points=5000)
+    pcw = compute_extrinsics.get_cam_points_local_t(
+        t, scene_constants["camera"][wrist_cam], device, n_points=5000)
+    if pc1 is None or pc2 is None or pcw is None:
+      continue
+
+    T_ee_t = torch.tensor(T_ee_all[t], dtype=torch.float32, device=device)
+
+    w1 = (T1 @ pc1)[:3, :].T.unsqueeze(0)
+    w2 = (T2 @ pc2)[:3, :].T.unsqueeze(0)
+    ww = ((T_ee_t @ Tw) @ pcw)[:3, :].T.unsqueeze(0)
+
+    l12, o12 = compute_extrinsics.batched_chamfer_distance(w1, w2, device)
+    l1w, o1w = compute_extrinsics.batched_chamfer_distance(w1, ww, device)
+    l2w, o2w = compute_extrinsics.batched_chamfer_distance(w2, ww, device)
+
+    sum_l12 += l12.item()
+    sum_l1w += l1w.item()
+    sum_l2w += l2w.item()
+    sum_o12 += o12
+    sum_o1w += o1w
+    sum_o2w += o2w
+    n_valid += 1
+
+  metrics["chamfer_12"] = sum_l12 / n_valid
+  metrics["chamfer_1w"] = sum_l1w / n_valid
+  metrics["chamfer_2w"] = sum_l2w / n_valid
+  metrics["chamfer_total"] = (sum_l12 + sum_l1w + sum_l2w) / n_valid
+  metrics["bg_overlap_pct"] = (sum_o12 + sum_o1w + sum_o2w) / (3.0 * n_valid) * 100
 
   return metrics
 
@@ -450,13 +443,10 @@ def evaluate_episode(scene_constants, scene_state, device,
   metrics.update(compute_depth_coverage_stats(scene_constants))
 
   if compute_extrinsics_metrics:
-    try:
-      ext_metrics = evaluate_extrinsics(
-          scene_constants, scene_state, device,
-          pb_renderer=pb_renderer)
-      metrics.update(ext_metrics)
-    except Exception as e:
-      metrics["extrinsics_error"] = str(e)
+    ext_metrics = evaluate_extrinsics(
+        scene_constants, scene_state, device,
+        pb_renderer=pb_renderer)
+    metrics.update(ext_metrics)
 
   if final_traj_3d is not None and final_per_cam_vis is not None:
     metrics["n_static"] = n_static
@@ -472,12 +462,9 @@ def evaluate_episode(scene_constants, scene_state, device,
         final_per_cam_vis, n_static, n_robot))
 
     if tracks_root is not None:
-      try:
-        reproj = compute_reprojection_stats(
-            final_traj_3d, None, tracks_root, ep_id)
-        metrics.update(reproj)
-      except Exception as e:
-        metrics["reproj_error"] = str(e)
+      reproj = compute_reprojection_stats(
+          final_traj_3d, None, tracks_root, ep_id)
+      metrics.update(reproj)
 
   return metrics
 
@@ -601,13 +588,9 @@ def main():
 
   def evaluate(ep_id):
     t0 = time.time()
-    try:
-      metrics = evaluate_single_episode(
-          ep_id, args.depth_root, args.extrinsics_root,
-          args.tracks_root, device, pb_renderer)
-    except Exception as e:
-      _log_failure(fail_path, ep_id, e)
-      raise
+    metrics = evaluate_single_episode(
+        ep_id, args.depth_root, args.extrinsics_root,
+        args.tracks_root, device, pb_renderer)
     _append_row(csv_path, metrics)
     print(f"  [OK] Done in {time.time() - t0:.1f}s | "
           f"chamfer={metrics.get('chamfer_total', float('nan')):.4f} | "
