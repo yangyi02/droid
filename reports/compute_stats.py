@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 OUTPUT_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data", "output", "mv-tap", "droid")
+    "data", "output", "droid")
 
 
 def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):

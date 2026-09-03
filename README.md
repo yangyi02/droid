@@ -51,7 +51,7 @@ Decodes raw ZED SVO stereo video, extracts robot kinematics, and infers metric d
 | Depth distillation | Temporal median filtering within gripper mask |
 | Depth injection | Inject clean gripper depth into raw stereo stream |
 
-**Output** (`data/output/mv-tap/droid/depth/<episode_id>/`):
+**Output** (`data/output/droid/depth/<episode_id>/`):
 ```
 robot.npz                      # joint_positions, T_ee_base_all, T_cam_ee_init, ...
 <cam_serial>/
@@ -73,7 +73,7 @@ Multi-stage camera extrinsics calibration: the robot is rasterised from each cam
 | `per_camera_alignment` | Per-camera independent depth & robot alignment |
 | `global_joint_alignment` | Global joint optimization (Chamfer + Robot + Wrist) |
 
-**Output** (`data/output/mv-tap/droid/extrinsics/<episode_id>/`):
+**Output** (`data/output/droid/extrinsics/<episode_id>/`):
 ```
 <cam_serial>/
   extrinsics.json              # base_extrinsic (4x4), extrinsics (Nx4x4), is_wrist
@@ -90,7 +90,7 @@ Dense multi-view 3D point tracking via static background prior + URDF forward ki
 | `compute_robot_tracks` | Sample robot CAD surface points + URDF FK forward propagation |
 | `merge_tracks` | Merge static background & robot tracks with global visibility masks |
 
-**Output** (`data/output/mv-tap/droid/tracks/<episode_id>/`):
+**Output** (`data/output/droid/tracks/<episode_id>/`):
 ```
 tracks_3d.npz                  # traj_3d, vis_global
 track_metadata.npz             # n_static, n_robot
@@ -156,12 +156,12 @@ bash mount_gcs.sh
 | Mount | GCS Bucket / Prefix | Local Path |
 |-------|---------------------|------------|
 | Input (DROID raw) | `gs://gresearch/robotics/droid_raw` | `data/input/robotics/droid_raw` |
-| Output | `gs://dm-tapnet/mv-tap` | `data/output/mv-tap` |
+| Output | `gs://dm-tapnet/tmp/droid` | `data/output/droid` |
 
 > To manually unmount:
 > ```bash
 > fusermount -u data/input/robotics/droid_raw
-> fusermount -u data/output/mv-tap
+> fusermount -u data/output/droid
 > ```
 
 ## Running Options
