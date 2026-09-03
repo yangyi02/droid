@@ -52,10 +52,6 @@ def init_camera_states(scene_constants, extrinsics_db):
   return scene_state
 
 
-def phase1_init_extrinsics(scene_constants, extrinsics_db):
-  return init_camera_states(scene_constants, extrinsics_db)
-
-
 def extract_robot_clouds(cam_id, scene_constants, pb_renderer, base_extrinsic,
                          device):
   is_wrist = (cam_id == scene_constants['meta']['wrist_serial'])
@@ -361,7 +357,7 @@ def process_episode(ep_id, pb_renderer, extrinsics_db, depth_root, export_root,
   try:
     scene_constants = load_depth_data(ep_id, depth_root)
 
-    phase1_state = phase1_init_extrinsics(scene_constants, extrinsics_db)
+    phase1_state = init_camera_states(scene_constants, extrinsics_db)
 
     phase2_state = phase2_per_camera_alignment(
         scene_constants, pb_renderer, phase1_state, device)
