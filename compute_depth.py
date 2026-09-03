@@ -1,9 +1,3 @@
-"""DROID Episode Extraction and Vision Foundation Model Pipeline.
-
-A minimalist, high-efficiency multi-stage processor for decoding raw ZED SVO
-stereo video streams, extracting robot kinematics, and inferring metric depth.
-"""
-
 import argparse
 import glob
 import json
@@ -23,22 +17,13 @@ from core.geometry import make_4x4
 from core.io import INPUT_ROOT, OUTPUT_ROOT, get_accelerator, load_metadata
 from core.runner import add_sharding_args, run_episodes, shard_episodes
 
-# Foundation Models
 def init_all_models():
-  """Load vision foundation models and vendor dependencies dynamically."""
   device = get_accelerator()
   print(f"Launching models onto {device} | CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}")
-  if not torch.cuda.is_available():
-    print("[WARN] WARNING: PyTorch cannot find a valid CUDA device. Please ensure your CUDA_VISIBLE_DEVICES index is correct (e.g. 0 or 1) and NVIDIA drivers are running.")
-
-  # Inject third-party repo paths just-in-time. third_party/ holds both the
-  # vendored source (git submodules) and the model weights setup.sh downloads
-  # beside it; the whole directory is gitignored.
   repo_dir = os.path.dirname(os.path.abspath(__file__))
   vendor_dir = os.path.join(repo_dir, "third_party")
   s2m2_src = os.path.join(vendor_dir, "s2m2/src")
   if not os.path.exists(s2m2_src):
-    print(f"  [WARN] s2m2 source not found, initializing git submodule...")
     os.system(f"cd '{repo_dir}' && git submodule update --init --recursive")
 
   for pkg in ["s2m2/src"]:
@@ -46,7 +31,6 @@ def init_all_models():
     if path not in sys.path:
       sys.path.append(path)
 
-  # Lazy importing — these modules live under third_party/ paths added above
   from s2m2.core.utils.model_utils import load_model, run_stereo_matching
   from segment_anything import sam_model_registry, SamPredictor
 
@@ -67,19 +51,15 @@ def init_all_models():
   return s2m2_model, SamPredictor(sam), run_stereo_matching
 
 
-# SVO Decoding & Kinematics Extraction
 def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
-  """Build the hierarchical scene_constants dict for one episode."""
   relative_path = id_to_path[episode_id]
   episode_path = os.path.join(root_path, relative_path)
 
   cam_info = serials_db[episode_id]
   wrist_serial = cam_info.get("wrist_cam_serial")
 
-  # Extract all camera serials directly from the serial data
   valid_cams = sorted(set(cam_info.values()))
 
-  # Reconstruct the official JSON absolute bucket path format
   base_prefix = "gs://xembodiment_data/r2d2/r2d2-data-full/"
   episode_key = f"{base_prefix}{relative_path}/recordings/MP4--{base_prefix}{relative_path}/trajectory.h5"
 
@@ -92,10 +72,7 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
       indices.extend(range(start, end))
     valid_indices = np.array(indices)
     print(f"  Loaded action ranges, marked {len(valid_indices)} frames as valid keyframes.")
-  else:
-    print(f"  [WARN] No idle filter info found for {episode_id}, keeping all frames.")
 
-  # Structured into meta, robot, camera core modules
   return {
       "meta": {
           "episode_id": episode_id,
@@ -103,7 +80,7 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
           "wrist_serial": wrist_serial,
           "valid_indices": valid_indices,
       },
-      "robot": {},  # Placeholder for kinematics parsing
+      "robot": {},
       "camera": {
           cam: {
               "baseline": 0.063 if cam == wrist_serial else 0.120,
@@ -114,7 +91,6 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
 
 
 def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
-  """Decode SVO video, extract full stereo calibration, both rectified/unrectified frames, and timestamps."""
   import pyzed.sl as sl
 
   print("  Fast-decoding SVO video streams and physical calibration data (including timestamps)...")
@@ -130,7 +106,6 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
     init_params.svo_real_time_mode = False
     zed.open(init_params)
 
-    # Frame count gate (early exit before expensive decoding)
     n_svo_frames = zed.get_svo_number_of_frames() - 2
     if max_frames > 0 and n_svo_frames > max_frames:
       print(f"  Skipping SVO [{cam}]: {n_svo_frames} frames exceeds --max_frames={max_frames}.")
@@ -141,10 +116,8 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
       zed.close()
       continue
 
-    # Extract ZED native calibration data
     cam_info = zed.get_camera_information()
 
-    # Rectified (Calibrated)
     calib = cam_info.camera_configuration.calibration_parameters
     K_calib_left = np.array([
         [calib.left_cam.fx, 0, calib.left_cam.cx],
@@ -160,7 +133,6 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
     ], dtype=np.float32)
     disto_calib_right = np.array(calib.right_cam.disto, dtype=np.float32)
 
-    # Raw (Distorted)
     calib_raw = cam_info.camera_configuration.calibration_parameters_raw
     K_raw_left = np.array([
         [calib_raw.left_cam.fx, 0, calib_raw.left_cam.cx],
@@ -176,22 +148,18 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
     ], dtype=np.float32)
     disto_raw_right = np.array(calib_raw.right_cam.disto, dtype=np.float32)
 
-    # Frame extraction loop (left/right + raw)
     all_left, all_right, all_left_raw, all_right_raw = [], [], [], []
-    all_timestamps = []  # list for storing per-frame timestamps
+    all_timestamps = []
     left_mat, right_mat = sl.Mat(), sl.Mat()
     left_raw_mat, right_raw_mat = sl.Mat(), sl.Mat()
 
     for _ in tqdm(range(zed.get_svo_number_of_frames()), desc=f"Decoding {cam}"):
       if zed.grab() == sl.ERROR_CODE.SUCCESS:
-        # capture hardware exposure timestamp for the current frame (ms)
         timestamp_ms = zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_milliseconds()
         all_timestamps.append(timestamp_ms)
 
-        # Extract rectified stereo frames
         zed.retrieve_image(left_mat, sl.VIEW.LEFT)
         zed.retrieve_image(right_mat, sl.VIEW.RIGHT)
-        # Extract raw unrectified stereo frames
         zed.retrieve_image(left_raw_mat, sl.VIEW.LEFT_UNRECTIFIED)
         zed.retrieve_image(right_raw_mat, sl.VIEW.RIGHT_UNRECTIFIED)
 
@@ -202,7 +170,6 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
 
     zed.close()
 
-    # Pack results into scene_constants
     scene_constants["camera"][cam].update({
         "K_mat": K_calib_left,
         "zed_calibration": {
@@ -219,14 +186,13 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
         "video_right": np.stack(all_right),
         "video_raw_rgb": np.stack(all_left_raw),
         "video_raw_right": np.stack(all_right_raw),
-        "timestamps": np.array(all_timestamps),  # timestamp array packed into scene dict
+        "timestamps": np.array(all_timestamps),
     })
 
   return scene_constants
 
 
 def parse_robot_kinematics(scene_constants):
-  """Load H5 and JSON to extract robot kinematics, hand-eye matrices, and timestamps."""
   print("  Parsing robot H5 kinematics and dynamic hand-eye matrices...")
   ep_path = scene_constants["meta"]["episode_path"]
 
@@ -235,37 +201,31 @@ def parse_robot_kinematics(scene_constants):
     joint_poses = f["observation/robot_state/joint_positions"][:]
     gripper_poses = f["observation/robot_state/gripper_position"][:]
 
-    # extract robot state timestamps from H5
     timestamps = f["observation/timestamp/robot_state/read_start"][:]
 
   with open(glob.glob(f"{ep_path}/metadata_*.json")[0]) as jf:
     wrist_ext = json.load(jf)["wrist_cam_extrinsics"]
     wrist_ext = wrist_ext.get("extrinsics", wrist_ext) if isinstance(wrist_ext, dict) else wrist_ext
 
-  # Get total frame count
   total_frames = len(ee_poses)
 
-  # Vectorized batch construction of end-effector poses
   T_ee_all = np.tile(np.eye(4), (total_frames, 1, 1))
   T_ee_all[:, :3, :3] = R.from_euler("xyz", ee_poses[:, 3:]).as_matrix()
   T_ee_all[:, :3, 3] = ee_poses[:, :3]
 
-  # Pack into robot dict
   scene_constants["robot"] = {
       "joint_positions": joint_poses,
       "gripper_positions": gripper_poses,
       "T_cam_ee_init": np.linalg.inv(make_4x4(ee_poses[0])) @ make_4x4(wrist_ext),
       "T_ee_base_all": T_ee_all,
-      "timestamps": timestamps,  # robot state timestamps
+      "timestamps": timestamps,
   }
   return scene_constants
 
 
 def align_temporal_streams(scene_constants):
-  """Truncate all temporal streams to the shortest length for global alignment."""
   print("  Running global temporal alignment check...")
 
-  # Collect lengths of all temporal streams
   lengths = [
       len(scene_constants["robot"]["joint_positions"]),
       len(scene_constants["robot"]["gripper_positions"]),
@@ -275,25 +235,17 @@ def align_temporal_streams(scene_constants):
     lengths.append(len(cam_data["video_rgb"]))
     lengths.append(len(cam_data["video_right"]))
 
-  # Find the shortest stream (bottleneck)
   min_frames = min(lengths)
   max_frames = max(lengths)
 
-  if min_frames == max_frames:
-    print(f"    Temporal streams perfectly aligned at {min_frames} frames.")
-    return scene_constants
-
-  print(f"    [WARN] Temporal mismatch detected (max {max_frames}, min {min_frames})!")
   print(f"    Truncating all streams to {min_frames} frames...")
 
-  # Truncate all dimensions to min_frames (dynamic traversal)
   for key in ["joint_positions", "gripper_positions", "T_ee_base_all", "timestamps"]:
     if key in scene_constants["robot"]:
       scene_constants["robot"][key] = scene_constants["robot"][key][:min_frames]
 
   for cam_id, cam_data in scene_constants["camera"].items():
     for key, value in cam_data.items():
-      # Truncate any array/list whose length matches the max frame count
       if isinstance(value, (list, np.ndarray)) and len(value) == max_frames:
         cam_data[key] = value[:min_frames]
 
@@ -302,7 +254,6 @@ def align_temporal_streams(scene_constants):
 
 
 def _write_mp4(path, frames, fps=10.0):
-  """Write a sequence of RGB frames to an mp4 file."""
   h, w = frames[0].shape[:2]
   fourcc = cv2.VideoWriter_fourcc(*"mp4v")
   writer = cv2.VideoWriter(path, fourcc, fps, (w, h))
@@ -312,37 +263,16 @@ def _write_mp4(path, frames, fps=10.0):
 
 
 def export_depth(scene_constants, export_root=os.path.join(OUTPUT_ROOT, "depth")):
-  """Export all videos, depth maps, calibration, and robot kinematics to disk.
-
-  Episode directory layout:
-    robot.npz                         - Robot kinematics & metadata
-    <cam_serial>/
-      video_left.mp4                  - Rectified left eye
-      video_right.mp4                 - Rectified right eye
-      video_left_raw.mp4              - Unrectified (distorted) left eye
-      video_right_raw.mp4             - Unrectified (distorted) right eye
-      raw_depth.npz                   - uint16 best depth (refined for wrist, original for others)
-      original_raw_depth.npz          - uint16 pre-injection stereo depth (wrist only)
-      gripper_mask.npz                - bool consensus SAM mask (wrist only)
-      gripper_depth.npz               - uint16 distilled gripper surface depth (wrist only)
-      calibration.npz                 - Full intrinsics: calibrated & raw K + distortion
-
-  Returns:
-    ep_dir: Absolute path to the created episode output directory.
-  """
   ep_id = scene_constants["meta"]["episode_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_id)))
   os.makedirs(ep_dir, exist_ok=True)
 
   print(f"  Exporting multi-view data to {ep_dir}...")
 
-  # Robot kinematics (episode-level)
-  # Per-camera data
   for cam_id, data in scene_constants["camera"].items():
     cam_dir = os.path.join(ep_dir, str(cam_id))
     os.makedirs(cam_dir, exist_ok=True)
 
-    # Videos: save all 4 streams (rectified + raw, left + right)
     video_keys = {
         "video_rgb": "video_left.mp4",
         "video_right": "video_right.mp4",
@@ -353,21 +283,17 @@ def export_depth(scene_constants, export_root=os.path.join(OUTPUT_ROOT, "depth")
       if key in data and len(data[key]) > 0:
         _write_mp4(os.path.join(cam_dir, filename), data[key])
 
-    # Depth: uint16 in millimeters
     if "original_raw_depth" in data:
-      # Wrist camera: save pre-injection backup as original_raw_depth.npz
       np.savez_compressed(
           os.path.join(cam_dir, "original_raw_depth.npz"),
           depth=(data["original_raw_depth"] * 1000).astype(np.uint16),
       )
     if "raw_depth" in data:
-      # raw_depth.npz = best available depth (refined for wrist, original for others)
       np.savez_compressed(
           os.path.join(cam_dir, "raw_depth.npz"),
           depth=(data["raw_depth"] * 1000).astype(np.uint16),
       )
 
-    # Gripper intermediate artifacts (wrist camera only)
     if "sam_real_masks" in data:
       np.savez_compressed(
           os.path.join(cam_dir, "gripper_mask.npz"),
@@ -382,29 +308,22 @@ def export_depth(scene_constants, export_root=os.path.join(OUTPUT_ROOT, "depth")
           depth=gripper_uint16,
       )
 
-    # Full calibration: all K matrices + distortion + baseline
     if "zed_calibration" in data:
       calib = data["zed_calibration"]
       np.savez(
           os.path.join(cam_dir, "calibration.npz"),
-          # Rectified (calibrated)
           K_calib_left=calib["calibrated"]["K"],
           K_calib_right=calib["calibrated"]["K_right"],
           disto_calib_left=calib["calibrated"]["disto"],
           disto_calib_right=calib["calibrated"]["disto_right"],
-          # Raw (distorted)
           K_raw_left=calib["raw"]["K"],
           K_raw_right=calib["raw"]["K_right"],
           disto_raw_left=calib["raw"]["disto"],
           disto_raw_right=calib["raw"]["disto_right"],
-          # Stereo baseline
           baseline=np.array(data["baseline"], dtype=np.float32),
       )
 
 
-  # Written last, after every camera directory: its presence at the episode
-  # root is what the runner treats as "this episode finished", so a run
-  # killed part-way must not leave it behind.
   robot = scene_constants["robot"]
   if robot:
     robot_save = {}
@@ -416,7 +335,6 @@ def export_depth(scene_constants, export_root=os.path.join(OUTPUT_ROOT, "depth")
       robot_save["T_ee_base_all"] = robot["T_ee_base_all"].astype(np.float32)
     if "T_cam_ee_init" in robot:
       robot_save["T_cam_ee_init"] = robot["T_cam_ee_init"].astype(np.float32)
-    # Include metadata
     meta = scene_constants["meta"]
     if meta.get("valid_indices") is not None:
       robot_save["valid_indices"] = meta["valid_indices"]
@@ -427,10 +345,8 @@ def export_depth(scene_constants, export_root=os.path.join(OUTPUT_ROOT, "depth")
   return ep_dir
 
 
-# Execution & Batched Slicing
 def process_episode(ep_id, models, dbs, raw_root, min_frames, max_frames,
                     export_root):
-  """Decode one episode, infer depth, refine the gripper, and export."""
   s2m2_model, sam_predictor, run_stereo_matching, device = models
   id_to_path, serials_db, keep_ranges = dbs
 
@@ -438,16 +354,11 @@ def process_episode(ep_id, models, dbs, raw_root, min_frames, max_frames,
       ep_id, raw_root, id_to_path, serials_db, keep_ranges)
   scene_constants = extract_svo_video(
       scene_constants, min_frames=min_frames, max_frames=max_frames)
-  if not any("video_rgb" in data
-             for data in scene_constants["camera"].values()):
-    raise RuntimeError("no valid video streams extracted")
-
   scene_constants = parse_robot_kinematics(scene_constants)
   scene_constants = align_temporal_streams(scene_constants)
   scene_constants = compute_stereo_depth(
       scene_constants, s2m2_model, run_stereo_matching, device)
 
-  # Keep the pre-injection wrist depth so the refinement stays inspectable.
   wrist_serial = scene_constants["meta"].get("wrist_serial")
   wrist_data = scene_constants["camera"].get(wrist_serial or "", {})
   if "raw_depth" in wrist_data:
@@ -481,9 +392,6 @@ if __name__ == "__main__":
       os.path.join(INPUT_ROOT, "robotics", "droid_raw", "1.0.1"))
 
   target = shard_episodes(valid_ids, args.rank, args.world_size, args.limit)
-  # An episode counts as done only once robot.npz is there: export_depth writes
-  # it last, after every camera directory, so a run killed part-way leaves the
-  # episode directory without it. Checked for this rank's share only.
   export_abs = os.path.abspath(os.path.expanduser(args.export_root))
   done = {ep for ep in target
           if os.path.exists(os.path.join(export_abs, ep, "robot.npz"))}

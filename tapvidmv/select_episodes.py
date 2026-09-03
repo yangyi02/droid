@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""Select evaluation episodes from pre-computed metrics CSV.
-
-Reads the merged metrics CSV produced by compute_metrics.py and
-applies stratified sampling to select a diverse, high-quality subset.
-
-Usage:
-  # Select 50 episodes (reads from default metrics output directory)
-  python tapvidmv/select_episodes.py --n 50
-
-  # Select with stricter quality thresholds
-  python tapvidmv/select_episodes.py --n 50 \
-    --max_chamfer 0.05 --max_depth_residual 20
-
-Output:
-  episodes_eval50.txt — selected episode IDs, one per line.
-  episodes_eval50_details.csv — full metrics for selected episodes.
-"""
-
 import argparse
 import csv
 import os
@@ -24,16 +6,12 @@ import sys
 
 import numpy as np
 
-# tapvidmv/ sits one level below the repo root, so running this file directly
-# puts tapvidmv/ — not the repo root — on sys.path. Prepend the repo root so
-# `core` resolves the same way it does for the top-level pipeline scripts.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.io import OUTPUT_ROOT
 
 
 def load_metrics(csv_path):
-  """Load metrics CSV into list of dicts."""
   with open(csv_path, "r") as f:
     reader = csv.DictReader(f)
     rows = list(reader)
@@ -42,7 +20,6 @@ def load_metrics(csv_path):
 
 
 def safe_float(val, default=float("nan")):
-  """Convert string to float, handling nan/missing."""
   if val is None or val == "" or val == "nan":
     return default
   try:
@@ -53,13 +30,6 @@ def safe_float(val, default=float("nan")):
 
 def apply_quality_filter(rows, max_chamfer, max_depth_residual,
                          min_static_points, min_frames, min_ee_travel):
-  """Filter episodes by quality thresholds and a floor on robot motion.
-
-  The motion floor is not a quality test, it is a usefulness test. An episode
-  where the arm never moves scores *better* on chamfer and depth residual --
-  no motion blur, no FK error to accumulate -- so quality thresholds alone
-  actively favour it, while it is worth nothing to a tracking benchmark.
-  """
   filtered = []
   n_frozen = 0
   for row in rows:
@@ -69,11 +39,9 @@ def apply_quality_filter(rows, max_chamfer, max_depth_residual,
     n_frames = safe_float(row.get("n_frames"), 0)
     ee_travel = safe_float(row.get("ee_travel_m"), 0)
 
-    # Skip episodes with missing critical metrics
     if np.isnan(chamfer) or np.isnan(depth_res):
       continue
 
-    # Apply thresholds
     if chamfer > max_chamfer:
       continue
     if depth_res > max_depth_residual:
@@ -94,18 +62,6 @@ def apply_quality_filter(rows, max_chamfer, max_depth_residual,
 
 
 def _spread_order(n):
-  """Indices 0..n-1 ordered so that every prefix is spread across the range.
-
-  Bisection, breadth first: the median comes first, then the two quartiles,
-  then the eighths. Taking the first k of this order samples the range evenly
-  for any k, which is what a scene needs when its quota is not known until the
-  round-robin has run.
-
-  Deliberately not `linspace(0, n-1, k)`: its first index is always 0, so a
-  scene with a quota of one always contributes its slowest episode. That is the
-  bug this selection used to have -- with 13 site groups it guaranteed 13
-  minimum-motion episodes in a set of 50.
-  """
   order, segments = [], [(0, n - 1)]
   while segments:
     nxt = []
@@ -118,48 +74,20 @@ def _spread_order(n):
 
 
 def scene_of(row):
-  """The scene id: the middle field of a DROID episode id.
-
-  `AUTOLab+0d4edc83+2023-10-21-19h-02m-53s` -> `0d4edc83`. Episodes sharing it
-  come from one session: same table, same camera rig, usually the same task.
-  Two of them are near-duplicates for a tracking benchmark, however different
-  their metrics look, which is why this and not `site` is the unit to spread
-  across -- there are 62 scenes against 13 sites.
-  """
   parts = row["episode_id"].split("+")
   return parts[1] if len(parts) >= 2 else row.get("site", "UNKNOWN")
 
 
 def sample_diverse(rows, n_target):
-  """Pick `n_target` episodes spread as widely as possible over scenes.
-
-  Quotas are equal per scene, not proportional to scene size: proportional
-  quotas hand most of the budget to whichever session happened to record the
-  most episodes, which is the opposite of what a benchmark wants. Scenes are
-  filled round-robin, so a scene too small for its quota simply passes the
-  remainder on to the others.
-
-  Within a scene, episodes are taken evenly spaced along end-effector travel,
-  which spans the range of motion present there. That is only safe because the
-  quality filter has already dropped the barely-moving episodes: taking the
-  lowest-travel episode of every group is exactly what made the old selection
-  fill up with frozen arms.
-
-  There is no randomness left here, so the same metrics CSV always yields the
-  same set.
-  """
   by_scene = {}
   for row in rows:
     by_scene.setdefault(scene_of(row), []).append(row)
 
-  # Order each scene's episodes so that any prefix is spread over that scene's
-  # range of motion instead of clustered at one end.
   ordered = {}
   for scene, scene_rows in by_scene.items():
     scene_rows.sort(key=lambda r: safe_float(r.get("ee_travel_m"), 0))
     ordered[scene] = [scene_rows[i] for i in _spread_order(len(scene_rows))]
 
-  # Round-robin across scenes, largest first so ties break predictably.
   scenes = sorted(ordered, key=lambda s: (-len(ordered[s]), s))
   selected, round_idx = [], 0
   while len(selected) < n_target:
@@ -207,18 +135,13 @@ def main():
                       help="Output directory (default: tapvidmv/, next to this script)")
   args = parser.parse_args()
 
-  # Load
   rows = load_metrics(os.path.expanduser(args.input))
 
-  # Filter
   filtered = apply_quality_filter(
       rows, args.max_chamfer, args.max_depth_residual,
       args.min_static_points, args.min_frames, args.min_ee_travel)
 
   if len(filtered) < args.n:
-    print(f"  [WARN] Only {len(filtered)} episodes pass filter, "
-          f"requested {args.n}. Relaxing thresholds...")
-    # Relax thresholds progressively
     for mult in [1.5, 2.0, 3.0, 5.0]:
       filtered = apply_quality_filter(
           rows,
@@ -229,7 +152,6 @@ def main():
       if len(filtered) >= args.n:
         break
 
-  # Select
   selected = sample_diverse(filtered, args.n)
 
   output_dir = os.path.expanduser(args.output_dir)
@@ -240,7 +162,6 @@ def main():
       f.write(row["episode_id"] + "\n")
   print(f"\nEpisode list: {list_path}")
 
-  # Write detailed CSV
   csv_path = os.path.join(output_dir, f"episodes_eval{args.n}_details.csv")
   with open(csv_path, "w", newline="") as f:
     writer = csv.DictWriter(f, fieldnames=sorted(selected[0].keys()))
@@ -249,7 +170,6 @@ def main():
       writer.writerow(row)
   print(f"Detailed CSV: {csv_path}")
 
-  # Summary
   print(f"\nSelected {len(selected)} episodes")
   sites = {}
   for row in selected:

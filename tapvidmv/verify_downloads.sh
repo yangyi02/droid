@@ -1,7 +1,6 @@
 #!/bin/bash
 set -uo pipefail
 
-# episodes_eval50.txt sits next to this script.
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 URL="https://storage.googleapis.com/dm-tapnet/mv-tap/droid/tapvidmv"

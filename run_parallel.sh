@@ -1,9 +1,4 @@
 #!/bin/bash
-# Multi-GPU parallel runner for the DROID pipeline stages.
-# Usage:
-#   bash run_parallel.sh --mode depth               # all episodes
-#   bash run_parallel.sh --mode tracks --limit 32   # first 32 episodes only
-
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 declare -A SCRIPTS=(
@@ -24,16 +19,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Only look up a mode that was actually given: an empty associative-array
-# subscript is an error in bash, not an empty result.
 SCRIPT=${MODE:+${SCRIPTS[$MODE]}}
 [ -n "$SCRIPT" ] || {
     echo "❌ Usage: bash run_parallel.sh --mode <${!SCRIPTS[*]}> [--limit N]" >&2
     exit 1
 }
 
-# One worker per GPU, except CPU-only tracks, which takes 75% of the cores
-# so there is headroom for IO.
 if [[ "$MODE" == tracks ]]; then
     JOBS=$(( $(nproc) * 3 / 4 ))
 else

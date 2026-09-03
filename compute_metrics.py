@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-"""Batch quality metrics evaluation for DROID episodes.
-
-Evaluates pre-computed pipeline outputs (depth, extrinsics, tracks) to
-produce a metrics CSV for episode selection.  Designed for parallel
-execution on GCP with multi-GPU sharding.
-
-Contains all metric computation functions (formerly in core/metrics.py)
-and extrinsics evaluation functions (formerly in core/pybullet_extrinsics.py).
-
-Usage:
-  # Single GPU — all episodes
-  python compute_metrics.py
-
-  # 4-GPU sharding (run each on a separate GPU)
-  python compute_metrics.py --rank 0 --world_size 4
-  python compute_metrics.py --rank 1 --world_size 4
-  python compute_metrics.py --rank 2 --world_size 4
-  python compute_metrics.py --rank 3 --world_size 4
-
-Output:
-  metrics.csv — one row per episode with ~30+ metric columns.
-  All ranks append to the same file (file-locked), no merge step needed.
-"""
-
 import argparse
 import csv
 import fcntl
@@ -46,30 +22,9 @@ from core.runner import (add_sharding_args, list_episode_dirs,
                          run_episodes, shard_episodes)
 
 
-# ===========================================================================
-# PyBullet-based extrinsics evaluation helpers
-# (from core/pybullet_extrinsics.py)
-# ===========================================================================
-
 @torch.no_grad()
 def evaluate_extrinsics(scene_constants, scene_state, device,
                         pb_renderer=None):
-  """Compute extrinsics quality metrics without re-running optimization.
-
-  Uses PyBullet rendering to compute robot depth losses. compute_extrinsics
-  now optimises against the same renderer, so this is no longer an independent
-  yardstick for the robot columns -- Chamfer and bg overlap, which read only
-  the observed depth, are.
-
-  Args:
-    scene_constants: Scene data dict.
-    scene_state: Current extrinsics state.
-    device: Torch device.
-    pb_renderer: Optional PyBulletRenderer for robot depth losses.
-
-  Returns:
-    Dict with metrics: chamfer_total, robot_loss_*, bg_overlap_pct.
-  """
   wrist_cam = scene_constants["meta"]["wrist_serial"]
   ext_cams = [c for c in scene_constants["camera"].keys() if c != wrist_cam]
   cam1, cam2 = ext_cams[0], ext_cams[1]
@@ -78,7 +33,6 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
 
   metrics = {}
 
-  # --- Robot depth losses (PyBullet rendering path) ---
   if pb_renderer is not None:
     for cam_id, key_prefix in [(cam1, "cam1"), (cam2, "cam2"),
                                 (wrist_cam, "wrist")]:
@@ -102,9 +56,8 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
                 T_cam_np, K_np, d_obs, pb_renderer, device)
             if pts is None:
               continue
-            # Convert camera-frame homogeneous (4, N) → EE-frame (N, 3)
             T_world_to_ee = np.linalg.inv(T_ee_all[t])
-            pts_world = (T_cam_np @ pts)[:3, :].T  # → (N, 3)
+            pts_world = (T_cam_np @ pts)[:3, :].T
             pts_ee = (T_world_to_ee[:3, :3] @ pts_world.T
                       + T_world_to_ee[:3, 3:4]).T
             cache_X.append(
@@ -138,7 +91,6 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
       except Exception as e:
         metrics[f"robot_loss_{key_prefix}"] = float("nan")
 
-  # --- Chamfer losses (per-frame loop to avoid OOM on torch.cdist) ---
   try:
     T1 = torch.tensor(
         scene_state[cam1]["base_extrinsic"],
@@ -164,8 +116,7 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
 
       T_ee_t = torch.tensor(T_ee_all[t], dtype=torch.float32, device=device)
 
-      # Transform to world frame: (4,4) @ (4, N) -> take xyz -> (N, 3)
-      w1 = (T1 @ pc1)[:3, :].T.unsqueeze(0)    # (1, N, 3)
+      w1 = (T1 @ pc1)[:3, :].T.unsqueeze(0)
       w2 = (T2 @ pc2)[:3, :].T.unsqueeze(0)
       ww = ((T_ee_t @ Tw) @ pcw)[:3, :].T.unsqueeze(0)
 
@@ -181,9 +132,6 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
       sum_o2w += o2w
       n_valid += 1
 
-    if n_valid == 0:
-      raise ValueError("No valid frames for Chamfer evaluation")
-
     metrics["chamfer_12"] = sum_l12 / n_valid
     metrics["chamfer_1w"] = sum_l1w / n_valid
     metrics["chamfer_2w"] = sum_l2w / n_valid
@@ -197,7 +145,6 @@ def evaluate_extrinsics(scene_constants, scene_state, device,
 
 
 def print_metrics(metrics, stage_name=""):
-  """Pretty-print key metrics in a compact one-block summary."""
   chamfer = metrics.get("chamfer_total", float("nan"))
   rob1 = metrics.get("robot_loss_cam1", float("nan"))
   rob2 = metrics.get("robot_loss_cam2", float("nan"))
@@ -232,29 +179,7 @@ def print_metrics(metrics, stage_name=""):
   print()
 
 
-# ===========================================================================
-# Quality metrics (formerly core/metrics.py)
-# ===========================================================================
-
-# 1. Depth consistency (track 3D → projected depth vs observed depth)
-
 def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
-  """Per-point depth residual in millimetres.
-
-  Projects 3D world points into a camera view and compares the projected
-  depth against the observed (sensor) depth at each pixel.
-
-  Args:
-    pts_3d: (N, 3) world-space 3D points.
-    K: (3, 3) camera intrinsic matrix.
-    extrinsics: (4, 4) camera-to-world transform (c2w).
-    raw_depth: (H, W) observed depth map in metres.
-    w_img: image width.
-    h_img: image height.
-
-  Returns:
-    np.ndarray of residual errors in mm (variable length), or empty array.
-  """
   if len(pts_3d) == 0:
     return np.array([], dtype=np.float32)
   u_proj, v_proj, z_proj = project_points(pts_3d, K, extrinsics)
@@ -270,22 +195,6 @@ def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
 def compute_depth_residual_per_camera(
     scene_constants, scene_state,
     final_traj_3d, final_per_cam_vis, n_static, n_robot):
-  """Compute per-camera raw depth residual error arrays.
-
-  Returns per-camera breakdowns suitable for visualization (e.g. histograms).
-
-  Args:
-    scene_constants: Scene data dict.
-    scene_state: Extrinsics state dict.
-    final_traj_3d: (T, N, 3) 3D trajectories.
-    final_per_cam_vis: dict of (T, N) visibility per camera.
-    n_static: number of static background points.
-    n_robot: number of robot points.
-
-  Returns:
-    Dict of cam_id → {'static': np.ndarray, 'robot': np.ndarray,
-                       'all': np.ndarray} with raw error values in mm.
-  """
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = final_traj_3d.shape[0]
 
@@ -327,17 +236,6 @@ def compute_depth_residual_per_camera(
 def compute_track_depth_consistency(
     scene_constants, scene_state,
     final_traj_3d, final_per_cam_vis, n_static, n_robot):
-  """Compute global depth consistency stats (aggregated across all cameras).
-
-  Calls ``compute_depth_residual_per_camera`` and aggregates into
-  median/mean summary statistics suitable for CSV export.
-
-  Returns:
-    Dict with keys:
-      depth_residual_static_median_mm, depth_residual_static_mean_mm,
-      depth_residual_robot_median_mm, depth_residual_robot_mean_mm,
-      depth_residual_overall_median_mm, depth_residual_overall_mean_mm
-  """
   per_camera = compute_depth_residual_per_camera(
       scene_constants, scene_state,
       final_traj_3d, final_per_cam_vis, n_static, n_robot)
@@ -366,20 +264,8 @@ def compute_track_depth_consistency(
   }
 
 
-# 2. Track visibility statistics
-
 def compute_track_visibility_stats(
     final_per_cam_vis, n_static, n_robot):
-  """Compute per-category visibility percentages.
-
-  Args:
-    final_per_cam_vis: dict of cam_id → (T, N) bool arrays.
-    n_static: number of static points.
-    n_robot: number of robot points.
-
-  Returns:
-    Dict with visibility stats per camera and overall.
-  """
   stats = {}
   all_static_vis, all_robot_vis, all_total_vis = [], [], []
 
@@ -406,37 +292,17 @@ def compute_track_visibility_stats(
   return stats
 
 
-# 3. Reprojection error (3D → 2D projected vs stored 2D tracks)
-
 def compute_reprojection_error(traj_3d, traj_2d, vis_2d,
                                intrinsics, extrinsics_w2c):
-  """Vectorized 2D reprojection error across all frames.
-
-  Projects 3D world points into camera space and compares against
-  stored 2D track positions.
-
-  Args:
-    traj_3d: (T, N, 3) world-space 3D trajectories.
-    traj_2d: (T, N, 2) stored 2D track positions.
-    vis_2d: (T, N) bool visibility mask.
-    intrinsics: (4,) array [fx, fy, cx, cy].
-    extrinsics_w2c: (T, 4, 4) world-to-camera transforms.
-
-  Returns:
-    1-D np.ndarray of per-measurement reprojection errors in pixels,
-    or empty array if no valid measurements.
-  """
   T, N, _ = traj_3d.shape
   fx, fy, cx, cy = intrinsics
 
-  # Homogeneous coords: (T, N, 4)
   ones = np.ones((T, N, 1), dtype=traj_3d.dtype)
   pts_homo = np.concatenate([traj_3d, ones], axis=2)
 
-  # Batch transform: (T, 4, 4) @ (T, N, 4) -> (T, N, 4)
   pts_cam = np.einsum('tij,tnj->tni', extrinsics_w2c, pts_homo)
 
-  z = pts_cam[:, :, 2]  # (T, N)
+  z = pts_cam[:, :, 2]
   valid = vis_2d & (z > 0.01)
 
   if not valid.any():
@@ -455,21 +321,6 @@ def compute_reprojection_error(traj_3d, traj_2d, vis_2d,
 
 def compute_reprojection_stats(traj_3d, per_cam_tracks_2d, tracks_root,
                                episode_id):
-  """Compute reprojection error stats across all cameras.
-
-  Loads per-camera intrinsics and extrinsics_w2c from disk, then
-  computes reprojection error for each camera.
-
-  Args:
-    traj_3d: (T, N, 3) world-space 3D trajectories.
-    per_cam_tracks_2d: dict of cam_id -> {'traj_2d': (T,N,2), 'vis_2d': (T,N)}
-        or None to load from tracks_root.
-    tracks_root: path to tracks output directory.
-    episode_id: episode identifier.
-
-  Returns:
-    Dict with reproj_mean_px, reproj_median_px, reproj_p95_px.
-  """
   ep_dir = os.path.abspath(
       os.path.expanduser(os.path.join(tracks_root, episode_id)))
 
@@ -511,34 +362,16 @@ def compute_reprojection_stats(traj_3d, per_cam_tracks_2d, tracks_root,
   }
 
 
-# 4. Robot motion statistics
-
 def compute_motion_stats(scene_constants):
-  """Compute robot motion amplitude metrics from joint/gripper data.
-
-  Args:
-    scene_constants: Scene data dict (must have 'robot' sub-dict).
-
-  Returns:
-    Dict with motion metrics:
-      joint_range_mean_rad: mean per-joint range (max - min) in radians.
-      joint_range_max_rad: max joint range across all 7 joints.
-      joint_std_mean_rad: mean per-joint std dev.
-      gripper_range: range of gripper opening width.
-      ee_travel_m: total end-effector path length in metres.
-      n_frames: number of frames.
-  """
   robot = scene_constants["robot"]
-  joints = robot["joint_positions"]  # (T, 7)
-  gripper = robot["gripper_positions"]  # (T,)
+  joints = robot["joint_positions"]
+  gripper = robot["gripper_positions"]
 
-  # Joint motion
-  joint_ranges = joints.max(axis=0) - joints.min(axis=0)  # (7,)
-  joint_stds = joints.std(axis=0)  # (7,)
+  joint_ranges = joints.max(axis=0) - joints.min(axis=0)
+  joint_stds = joints.std(axis=0)
 
-  # End-effector travel distance
-  T_ee_all = robot["T_ee_base_all"]  # (T, 4, 4)
-  ee_positions = T_ee_all[:, :3, 3]  # (T, 3)
+  T_ee_all = robot["T_ee_base_all"]
+  ee_positions = T_ee_all[:, :3, 3]
   ee_deltas = np.linalg.norm(np.diff(ee_positions, axis=0), axis=1)
   ee_travel = float(np.sum(ee_deltas))
 
@@ -552,22 +385,7 @@ def compute_motion_stats(scene_constants):
   }
 
 
-# 5. Scene metadata
-
 def compute_scene_metadata(scene_constants):
-  """Extract scene-level metadata for stratification.
-
-  Args:
-    scene_constants: Scene data dict.
-
-  Returns:
-    Dict with:
-      site: lab/institution name (e.g. "TRI", "ILIAD").
-      robot_id: robot serial hash.
-      n_cameras: number of cameras.
-      image_resolution: "HxW" string.
-      wrist_serial: wrist camera serial.
-  """
   ep_id = scene_constants["meta"]["episode_id"]
   parts = ep_id.split("+")
   site = parts[0] if parts else "UNKNOWN"
@@ -576,8 +394,6 @@ def compute_scene_metadata(scene_constants):
   camera_ids = list(scene_constants["camera"].keys())
   first_cam = scene_constants["camera"][camera_ids[0]]
 
-  # Get image dimensions — prefer raw_depth (always available),
-  # fall back to video_rgb or first_frame_rgb.
   if "raw_depth" in first_cam:
     h, w = first_cam["raw_depth"][0].shape[:2]
   elif "video_rgb" in first_cam:
@@ -596,20 +412,7 @@ def compute_scene_metadata(scene_constants):
   }
 
 
-# 6. Depth coverage statistics
-
 def compute_depth_coverage_stats(scene_constants):
-  """Compute depth map coverage and statistics per camera.
-
-  Measures what fraction of pixels have valid (> 0.05m) depth.
-  A proxy for scene complexity and depth quality.
-
-  Args:
-    scene_constants: Scene data dict.
-
-  Returns:
-    Dict with depth coverage stats per camera and overall.
-  """
   stats = {}
   all_coverage = []
 
@@ -618,7 +421,7 @@ def compute_depth_coverage_stats(scene_constants):
     if "raw_depth" not in cam_data:
       continue
 
-    depth = cam_data["raw_depth"]  # (T, H, W)
+    depth = cam_data["raw_depth"]
     valid = (depth > 0.05) & (depth < 10.0)
     coverage = float(valid.mean() * 100)
     median_depth = float(np.median(depth[valid])) if valid.any() else float("nan")
@@ -634,47 +437,21 @@ def compute_depth_coverage_stats(scene_constants):
   return stats
 
 
-# 7. Aggregate all metrics for one episode
-
 def evaluate_episode(scene_constants, scene_state, device,
                      final_traj_3d=None, final_per_cam_vis=None,
                      n_static=0, n_robot=0,
                      tracks_root=None,
                      compute_extrinsics_metrics=True,
                      pb_renderer=None):
-  """Compute all quality metrics for a single episode.
-
-  Orchestrates all metric functions into a single flat dict suitable
-  for CSV export.
-
-  Args:
-    scene_constants: Scene data dict.
-    scene_state: Extrinsics state dict.
-    device: Torch device.
-    final_traj_3d: (T, N, 3) 3D trajectories, or None to skip track metrics.
-    final_per_cam_vis: dict of (T, N) visibility, or None.
-    n_static: number of static points.
-    n_robot: number of robot points.
-    tracks_root: path to tracks directory (for reprojection error).
-    compute_extrinsics_metrics: whether to compute extrinsics quality.
-    pb_renderer: optional PyBulletRenderer for robot depth losses.
-
-  Returns:
-    Flat dict mapping metric names to float values.
-  """
   ep_id = scene_constants["meta"]["episode_id"]
   metrics = {"episode_id": ep_id}
 
-  # --- Scene metadata ---
   metrics.update(compute_scene_metadata(scene_constants))
 
-  # --- Motion stats ---
   metrics.update(compute_motion_stats(scene_constants))
 
-  # --- Depth coverage ---
   metrics.update(compute_depth_coverage_stats(scene_constants))
 
-  # --- Extrinsics metrics (chamfer, robot depth loss) ---
   if compute_extrinsics_metrics:
     try:
       ext_metrics = evaluate_extrinsics(
@@ -684,23 +461,19 @@ def evaluate_episode(scene_constants, scene_state, device,
     except Exception as e:
       metrics["extrinsics_error"] = str(e)
 
-  # --- Track metrics ---
   if final_traj_3d is not None and final_per_cam_vis is not None:
     metrics["n_static"] = n_static
     metrics["n_robot"] = n_robot
     metrics["n_total_tracks"] = n_static + n_robot
     metrics["n_track_frames"] = final_traj_3d.shape[0]
 
-    # Depth consistency
     metrics.update(compute_track_depth_consistency(
         scene_constants, scene_state,
         final_traj_3d, final_per_cam_vis, n_static, n_robot))
 
-    # Visibility
     metrics.update(compute_track_visibility_stats(
         final_per_cam_vis, n_static, n_robot))
 
-    # Reprojection error (requires saved intrinsics/extrinsics_w2c on disk)
     if tracks_root is not None:
       try:
         reproj = compute_reprojection_stats(
@@ -712,20 +485,7 @@ def evaluate_episode(scene_constants, scene_state, device,
   return metrics
 
 
-# ===========================================================================
-# IO helpers
-# ===========================================================================
-
 def load_track_data(episode_id, tracks_root):
-  """Load Stage 3 outputs for one episode.
-
-  Returns:
-    Dict with traj_3d (T, N, 3), vis_global (T, N), per_cam_tracks and
-    per_cam_vis keyed by camera, and the n_static / n_robot split -- or None
-    if the episode has no usable tracks. Everything here comes out of the two
-    npz files anyway, so it is all returned rather than the subset any one
-    caller happens to need.
-  """
   ep_dir = os.path.abspath(
       os.path.expanduser(os.path.join(tracks_root, episode_id)))
 
@@ -759,23 +519,12 @@ def load_track_data(episode_id, tracks_root):
   }
 
 
-# ===========================================================================
-# Main entry points
-# ===========================================================================
-
 def evaluate_single_episode(episode_id, depth_root, extrinsics_root,
                             tracks_root, device, pb_renderer):
-  """Evaluate all metrics for one episode.
-
-  Returns:
-    dict of metric_name → value, or None on failure.
-  """
-  # Load depth data (with video for depth coverage stats)
   scene_constants = load_depth_data(
       episode_id, depth_root, load_video="first_frame")
   scene_state = load_extrinsics(scene_constants, extrinsics_root)
 
-  # Load track data (if available)
   tracks = load_track_data(episode_id, tracks_root)
   has_tracks = tracks is not None
   final_traj_3d = tracks["traj_3d"] if has_tracks else None
@@ -783,7 +532,6 @@ def evaluate_single_episode(episode_id, depth_root, extrinsics_root,
   n_static = tracks["n_static"] if has_tracks else 0
   n_robot = tracks["n_robot"] if has_tracks else 0
 
-  # Compute all metrics
   metrics = evaluate_episode(
       scene_constants, scene_state, device,
       final_traj_3d=final_traj_3d,
@@ -800,7 +548,6 @@ def evaluate_single_episode(episode_id, depth_root, extrinsics_root,
 
 
 def _read_done(csv_path):
-  """Episode ids already present in the shared metrics CSV."""
   if not (os.path.exists(csv_path) and os.path.getsize(csv_path) > 0):
     return set()
   with open(csv_path, "r") as f:
@@ -808,11 +555,6 @@ def _read_done(csv_path):
 
 
 def _append_row(csv_path, metrics):
-  """Append one row under an exclusive lock, writing the header if first.
-
-  Every rank appends to the same file, so the lock is what keeps two rows from
-  interleaving and the header from being written twice.
-  """
   with open(csv_path, "a", newline="") as f:
     fcntl.flock(f, fcntl.LOCK_EX)
     f.seek(0, 2)
@@ -851,7 +593,6 @@ def main():
   csv_path = os.path.join(output_dir, "metrics.csv")
   fail_path = os.path.join(output_dir, "failures.txt")
 
-  # An episode is evaluable once it has both depth and extrinsics.
   available = list_episode_dirs(args.depth_root) & list_episode_dirs(
       args.extrinsics_root)
   if args.require_tracks:
@@ -870,9 +611,6 @@ def main():
     except Exception as e:
       _log_failure(fail_path, ep_id, e)
       raise
-    if metrics is None:
-      _log_failure(fail_path, ep_id, "no data")
-      raise RuntimeError("no data")
     _append_row(csv_path, metrics)
     print(f"  [OK] Done in {time.time() - t0:.1f}s | "
           f"chamfer={metrics.get('chamfer_total', float('nan')):.4f} | "

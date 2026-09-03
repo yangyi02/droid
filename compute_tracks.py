@@ -1,28 +1,3 @@
-"""DROID Stage 3 v2: Static Background + Robot Track Computation.
-
-Key design:
-  - **Single grid at frame 0**: One uniform grid (e.g., 32×32) per camera at t=0.
-    Points on robot -> URDF FK tracking. Points on background -> static prior.
-  - **No tracker model** (CoTracker/TAPNext) needed.
-  - **Static prior**: Background points are assumed stationary in world
-    coordinates. 2D tracks are obtained by projecting fixed 3D positions
-    through per-frame extrinsics.
-  - **Full video length**: No truncation.
-  - **Cross-view depth consensus at t=0**: Background 3D positions are
-    verified by nearest-neighbor matching between cameras.
-
-Two point types:
-  Track A (Background/Static): Grid at t=0 -> cross-view consensus -> fixed 3D ->
-      project to 2D per-view per-frame.
-  Track B (Robot): Grid at t=0 -> URDF forward kinematics.
-
-Output format (same as v1 for downstream compatibility):
-  final_traj_3d:        np.float32 (T, N, 3)   world coordinates
-  final_vis_global:     np.bool_   (T, N)       global visibility
-  final_per_cam_tracks: {cam_id: np.float32 (T, N, 2)}  per-view 2D tracks
-  final_per_cam_vis:    {cam_id: np.bool_   (T, N)}      per-view visibility
-"""
-
 import argparse
 import os
 
@@ -37,8 +12,6 @@ from core.runner import (add_sharding_args, list_episode_dirs,
 from core.tracking import URDFKinematicsTracker
 
 
-# Phase 1: Extract static background 3D points at frame 0
-
 def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
                                   match_radius=0.005,
                                   num_points=None,
@@ -46,63 +19,16 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
                                   tau=0.015,
                                   min_run_frames=30,
                                   flicker=0.10):
-  """Find reliable static background 3D points via cross-view depth consensus.
-
-  All queries happen at frame 0 only. For each camera (including wrist):
-    1. Use ALL pixels at frame 0 (dense sampling).
-    2. Filter out robot-occupied pixels.
-    3. Unproject remaining pixels to 3D using depth at t=0.
-
-  Then cross-view depth reprojection verifies which 3D points are consistent
-  across views. A point is verified if at least one other camera's depth map
-  agrees with its predicted depth.
-
-  Finally, candidates are verified across ALL frames with the signed depth gap
-  (see `_measure_depth_gaps`). One measurement feeds two independent verdicts:
-  a point goes if its support left (some camera saw it on the surface on the
-  query frame, then saw past it for `min_run_frames` consecutive frames), or if
-  its visibility never settles (`flicker`). Only a *positive* gap — the camera
-  seeing past the point — is evidence against it; being occluded says nothing,
-  and an absolute-value test cannot tell the two apart.
-
-  Args:
-    scene_constants: Scene data dict.
-    scene_state: Extrinsics dict.
-    pb_renderer: PyBulletRenderer instance.
-    match_radius: Max depth discrepancy (m) for cross-view agreement.
-    safe_margin: Dilation kernel size for robot mask.
-    tau: Metres. Surface tolerance and the size of gap that counts as seeing
-        past a point; set by the thinnest object worth catching.
-    min_run_frames: Consecutive frames a camera must keep seeing past a point
-        before its support is called gone.
-    flicker: Drop a point whose line-of-sight flag flips on more than this
-        fraction of frames. None disables the test.
-
-  The defaults for tau, min_run_frames and flicker are the validated settings
-  from `filter_points.ipynb`; change them only against a
-  comparable check.
-
-  Returns:
-    static_pts_3d: (N, 3) world coordinates of static points.
-    static_rgb: (N, 3) RGB colors.
-  """
   camera_ids = list(scene_constants["camera"].keys())
   wrist_serial = scene_constants["meta"].get("wrist_serial")
 
-  # Static cameras used for multi-frame verification only
   static_cams = [c for c in camera_ids if c != wrist_serial]
-  if len(camera_ids) < 2:
-    print("  [WARN] Need at least 2 cameras for consensus.")
-    return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
-
   print(f"  Querying at frame 0 on all {len(camera_ids)} cameras (dense)")
 
-  # Build robot mask at t=0
   pb_renderer.update_robot_pose(
       scene_constants["robot"]["joint_positions"][0],
       gripper_state=scene_constants["robot"]["gripper_positions"][0])
 
-  # Unproject ALL pixels from each camera at t=0 (dense sampling)
   per_cam_pts = {}
   per_cam_rgb = {}
 
@@ -112,18 +38,16 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     K = cam_data["K_mat"]
     h_img, w_img = cam_data["video_rgb"][0].shape[:2]
 
-    # Robot mask (dilated)
     robot_mask = pb_renderer.render_mask(ext, K, w_img, h_img)
     kernel = np.ones((safe_margin, safe_margin), np.uint8)
     robot_mask_dilated = cv2.dilate(
         robot_mask.astype(np.uint8), kernel, iterations=1) > 0
 
-    # Dense pixel grid (all pixels)
     depth = cam_data["raw_depth"][0]
     is_env = ~robot_mask_dilated
     has_depth = (depth > 0.05) & (depth < 5.0)
     valid_mask = is_env & has_depth
-    vs, us = np.where(valid_mask)  # row, col indices
+    vs, us = np.where(valid_mask)
 
     if len(us) == 0:
       print(f"    [{cam_id}] 0 env pixels with depth")
@@ -133,10 +57,8 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     u_f = us.astype(np.float32)
     v_f = vs.astype(np.float32)
 
-    # Unproject to 3D
     pts_3d = unproject_points(u_f, v_f, z, K, ext)
 
-    # RGB colors
     rgb = cam_data["video_rgb"][0][vs, us]
 
     per_cam_pts[cam_id] = pts_3d
@@ -146,10 +68,6 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     print(f"    [{cam_id}] {len(us)} env / {n_robot} robot / "
           f"{n_no_depth} no-depth  (dense {w_img}×{h_img})")
 
-  # Cross-view depth reprojection consensus at t=0
-  # For each camera's grid points, project into every OTHER camera and
-  # check depth agreement. A point is verified if at least one other
-  # camera's depth map agrees with its predicted depth.
   all_verified_pts = []
   all_verified_rgb = []
 
@@ -159,7 +77,6 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
     if pts is None or len(pts) == 0:
       continue
 
-    # Check each point against all other cameras
     n_agree = np.zeros(len(pts), dtype=int)
 
     for dst_cam in camera_ids:
@@ -170,7 +87,6 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
       dst_K = dst_data["K_mat"]
       dst_h, dst_w = dst_data["video_rgb"][0].shape[:2]
 
-      # Project 3D points from src into dst view
       u_d, v_d, z_pred = project_points(pts, dst_K, dst_ext)
       ui_d = np.clip(np.round(u_d).astype(int), 0, dst_w - 1)
       vi_d = np.clip(np.round(v_d).astype(int), 0, dst_h - 1)
@@ -178,13 +94,11 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
       in_bounds = ((u_d >= 0) & (u_d < dst_w) &
                    (v_d >= 0) & (v_d < dst_h) & (z_pred > 0))
 
-      # Read dst depth and check consistency
       z_obs = dst_data["raw_depth"][0, vi_d, ui_d]
       depth_ok = (z_obs > 0.05) & (np.abs(z_pred - z_obs) < match_radius)
 
       n_agree += (in_bounds & depth_ok).astype(int)
 
-    # Keep points verified by at least 1 other camera
     verified = n_agree >= 1
     n_verified = np.sum(verified)
     print(f"    [{src_cam[:8]}] {n_verified}/{len(pts)} verified by cross-view depth")
@@ -193,11 +107,6 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
       all_verified_pts.append(pts[verified])
       all_verified_rgb.append(rgb[verified])
 
-  if not all_verified_pts:
-    print("  [WARN] No cross-view verified points found.")
-    return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
-
-  # Concatenate and dedup (same 3D point may be verified from multiple cameras)
   all_pts = np.concatenate(all_verified_pts, axis=0)
   all_rgb = np.concatenate(all_verified_rgb, axis=0)
   print(f"\n  Total verified points (pre-dedup): {len(all_pts)}")
@@ -207,8 +116,6 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
   if len(dedup_pts) < len(all_pts):
     print(f"  After dedup: {len(dedup_pts)}")
 
-  # Full-video signed-gap verification. One pass over the video measures the
-  # gap in every static camera; the two filters below read it independently.
   n_before = len(dedup_pts)
   stats = _measure_depth_gaps(dedup_pts, scene_constants, scene_state,
                               static_cams, pb_renderer, tau=tau,
@@ -229,7 +136,6 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
           f"{int(jitters.sum())} ({int((jitters & ~gone).sum())} for this "
           f"reason alone)")
 
-  # Subsample to target number of points
   if num_points is not None and len(dedup_pts) > num_points:
     rng = np.random.default_rng(42)
     idx = rng.choice(len(dedup_pts), num_points, replace=False)
@@ -242,13 +148,10 @@ def phase1_find_static_candidates(scene_constants, scene_state, pb_renderer,
 
 
 def _voxel_dedup(pts, rgb, voxel_size=0.01):
-  """Voxel-grid deduplication: keep median position per voxel."""
   if len(pts) == 0:
     return pts, rgb
 
-  # Quantize to voxel grid
   voxel_indices = np.floor(pts / voxel_size).astype(np.int64)
-  # Create unique key per voxel
   keys = (voxel_indices[:, 0].astype(np.int64) * 1000000 +
           voxel_indices[:, 1].astype(np.int64) * 1000 +
           voxel_indices[:, 2].astype(np.int64))
@@ -269,48 +172,6 @@ def _voxel_dedup(pts, rgb, voxel_size=0.01):
 
 def _measure_depth_gaps(pts, scene_constants, scene_state, static_cams,
                         pb_renderer, tau=0.015, safe_margin=15, patch=5):
-  """Measure the signed depth gap for every candidate point in every static camera.
-
-  Project a point into a camera and compare its own depth `z` against the depth
-  map at that pixel, `d`:
-
-      gap = d - z
-        gap ~ 0    the point is on the surface the camera sees   consistent
-        gap < 0    something nearer is in the way                occluded
-        gap > 0    the camera sees PAST the point                its support is gone
-
-  A present, unoccluded surface point *is* the surface the camera reports, so a
-  positive gap cannot happen for a correct point; occlusion only ever pushes the
-  gap negative. That asymmetry is what the two filters below are built on, and it
-  is why the sign is kept instead of an absolute value being taken.
-
-  The depth is read as a median over a `patch` x `patch` window so that one bad
-  pixel cannot decide anything, and pixels covered by the (dilated) robot mask are
-  treated as having no reading at all — they carry the arm's depth, not the
-  scene's.
-
-  The full (S, T, N) gap array is never materialised: only the running per-camera
-  statistics the filters need are carried from frame to frame.
-
-  Args:
-    pts: (N, 3) candidate world coordinates.
-    static_cams: Camera ids to measure in (the wrist camera moves, so its
-        extrinsics carry FK error and it is deliberately excluded).
-    tau: Metres. What counts as "on the surface", and how far past the surface a
-        camera must see before it is believed. Note that the gap a vanished
-        support opens up is the object's local *thickness*, so tau is set by the
-        thinnest object worth catching, not by the noise floor: a teapot lid gives
-        ~60mm at the knob and ~20mm across the dome. Below ~10mm stereo noise
-        starts coming through.
-    patch: Side of the median window used to read the depth map.
-
-  Returns:
-    Dict of (S, N) arrays, S = len(static_cams), plus n_frames:
-      streak:  longest run of CONSECUTIVE frames on which the camera saw past it
-      onquery: the camera saw it on the surface on the query frame
-      flips:   how many times the camera's clear-line-of-sight flag changed
-      seen:    frames on which the camera had a usable depth reading at all
-  """
   N = len(pts)
   S = len(static_cams)
   T_frames = len(scene_constants["camera"][static_cams[0]]["video_rgb"])
@@ -325,7 +186,7 @@ def _measure_depth_gaps(pts, scene_constants, scene_state, static_cams,
   kernel = np.ones((safe_margin, safe_margin), np.uint8)
   rad = patch // 2
   dy, dx = np.mgrid[-rad:rad + 1, -rad:rad + 1].reshape(2, -1)
-  min_valid = max(1, (patch * patch) // 6)      # enough of the window to trust it
+  min_valid = max(1, (patch * patch) // 6)
 
   for t in range(T_frames):
     pb_renderer.update_robot_pose(
@@ -344,9 +205,8 @@ def _measure_depth_gaps(pts, scene_constants, scene_state, static_cams,
 
       u, v, z_pred = project_points(pts, K, ext)
       ok = np.isfinite(u) & np.isfinite(v) & (z_pred > 0)
-      ui = np.round(np.where(ok, u, 0)).astype(int)   # round BEFORE bound-checking
+      ui = np.round(np.where(ok, u, 0)).astype(int)
       vi = np.round(np.where(ok, v, 0)).astype(int)
-      # the whole median window has to be inside the image
       ok &= ((ui >= rad) & (ui < w_img - rad) &
              (vi >= rad) & (vi < h_img - rad))
       ok &= ~robot_mask_dilated[np.clip(vi, 0, h_img - 1),
@@ -364,11 +224,9 @@ def _measure_depth_gaps(pts, scene_constants, scene_state, static_cams,
         gap[idx] = surface - z_pred[idx]
 
       measurable = np.isfinite(gap)
-      # NaN comparisons are False, so a frame with no reading breaks the run —
-      # which is what we want: a run only counts while the camera keeps looking.
       run[s] = np.where(measurable & (gap > tau), run[s] + 1, 0)
       streak[s] = np.maximum(streak[s], run[s])
-      vis = measurable & (gap >= -tau)          # this camera has a clear line to it
+      vis = measurable & (gap >= -tau)
       if t == 0:
         onquery[s] = measurable & (np.abs(gap) <= tau)
       else:
@@ -381,73 +239,16 @@ def _measure_depth_gaps(pts, scene_constants, scene_state, static_cams,
 
 
 def _filter_support_left(stats, min_run_frames=30):
-  """Its support left: the point is still where it was, the thing under it is not.
-
-  A camera fires if it saw the point on the surface on the query frame and then
-  saw past it for `min_run_frames` **consecutive** frames. Consecutive is what
-  separates a support that left from a pixel that is merely unreliable: a point
-  straddling a depth edge crosses the threshold and comes back all episode, while
-  a carried-away support opens a gap that stays open.
-
-  Any one camera firing is enough — once an object is gone only some viewpoints
-  have a clear line to the space it vacated, and a camera looking along the
-  surface sees almost no gap at all. For the same reason the query-frame test is
-  per camera and must stay that way: pooling it lets a camera that never had a
-  clear view of the point vouch for one that did.
-
-  Returns:
-    (N,) bool, True = remove.
-  """
   return ((stats["streak"] >= min_run_frames) & stats["onquery"]).any(axis=0)
 
 
 def _filter_visibility_flicker(stats, flicker=0.10):
-  """Its visibility will not settle, so its ground truth is not worth trusting.
-
-  A static point seen by a fixed camera should go in and out of view a handful of
-  times as the arm sweeps past. One whose clear-line-of-sight flag flips on more
-  than `flicker` of the frames is not sitting on anything stable.
-
-  This is a confidence filter rather than a moved-support detector, and it is the
-  broader of the two: many of the flips it catches are the depth reading wobbling
-  across the +-tau band, so its threshold is effectively coupled to tau. That is
-  the intent — a point whose depth will not hold still does not make usable
-  ground truth either way. flicker=0.10 is the validated setting; pass None to
-  leave the test off.
-
-  Returns:
-    (N,) bool, True = remove.
-  """
   return (stats["flips"] / max(stats["n_frames"] - 1, 1) > flicker).any(axis=0)
 
-# Phase 2: Project static 3D points to all views (static prior)
 
 def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
                                   pb_renderer, depth_tolerance=0.05,
                                   safe_margin=15):
-  """Project static 3D world points to 2D per-view per-frame.
-
-  Since these points are static in world coordinates:
-    - In static views, they stay (approximately) fixed in pixel space.
-    - In the wrist view, they move as the camera moves.
-
-  Visibility is determined by:
-    1. In-bounds check (projected pixel within image).
-    2. Depth consistency (projected depth ≈ observed depth).
-    3. Not occluded by the robot (via PyBullet mask).
-
-  Args:
-    static_pts_3d: (N, 3) world coordinates.
-    scene_constants: Scene data dict.
-    scene_state: Extrinsics dict.
-    pb_renderer: PyBulletRenderer instance.
-    depth_tolerance: Max depth discrepancy (m) for visibility.
-    safe_margin: Robot mask dilation kernel size.
-
-  Returns:
-    per_cam_tracks: {cam_id: np.float32 (T, N, 2)} 2D tracks.
-    per_cam_vis: {cam_id: np.bool_ (T, N)} visibility masks.
-  """
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
   N = len(static_pts_3d)
@@ -458,7 +259,6 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
   per_cam_vis = {cam: np.zeros((T_frames, N), dtype=bool) for cam in camera_ids}
   kernel = np.ones((safe_margin, safe_margin), np.uint8)
 
-  # Pre-render dilated robot masks once per frame across all cameras
   robot_masks_dilated = {cam: [] for cam in camera_ids}
   for t in range(T_frames):
     pb_renderer.update_robot_pose(
@@ -484,22 +284,18 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
     for t in range(T_frames):
       ext = scene_state[cam_id]["extrinsics"][t]
 
-      # Project 3D -> 2D
       u, v, z_pred = project_points(static_pts_3d, K, ext)
       tracks[t, :, 0] = u
       tracks[t, :, 1] = v
 
-      # Bounds check
       in_bounds = ((u >= 0) & (u < w_img) &
                    (v >= 0) & (v < h_img) & (z_pred > 0))
 
-      # Depth consistency
       ui = np.clip(np.round(u).astype(int), 0, w_img - 1)
       vi = np.clip(np.round(v).astype(int), 0, h_img - 1)
       z_obs = cam_data["raw_depth"][t, vi, ui]
       depth_ok = (z_obs > 0.05) & (np.abs(z_pred - z_obs) < depth_tolerance)
 
-      # Robot occlusion check
       not_robot = ~robot_masks_dilated[cam_id][t][vi, ui]
 
       vis[t] = in_bounds & depth_ok & not_robot
@@ -512,28 +308,9 @@ def phase2_project_static_tracks(static_pts_3d, scene_constants, scene_state,
 
   return per_cam_tracks, per_cam_vis
 
-# Phase 3: Robot tracks via URDF FK (dense at t=0)
 
 def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
                         max_robot_pts_per_cam=None):
-  """Extract robot surface tracks via URDF forward kinematics.
-
-  Uses ALL pixels at frame 0 to find robot surface points (dense sampling),
-  subsamples to max_robot_pts_per_cam per source camera, then propagates
-  via FK across all frames.
-
-  Args:
-    scene_constants: Scene data dict.
-    scene_state: Extrinsics dict.
-    pb_renderer: PyBulletRenderer instance.
-    max_robot_pts_per_cam: Max robot points per source camera (None=no limit).
-
-  Returns:
-    robot_traj_3d:        (T, N_robot, 3)
-    robot_per_cam_tracks: {cam: (T, N_robot, 2)}
-    robot_per_cam_vis:    {cam: (T, N_robot)}
-    n_robot:              int
-  """
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
 
@@ -553,12 +330,10 @@ def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
     if traj_3d_rob is None or len(robot_indices) == 0:
       continue
 
-    # Project robot 3D to all views
     rob_per_cam_2d, rob_per_cam_vis = \
         urdf_tracker.project_to_all_views(
             traj_3d_rob, scene_constants, scene_state)
 
-    # Use source view's native 2D for itself
     rob_per_cam_2d[src_cam] = traj_2d_rob
     rob_per_cam_vis[src_cam] = vis_rob
 
@@ -586,32 +361,19 @@ def phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
         cam: np.zeros((T_frames, 0), dtype=bool)
         for cam in camera_ids}
     n_robot = 0
-    print("  [WARN] No robot points extracted.")
 
   return robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis, n_robot
 
-# Phase 4: Merge static + robot tracks
 
 def phase4_merge(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
                  robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis,
                  camera_ids, T_frames):
-  """Merge static background and robot tracks.
-
-  Returns the same output format as compute_tracks.py:
-    final_traj_3d:        (T, N_total, 3)
-    final_vis_global:     (T, N_total)
-    final_per_cam_tracks: {cam: (T, N_total, 2)}
-    final_per_cam_vis:    {cam: (T, N_total)}
-    n_static:             int
-    n_robot:              int
-  """
   n_static = len(static_pts_3d)
   n_robot = robot_traj_3d.shape[1]
 
   print("\nPhase 4: Merging Static Background + Robot Tracks")
   print(f"  Static: {n_static} | Robot: {n_robot} | Total: {n_static + n_robot}")
 
-  # Static 3D trajectory: constant across all frames
   if n_static > 0:
     static_traj_3d = np.broadcast_to(
         static_pts_3d[None, :, :], (T_frames, n_static, 3)
@@ -619,7 +381,6 @@ def phase4_merge(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
   else:
     static_traj_3d = np.zeros((T_frames, 0, 3), dtype=np.float32)
 
-  # Static visibility (global = visible in at least 1 camera)
   if n_static > 0:
     static_vis_global = np.zeros((T_frames, n_static), dtype=bool)
     for cam in camera_ids:
@@ -627,7 +388,6 @@ def phase4_merge(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
   else:
     static_vis_global = np.zeros((T_frames, 0), dtype=bool)
 
-  # Robot visibility (global = visible in at least 1 camera)
   if n_robot > 0:
     robot_vis_global = np.zeros((T_frames, n_robot), dtype=bool)
     for cam in camera_ids:
@@ -635,7 +395,6 @@ def phase4_merge(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
   else:
     robot_vis_global = np.zeros((T_frames, 0), dtype=bool)
 
-  # Concatenate
   final_traj_3d = np.concatenate([static_traj_3d, robot_traj_3d], axis=1)
   final_vis_global = np.concatenate(
       [static_vis_global, robot_vis_global], axis=1)
@@ -651,17 +410,11 @@ def phase4_merge(static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
   return (final_traj_3d, final_vis_global, final_per_cam_tracks,
           final_per_cam_vis, n_static, n_robot)
 
-# Export (same format as compute_tracks.py)
 
 def export_tracks(scene_constants, scene_state, final_traj_3d,
                   final_vis_global, final_per_cam_tracks, final_per_cam_vis,
                   n_static, n_robot,
                   export_root=os.path.join(OUTPUT_ROOT, "tracks")):
-  """Serialize tracking results to disk.
-
-  Returns:
-    ep_dir: Absolute path to the created episode output directory.
-  """
   ep_id = scene_constants["meta"]["episode_id"]
   camera_ids = list(scene_constants["camera"].keys())
   ep_dir = os.path.abspath(
@@ -670,14 +423,12 @@ def export_tracks(scene_constants, scene_state, final_traj_3d,
 
   T, N, _ = final_traj_3d.shape
 
-  # Global 3D trajectories
   np.savez_compressed(
       os.path.join(ep_dir, "tracks_3d.npz"),
       traj_3d=final_traj_3d.astype(np.float32),
       vis_global=final_vis_global,
   )
 
-  # Per-camera 2D tracks + visibility
   for cam_id in camera_ids:
     cam_dir = os.path.join(ep_dir, cam_id)
     os.makedirs(cam_dir, exist_ok=True)
@@ -692,24 +443,20 @@ def export_tracks(scene_constants, scene_state, final_traj_3d,
         vis_2d=vis,
     )
 
-    # Intrinsics
     cam_data = scene_constants["camera"][cam_id]
     K = cam_data["K_mat"]
     np.save(os.path.join(cam_dir, "intrinsics.npy"),
             np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]],
                      dtype=np.float32))
 
-    # Extrinsics (w2c)
     np.save(os.path.join(cam_dir, "extrinsics_w2c.npy"),
             np.linalg.inv(
                 scene_state[cam_id]["extrinsics"]).astype(np.float32))
 
-  # Track metadata
   np.savez_compressed(
       os.path.join(ep_dir, "track_metadata.npz"),
       n_static=np.array(n_static),
       n_robot=np.array(n_robot),
-      # 0 = static background, 1 = robot
       point_type=np.array(
           [0] * n_static + [1] * n_robot, dtype=np.uint8),
   )
@@ -717,26 +464,13 @@ def export_tracks(scene_constants, scene_state, final_traj_3d,
   print(f"  Exported {N} tracks × {T} frames to {ep_dir}")
   return ep_dir
 
-# Full Pipeline
 
 def process_episode(episode_id, pb_renderer, device,
                     depth_root, extrinsics_root, export_root,
                     num_static_points=300,
                     max_robot_pts_per_cam=100):
-  """Full static+robot pipeline for a single episode.
-
-  No tracker model needed — background points use static prior only.
-  Dense pixel sampling at frame 0 for both robot and background.
-
-  Args:
-    num_static_points: Target number of static background points (subsampled
-        from cross-view consensus candidates). Matches pipeline.ipynb default.
-    max_robot_pts_per_cam: Max robot surface points per source camera.
-        Matches pipeline.ipynb default.
-  """
   print(f"\nProcessing Episode: {episode_id}")
 
-  # Load data (full video, no truncation)
   scene_constants = load_depth_data(episode_id, depth_root, load_video="full")
   scene_state = load_extrinsics(scene_constants, extrinsics_root)
 
@@ -744,13 +478,11 @@ def process_episode(episode_id, pb_renderer, device,
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
   print(f"  {len(camera_ids)} cameras × {T_frames} frames (full video)")
 
-  # Phase 1: Find static background points (t=0 only, dense)
   print(f"\nPhase 1: Dense at t=0 -> Cross-View Consensus -> Static Points")
   static_pts_3d, static_rgb = phase1_find_static_candidates(
       scene_constants, scene_state, pb_renderer,
       num_points=num_static_points)
 
-  # Phase 2: Project static points to all views
   if len(static_pts_3d) > 0:
     static_per_cam_tracks, static_per_cam_vis = phase2_project_static_tracks(
         static_pts_3d, scene_constants, scene_state, pb_renderer)
@@ -762,19 +494,16 @@ def process_episode(episode_id, pb_renderer, device,
         cam: np.zeros((T_frames, 0), dtype=bool)
         for cam in camera_ids}
 
-  # Phase 3: Robot tracks (dense at t=0)
   robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis, n_robot = \
       phase3_robot_tracks(scene_constants, scene_state, pb_renderer,
                           max_robot_pts_per_cam=max_robot_pts_per_cam)
 
-  # Phase 4: Merge
   (final_traj_3d, final_vis_global, final_per_cam_tracks,
    final_per_cam_vis, n_static, n_robot) = phase4_merge(
       static_pts_3d, static_per_cam_tracks, static_per_cam_vis,
       robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis,
       camera_ids, T_frames)
 
-  # Export
   export_tracks(scene_constants, scene_state,
                 final_traj_3d, final_vis_global,
                 final_per_cam_tracks, final_per_cam_vis,
@@ -783,9 +512,6 @@ def process_episode(episode_id, pb_renderer, device,
   print(f"\n  Episode {episode_id}: {n_static} static + {n_robot} robot "
         f"= {n_static + n_robot} tracks exported.")
   return n_static + n_robot
-
-
-# Standalone CLI
 
 
 if __name__ == "__main__":
@@ -813,9 +539,6 @@ if __name__ == "__main__":
 
   target = shard_episodes(list_episode_dirs(args.extrinsics_root),
                           args.rank, args.world_size, args.limit)
-  # An episode counts as done only once tracks_3d.npz is there: a run killed
-  # mid-episode leaves the directory behind without it. Checked for this rank's
-  # share only, since each check is a stat against a gcsfuse mount.
   export_abs = os.path.abspath(os.path.expanduser(args.export_root))
   done = {ep for ep in target
           if os.path.exists(os.path.join(export_abs, ep, "tracks_3d.npz"))}

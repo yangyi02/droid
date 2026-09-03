@@ -1,5 +1,4 @@
 #!/bin/bash
-# Mount GCS buckets for DROID pipeline. Usage: bash mount_gcs.sh
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 DATA_ROOT="$(pwd)/data"

@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""Compute dataset statistics and evaluation metrics for the DROID tech report.
-
-Usage (from the droid/ directory):
-  python reports/compute_stats.py                          # default paths
-  python reports/compute_stats.py --tracks_root /path/to   # custom paths
-  python reports/compute_stats.py --max_episodes 200       # quick subset
-  python reports/compute_stats.py --workers 16             # parallelism
-
-Outputs:
-  reports/stats_output/
-    dataset_summary.json        — aggregate statistics
-    per_episode_stats.csv       — per-episode breakdown
-    failure_analysis.json       — failure analysis
-"""
-
 import argparse
 import csv
 import json
@@ -24,23 +9,14 @@ from functools import partial
 import numpy as np
 from tqdm import tqdm
 
-# reports/ sits one level below the repo root and this script runs as
-# `python reports/compute_stats.py`, which puts reports/ — not the repo
-# root — on sys.path. So resolve the data root here instead of importing the
-# canonical one from core.io; keep it in step with core.io.DATA_ROOT.
 OUTPUT_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "data", "output", "mv-tap", "droid")
 
-# Pipeline Coverage
 
 def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):
-  """Count how many episodes completed each stage."""
   def list_episode_dirs(root):
     root = os.path.abspath(os.path.expanduser(root))
-    if not os.path.exists(root):
-      print(f"  [WARN] Directory not found: {root}")
-      return []
     return sorted([
         d for d in os.listdir(root)
         if os.path.isdir(os.path.join(root, d)) and not d.startswith(".")
@@ -74,35 +50,25 @@ def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):
   }
 
 
-# Per-Episode Stats (merged I/O)
-
-
 def compute_all_episode_stats(episode_id, tracks_root, depth_root):
-  """Compute ALL statistics for a single episode in one pass.
-
-  Merges track stats and multi-view consistency into a single function
-  to avoid redundant file I/O.
-  """
   tracks_dir = os.path.abspath(
       os.path.expanduser(os.path.join(tracks_root, episode_id)))
   if not os.path.exists(tracks_dir):
     return None
 
-  # ---- Load 3D tracks (once) ----
   tracks_3d_path = os.path.join(tracks_dir, "tracks_3d.npz")
   if not os.path.exists(tracks_3d_path):
     return None
 
   data_3d = np.load(tracks_3d_path)
-  traj_3d = data_3d["traj_3d"]      # (T, N, 3)
-  vis_global = data_3d["vis_global"]  # (T, N)
+  traj_3d = data_3d["traj_3d"]
+  vis_global = data_3d["vis_global"]
   T, N, _ = traj_3d.shape
 
   stats = {"episode_id": episode_id}
   stats["n_frames"] = int(T)
   stats["n_points_total"] = int(N)
 
-  # ---- Track metadata ----
   meta_path = os.path.join(tracks_dir, "track_metadata.npz")
   if os.path.exists(meta_path):
     meta = np.load(meta_path)
@@ -112,9 +78,8 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
     stats["n_env_points"] = N
     stats["n_robot_points"] = 0
 
-  # ---- Visibility stats ----
-  vis_per_point = vis_global.sum(axis=0)  # (N,)
-  vis_per_frame = vis_global.sum(axis=1)  # (T,)
+  vis_per_point = vis_global.sum(axis=0)
+  vis_per_frame = vis_global.sum(axis=1)
 
   stats["avg_track_length"] = float(np.mean(vis_per_point))
   stats["median_track_length"] = float(np.median(vis_per_point))
@@ -125,9 +90,8 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
   stats["min_points_per_frame"] = int(np.min(vis_per_frame))
   stats["max_points_per_frame"] = int(np.max(vis_per_frame))
 
-  # ---- 3D extent ----
   if vis_global.any():
-    visible_pts = traj_3d[vis_global]  # (M, 3)
+    visible_pts = traj_3d[vis_global]
     bbox_min = visible_pts.min(axis=0)
     bbox_max = visible_pts.max(axis=0)
     bbox_size = bbox_max - bbox_min
@@ -136,7 +100,6 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
     stats["scene_bbox_y_m"] = float(bbox_size[1])
     stats["scene_bbox_z_m"] = float(bbox_size[2])
 
-  # ---- 3D motion ----
   deltas = np.diff(traj_3d, axis=0)
   delta_norms = np.linalg.norm(deltas, axis=2)
   vis_transitions = vis_global[:-1] & vis_global[1:]
@@ -148,14 +111,13 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
     stats["avg_per_frame_displacement_mm"] = avg_disp * 1000
     stats["avg_total_displacement_mm"] = float(np.mean(total_disp)) * 1000
 
-  # ---- Per-camera data (single pass for all metrics) ----
   cam_dirs = sorted([
       d for d in os.listdir(tracks_dir)
       if os.path.isdir(os.path.join(tracks_dir, d))
   ])
   stats["n_cameras"] = len(cam_dirs)
 
-  cam_vis_list = []  # for multi-view consistency
+  cam_vis_list = []
 
   for cam_dir_name in cam_dirs:
     cam_dir = os.path.join(tracks_dir, cam_dir_name)
@@ -165,20 +127,17 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
       continue
 
     cam_data = np.load(tracks_2d_path)
-    vis_2d = cam_data["vis_2d"]  # (T, N)
+    vis_2d = cam_data["vis_2d"]
     cam_vis_list.append(vis_2d)
 
-  # ---- Multi-view consistency ----
   if cam_vis_list:
-    vis_stack = np.stack(cam_vis_list, axis=0)  # (C, T, N)
-    cams_per_obs = vis_stack.sum(axis=0)  # (T, N)
+    vis_stack = np.stack(cam_vis_list, axis=0)
+    cams_per_obs = vis_stack.sum(axis=0)
 
-    # Per-point: how many cameras ever see it
-    cam_ever_sees = (vis_stack.sum(axis=1) > 0)  # (C, N)
-    n_cameras_per_point = cam_ever_sees.sum(axis=0)  # (N,)
+    cam_ever_sees = (vis_stack.sum(axis=1) > 0)
+    n_cameras_per_point = cam_ever_sees.sum(axis=0)
     stats["avg_cameras_per_point"] = float(np.mean(n_cameras_per_point))
 
-    # Per-(frame, point): multi-view rate
     if vis_global.any():
       cams_at_visible = cams_per_obs[vis_global]
       stats["avg_cameras_per_visible_obs"] = float(cams_at_visible.mean())
@@ -188,7 +147,6 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
       stats["avg_cameras_per_visible_obs"] = 0.0
       stats["pct_multi_view"] = 0.0
 
-  # ---- Disk usage ----
   total_bytes = 0
   n_files = 0
   for dirpath, _, filenames in os.walk(tracks_dir):
@@ -203,15 +161,12 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
 
 
 def _worker(episode_id, tracks_root, depth_root):
-  """Subprocess-safe wrapper."""
   try:
     return compute_all_episode_stats(
         episode_id, tracks_root, depth_root)
   except Exception as e:
     return {"episode_id": episode_id, "_error": str(e)}
 
-
-# Main
 
 def main():
   parser = argparse.ArgumentParser(
@@ -243,13 +198,11 @@ def main():
 
   print("DROID Pipeline: Dataset Statistics")
 
-  # Pipeline Coverage
   print("\nPipeline coverage...")
   coverage, episode_lists = count_episodes_per_stage(
       args.depth_root, args.extrinsics_root, args.tracks_root)
   print(json.dumps(coverage, indent=2))
 
-  # Per-Episode Stats
   completed_eps = episode_lists["all_completed"]
   if args.max_episodes > 0:
     completed_eps = completed_eps[:args.max_episodes]
@@ -287,10 +240,8 @@ def main():
     print("No episodes with valid tracks found.")
     return
 
-  # Aggregate Summary
   summary = {"coverage": coverage}
 
-  # Track stats aggregation
   numeric_keys = [k for k in all_stats[0]
                   if isinstance(all_stats[0][k], (int, float))
                   and k != "episode_id"]
@@ -307,7 +258,6 @@ def main():
       }
   summary["track_stats"] = agg
 
-  # Multi-view consistency summary
   pcts = [s["pct_multi_view"] for s in all_stats
           if "pct_multi_view" in s]
   avg_cams = [s["avg_cameras_per_visible_obs"] for s in all_stats
@@ -319,58 +269,53 @@ def main():
         "n_episodes": len(pcts),
     }
 
-  # Depth residual and extrinsics quality from metrics.csv (if provided)
   metrics_csv_path = os.path.abspath(os.path.expanduser(args.metrics_csv)) if args.metrics_csv else ""
   if metrics_csv_path and os.path.exists(metrics_csv_path):
     print(f"\nIntegrating metrics from {metrics_csv_path}...")
-    try:
-      with open(metrics_csv_path, "r") as f:
-        reader = csv.DictReader(f)
-        metric_rows = list(reader)
+    with open(metrics_csv_path, "r") as f:
+      reader = csv.DictReader(f)
+      metric_rows = list(reader)
 
-      def _extract_metric(key):
-        vals = []
-        for r in metric_rows:
-          v = r.get(key, "")
-          if v and v != "nan":
-            try:
-              vals.append(float(v))
-            except ValueError:
-              pass
-        return vals
+    def _extract_metric(key):
+      vals = []
+      for r in metric_rows:
+        v = r.get(key, "")
+        if v and v != "nan":
+          try:
+            vals.append(float(v))
+          except ValueError:
+            pass
+      return vals
 
-      s_med = _extract_metric("depth_residual_static_median_mm")
-      s_mean = _extract_metric("depth_residual_static_mean_mm")
-      r_med = _extract_metric("depth_residual_robot_median_mm")
-      r_mean = _extract_metric("depth_residual_robot_mean_mm")
-      o_med = _extract_metric("depth_residual_overall_median_mm")
-      o_mean = _extract_metric("depth_residual_overall_mean_mm")
+    s_med = _extract_metric("depth_residual_static_median_mm")
+    s_mean = _extract_metric("depth_residual_static_mean_mm")
+    r_med = _extract_metric("depth_residual_robot_median_mm")
+    r_mean = _extract_metric("depth_residual_robot_mean_mm")
+    o_med = _extract_metric("depth_residual_overall_median_mm")
+    o_mean = _extract_metric("depth_residual_overall_mean_mm")
 
-      if o_med or s_med or r_med:
-        summary["depth_residual_mm"] = {
-            "description": "Predicted 3D depth vs raw sensor depth (primary self-consistency metric).",
-            "static_median": round(float(np.median(s_med)), 2) if s_med else None,
-            "static_mean": round(float(np.mean(s_mean)), 2) if s_mean else None,
-            "robot_median": round(float(np.median(r_med)), 2) if r_med else None,
-            "robot_mean": round(float(np.mean(r_mean)), 2) if r_mean else None,
-            "overall_median": round(float(np.median(o_med)), 2) if o_med else None,
-            "overall_mean": round(float(np.mean(o_mean)), 2) if o_mean else None,
-            "n_episodes": len(o_med) if o_med else len(s_med),
-        }
+    if o_med or s_med or r_med:
+      summary["depth_residual_mm"] = {
+          "description": "Predicted 3D depth vs raw sensor depth (primary self-consistency metric).",
+          "static_median": round(float(np.median(s_med)), 2) if s_med else None,
+          "static_mean": round(float(np.mean(s_mean)), 2) if s_mean else None,
+          "robot_median": round(float(np.median(r_med)), 2) if r_med else None,
+          "robot_mean": round(float(np.mean(r_mean)), 2) if r_mean else None,
+          "overall_median": round(float(np.median(o_med)), 2) if o_med else None,
+          "overall_mean": round(float(np.mean(o_mean)), 2) if o_mean else None,
+          "n_episodes": len(o_med) if o_med else len(s_med),
+      }
 
-      chamfer = _extract_metric("chamfer_total")
-      overlap = _extract_metric("bg_overlap_pct")
-      if chamfer:
-        summary["extrinsics_quality"] = {
-            "chamfer_total_mean": round(float(np.mean(chamfer)), 4),
-            "chamfer_total_median": round(float(np.median(chamfer)), 4),
-            "bg_overlap_pct_mean": round(float(np.mean(overlap)), 2) if overlap else None,
-            "n_episodes": len(chamfer),
-        }
-    except Exception as e:
-      print(f"  [WARN] Failed to parse metrics_csv: {e}")
+    chamfer = _extract_metric("chamfer_total")
+    overlap = _extract_metric("bg_overlap_pct")
+    if chamfer:
+      summary["extrinsics_quality"] = {
+          "chamfer_total_mean": round(float(np.mean(chamfer)), 4),
+          "chamfer_total_median": round(float(np.median(chamfer)), 4),
+          "bg_overlap_pct_mean": round(float(np.mean(overlap)), 2) if overlap else None,
+          "n_episodes": len(chamfer),
+      }
 
-  # Disk usage summary
   tracks_mbs = [s["tracks_size_mb"] for s in all_stats
                 if "tracks_size_mb" in s]
   if tracks_mbs:
@@ -379,15 +324,12 @@ def main():
         "total_tracks_gb": round(float(np.sum(tracks_mbs)) / 1000, 1),
     }
 
-  # Save Results
   summary_path = os.path.join(output_dir, "dataset_summary.json")
   with open(summary_path, "w") as f:
     json.dump(summary, f, indent=2)
   print(f"\nSummary -> {summary_path}")
 
-  # Per-episode CSV
   if all_stats:
-    # Use union of all keys for CSV header
     all_keys = set()
     for s in all_stats:
       all_keys.update(s.keys())
@@ -400,7 +342,6 @@ def main():
       writer.writerows(all_stats)
     print(f"Per-episode stats -> {csv_path}")
 
-  # Failure analysis
   failure_path = os.path.join(output_dir, "failure_analysis.json")
   with open(failure_path, "w") as f:
     json.dump({
@@ -413,7 +354,6 @@ def main():
     }, f, indent=2)
   print(f"Failure analysis -> {failure_path}")
 
-  # Print Summary Table
   print("\nSUMMARY")
   print(json.dumps(summary, indent=2))
 

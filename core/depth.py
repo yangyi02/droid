@@ -1,10 +1,3 @@
-"""Stereo depth estimation and gripper depth refinement.
-
-Contains S2M2 disparity inference, SAM-based gripper segmentation, and
-temporal depth distillation. All model dependencies are passed as arguments
-rather than referenced as globals.
-"""
-
 import warnings
 
 import cv2
@@ -15,26 +8,9 @@ from tqdm import tqdm
 from core.geometry import decode_disparity
 
 
-# ===========================================================================
-# S2M2 Stereo Depth
-# ===========================================================================
-
 @torch.inference_mode()
 def get_s2m2_disparity(img_left, img_right, s2m2_model, run_stereo_matching,
                        device, conf_thresh=0.95):
-  """Single-frame disparity extractor (FP32).
-
-  Args:
-    img_left: np.ndarray of shape [H, W, 3] (uint8).
-    img_right: np.ndarray of shape [H, W, 3] (uint8).
-    s2m2_model: the compiled S2M2 model.
-    run_stereo_matching: the S2M2 inference function.
-    device: torch.device to run inference on.
-    conf_thresh: Confidence threshold; pixels below are zeroed out.
-  Returns:
-    Disparity array of shape [H, W] (float32).
-  """
-  # [H, W, 3] -> [1, 3, H, W] on GPU
   left_torch = torch.from_numpy(img_left).permute(2, 0, 1).unsqueeze(0).to(device)
   right_torch = torch.from_numpy(img_right).permute(2, 0, 1).unsqueeze(0).to(device)
 
@@ -45,7 +21,6 @@ def get_s2m2_disparity(img_left, img_right, s2m2_model, run_stereo_matching,
   disp = pred_disp.cpu().numpy().squeeze()
   conf = pred_conf.cpu().numpy().squeeze()
 
-  # Mask out low-confidence disparity pixels
   valid_mask = (disp > 0) & (conf >= conf_thresh)
   disp[~valid_mask] = 0.0
 
@@ -54,7 +29,6 @@ def get_s2m2_disparity(img_left, img_right, s2m2_model, run_stereo_matching,
 
 def compute_stereo_depth(scene_constants, s2m2_model, run_stereo_matching,
                          device):
-  """S2M2 stereo depth inference over the full video pool."""
   print("  Running S2M2 stereo depth inference (frame-by-frame)...")
 
   for cam_id in scene_constants["camera"]:
@@ -77,12 +51,7 @@ def compute_stereo_depth(scene_constants, s2m2_model, run_stereo_matching,
   return scene_constants
 
 
-# ===========================================================================
-# SAM Gripper Mask Extraction
-# ===========================================================================
-
 def extract_single_frame_mask(img_rgb, predictor):
-  """Extract a single-frame gripper mask using SAM with positive/negative prompts."""
   h, w = img_rgb.shape[:2]
 
   points = np.array([
@@ -116,7 +85,6 @@ def extract_single_frame_mask(img_rgb, predictor):
 
 
 def compute_consensus_mask(masks_list, consensus_thresh=0.5):
-  """Compute a consensus mask from multiple per-frame masks via voting."""
   vote_map = np.mean(masks_list, axis=0)
   consensus_mask = vote_map >= consensus_thresh
 
@@ -131,23 +99,10 @@ def compute_consensus_mask(masks_list, consensus_thresh=0.5):
 
 
 def build_universal_gripper_mask(scene_constants, sam_predictor):
-  """Build a universal static gripper mask from closed-gripper frames using SAM."""
   wrist_cam = scene_constants["meta"].get("wrist_serial")
-  if wrist_cam is None or wrist_cam not in scene_constants["camera"]:
-    print("  [WARN] No wrist camera found, skipping gripper mask extraction.")
-    return scene_constants
-
   cam_data = scene_constants["camera"][wrist_cam]
   gripper_states = scene_constants["robot"].get("gripper_positions")
-  if gripper_states is None:
-    print("  [WARN] No gripper positions found, skipping gripper mask extraction.")
-    return scene_constants
-
   closed_indices = np.where(gripper_states < 0.05)[0]
-  if len(closed_indices) == 0:
-    print("  [WARN] No closed-gripper frames found, skipping mask extraction.")
-    return scene_constants
-
   print(f"  Building consensus gripper mask from {len(closed_indices)} closed-gripper frames...")
 
   masks_list = []
@@ -158,7 +113,6 @@ def build_universal_gripper_mask(scene_constants, sam_predictor):
 
   final_mask = compute_consensus_mask(masks_list)
 
-  # Broadcast the static consensus mask to all closed-gripper frames
   n_frames = len(gripper_states)
   cam_data["sam_real_masks"] = np.zeros(
       (n_frames, *final_mask.shape), dtype=bool
@@ -169,30 +123,11 @@ def build_universal_gripper_mask(scene_constants, sam_predictor):
   return scene_constants
 
 
-# ===========================================================================
-# Gripper Depth Distillation & Injection
-# ===========================================================================
-
 def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
-  """Distill a clean gripper surface depth via temporal median of masked stereo depth."""
   wrist_cam = scene_constants["meta"].get("wrist_serial")
-  if wrist_cam is None or wrist_cam not in scene_constants["camera"]:
-    return scene_constants
-
   cam_data = scene_constants["camera"][wrist_cam]
   gripper_states = scene_constants["robot"].get("gripper_positions")
-  if gripper_states is None:
-    return scene_constants
-
   closed_indices = np.where(gripper_states < 0.05)[0]
-  if len(closed_indices) == 0:
-    print("  [WARN] No closed-gripper frames for depth distillation.")
-    return scene_constants
-
-  if "sam_real_masks" not in cam_data:
-    print("  [WARN] No SAM masks found, skipping depth distillation.")
-    return scene_constants
-
   h, w = cam_data["video_rgb"][0].shape[:2]
   num_frames = len(closed_indices)
 
@@ -218,22 +153,12 @@ def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
 
 
 def inject_gripper_depth(scene_constants):
-  """Inject distilled gripper depth into raw_depth for closed-gripper frames."""
   wrist_cam = scene_constants["meta"].get("wrist_serial")
-  if wrist_cam is None or wrist_cam not in scene_constants["camera"]:
-    return scene_constants
-
   cam_data = scene_constants["camera"][wrist_cam]
   gripper_states = scene_constants["robot"].get("gripper_positions")
   empirical_depth = cam_data.get("empirical_gripper_depth")
 
-  if gripper_states is None or empirical_depth is None:
-    return scene_constants
-
   closed_indices = np.where(gripper_states < 0.05)[0]
-  if len(closed_indices) == 0:
-    return scene_constants
-
   valid_mask = empirical_depth > 0
 
   print(f"  Injecting distilled gripper depth into {len(closed_indices)} frames...")

@@ -1,10 +1,3 @@
-"""Visualization utilities for the DROID processing pipeline.
-
-Collected from pipeline.ipynb.
-Provides point cloud rendering, 2D tracking overlays, mask inspection,
-robot segmentation video, camera axes visualization, and 4D orbit video.
-"""
-
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,12 +6,7 @@ from tqdm import tqdm
 from core.geometry import unproject_to_3d
 
 
-# ===========================================================================
-# Data Inspection
-# ===========================================================================
-
 def inspect_dict_structure(data, name="scene_constants", indent=0):
-  """Recursively print shape / length / type of every value in a dict."""
   import torch
   spacing = "  " * indent
   if isinstance(data, dict):
@@ -38,15 +26,10 @@ def inspect_dict_structure(data, name="scene_constants", indent=0):
     print(f"{spacing}{name}: {type(data).__name__} = {val_str}")
 
 
-# ===========================================================================
-# Static Point Cloud Visualization (Plotly)
-# ===========================================================================
-
 def show_plotly_point_cloud(pts, cols, title="3D Point Cloud",
                             max_points=150000, eye_pos=(-1.5, -1.5, 1.0),
                             height=600, width=1000, renderer=None):
-  """Interactive 3D point cloud rendering via Plotly."""
-  import plotly.graph_objects as go  # lazy import
+  import plotly.graph_objects as go
   idx = np.random.permutation(len(pts))[:max_points]
   p, c = pts[idx], cols[idx]
   fig = go.Figure(
@@ -67,12 +50,10 @@ def show_plotly_point_cloud(pts, cols, title="3D Point Cloud",
     fig.show()
 
 
-
 def render_fused_point_cloud(scene_constants, scene_state, frame_idx=0,
                              max_render_points=150000,
                              eye_pos=(-1.2, -1.2, 0.8), use_tint=False,
                              height=600, width=1000):
-  """Fuse multi-view depth into a single 3D point cloud and render."""
   camera_ids = sorted(scene_constants['camera'].keys())
   tint_colors = np.array([[0, 50, 0], [50, 0, 0], [0, 0, 50]])
   fused_points, fused_colors = [], []
@@ -101,8 +82,7 @@ def render_fused_point_cloud(scene_constants, scene_state, frame_idx=0,
 
 
 def render_distilled_gripper_3d(median_depth, K_mat, rgb_img):
-  """Render the distilled gripper surface as an interactive 3D point cloud."""
-  import plotly.graph_objects as go  # lazy import
+  import plotly.graph_objects as go
   v, u = np.where(median_depth > 0)
   z = median_depth[v, u]
   x = (u - K_mat[0, 2]) * z / K_mat[0, 0]
@@ -123,12 +103,7 @@ def render_distilled_gripper_3d(median_depth, K_mat, rgb_img):
 
 
 def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
-  """2D inspection of wrist gripper mask and depth refinement."""
   wrist_serial = scene_constants['meta'].get('wrist_serial')
-  if not wrist_serial or wrist_serial not in scene_constants['camera']:
-    print("[WARN] No wrist camera found in scene_constants.")
-    return
-
   cam_data = scene_constants['camera'][wrist_serial]
   rgb = cam_data['video_rgb'][frame_idx]
 
@@ -147,7 +122,6 @@ def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
 
   fig, axes = plt.subplots(1, 4, figsize=(20, 4.5))
 
-  # 1. RGB + SAM Gripper Mask Overlay
   axes[0].imshow(rgb)
   if mask_vis is not None:
     overlay = rgb.copy()
@@ -159,7 +133,6 @@ def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
     axes[0].set_title("RGB (No Mask)", fontsize=11)
   axes[0].axis('off')
 
-  # 2. Original Sensor Depth
   if d_orig is not None:
     im1 = axes[1].imshow(np.where(d_orig > 0, d_orig, np.nan), cmap='viridis', vmin=0.1, vmax=1.2)
     axes[1].set_title("Original Sensor Depth", fontsize=11)
@@ -168,7 +141,6 @@ def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
     axes[1].set_title("Original Depth N/A", fontsize=11)
   axes[1].axis('off')
 
-  # 3. Distilled Gripper Surface Depth
   if emp_depth is not None:
     im2 = axes[2].imshow(np.where(emp_depth > 0, emp_depth, np.nan), cmap='viridis', vmin=0.1, vmax=1.2)
     axes[2].set_title("Distilled Gripper Surface Depth", fontsize=11)
@@ -177,7 +149,6 @@ def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
     axes[2].set_title("Distilled Gripper Depth N/A", fontsize=11)
   axes[2].axis('off')
 
-  # 4. Final Refined Metric Depth
   if d_final is not None:
     im3 = axes[3].imshow(np.where(d_final > 0, d_final, np.nan), cmap='viridis', vmin=0.1, vmax=1.2)
     axes[3].set_title("Final Refined Depth (Injected)", fontsize=11)
@@ -191,13 +162,7 @@ def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
   plt.show()
 
 
-
-# ===========================================================================
-# Disparity & Depth Visualization
-# ===========================================================================
-
 def visualize_disparity_video(disp_array, vmax=100.0):
-  """Colorize a disparity array as a video using COLORMAP_MAGMA."""
   disp_norm = (np.clip(disp_array, 0, vmax) / vmax * 255).astype(np.uint8)
   return np.stack([
       cv2.cvtColor(cv2.applyColorMap(frame, cv2.COLORMAP_MAGMA),
@@ -207,8 +172,7 @@ def visualize_disparity_video(disp_array, vmax=100.0):
 
 def render_multicam_disparity_video(scene_constants, tgt_size=(128, 228),
                                     disp_vmax=100.0, max_frames=None):
-  """Generate a [left | right | disparity] multi-camera stitched video."""
-  import mediapy as media  # lazy import; only needed in notebook contexts
+  import mediapy as media
   camera_rows = []
   for cam_data in scene_constants['camera'].values():
     video_rgb = cam_data['video_rgb']
@@ -232,27 +196,11 @@ def render_multicam_disparity_video(scene_constants, tgt_size=(128, 228),
   return np.concatenate(camera_rows, axis=1)
 
 
-# ===========================================================================
-# 2D Tracking Video Rendering
-# ===========================================================================
-
 def render_2d_tracking_video(video_frames, tracks, visibility,
                              global_colors=None, linewidth=3,
                              tracks_leave_trace=20, tgt_size=None,
                              max_frames=None):
-  """Render 2D point tracks with comet trails onto video frames.
-
-  Args:
-    video_frames: (T, H, W, 3) array of RGB frames.
-    tracks: (T, N, 2) array of 2D track coordinates.
-    visibility: (T, N) boolean visibility array.
-    global_colors: optional (N, 3) color array.
-    linewidth: width of track lines.
-    tracks_leave_trace: number of frames for comet trail.
-    tgt_size: optional (H, W) tuple to resize output frames.
-    max_frames: optional maximum frames to render.
-  """
-  import mediapy as media  # lazy import
+  import mediapy as media
   if max_frames is not None:
     video_frames = video_frames[:max_frames]
     tracks = tracks[:max_frames]
@@ -288,7 +236,6 @@ def render_2d_tracking_video(video_frames, tracks, visibility,
     current_img = video_frames[t]
     trace_len = min(t, tracks_leave_trace)
 
-    # Comet trail rendering
     for step in range(trace_len):
       past_t = t - trace_len + step
       alpha = (step / (trace_len + 1)) ** 2
@@ -302,7 +249,6 @@ def render_2d_tracking_video(video_frames, tracks, visibility,
       cv2.addWeighted(overlay, alpha, current_img, 1 - alpha,
                       0, current_img)
 
-    # Current-frame points
     occ_overlay = current_img.copy()
     has_occlusion = False
     active_points = np.where(is_valid[t])[0]
@@ -322,13 +268,8 @@ def render_2d_tracking_video(video_frames, tracks, visibility,
   return video_frames
 
 
-# ===========================================================================
-# Robot Mask / Segmentation Inspection
-# ===========================================================================
-
 def render_multiview_mask_inspection(scene_constants, scene_state,
                                     pb_renderer, frame_idx=0):
-  """Multi-camera robot segmentation mask overlay (single frame)."""
   camera_ids = list(scene_constants['camera'].keys())
   wrist_cam = scene_constants['meta']['wrist_serial']
 
@@ -363,7 +304,6 @@ def render_multiview_mask_inspection(scene_constants, scene_state,
 
 def render_segmentation_video(scene_constants, scene_state, pb_renderer,
                               tgt_width=1200, max_frames=None):
-  """Render a multi-camera robot segmentation overlay video."""
   camera_ids = list(scene_constants['camera'].keys())
   wrist_serial = scene_constants['meta']['wrist_serial']
   n_frames = len(scene_constants['camera'][camera_ids[0]]['video_rgb'])
@@ -402,13 +342,8 @@ def render_segmentation_video(scene_constants, scene_state, pb_renderer,
   return video_frames
 
 
-# ===========================================================================
-# Camera Extrinsics Axes Visualization
-# ===========================================================================
-
 def render_cross_camera_axes(scene_constants, scene_state, axis_len=0.15,
                              tgt_w=1200, max_frames=None):
-  """Render RGB coordinate axes of each camera as seen from other cameras."""
   cams = list(scene_constants['camera'].keys())
   n_frames = len(scene_state[cams[0]]['extrinsics'])
   if max_frames is not None:
@@ -461,12 +396,7 @@ def render_cross_camera_axes(scene_constants, scene_state, axis_len=0.15,
   return video_frames
 
 
-# ===========================================================================
-# 4D Cinematic Orbit Video (pyrender)
-# ===========================================================================
-
 def get_look_at_matrix(eye, target, up=(0, 0, 1)):
-  """Compute an OpenGL-style look-at camera matrix."""
   z_axis = np.array(eye, dtype=float) - np.array(target, dtype=float)
   z_axis /= np.linalg.norm(z_axis) + 1e-6
   x_axis = np.cross(up, z_axis)
@@ -483,8 +413,7 @@ def render_cinematic_4d_orbit(scene_constants, scene_state,
                               orbit_center=(0.4, 0.0, 0.0),
                               orbit_radius=1.2, camera_height=0.5,
                               angle_start=None, max_frames=None):
-  """Render a 4D point cloud orbit video using pyrender."""
-  import pyrender  # lazy import; heavy dependency
+  import pyrender
   if angle_start is None:
     angle_start = np.pi / 2
 
@@ -553,42 +482,8 @@ def render_4d_orbit_with_tracks(
     orbit_center=(0.4, 0.0, 0.0),
     orbit_radius=1.2, camera_height=0.5,
     angle_start=None, max_frames=None):
-  """Render a 4D orbit video with point cloud, 3D tracks, and camera frustums.
-
-  Extends ``render_cinematic_4d_orbit`` to also render:
-  - 3D track positions as colored spheres
-  - Track history trails as colored line segments
-  - Per-camera frustum wireframes
-
-  All rendering is done headless via pyrender, producing video frames that
-  can be displayed directly in Colab with ``media.show_video()``.
-
-  Args:
-    scene_constants: pipeline scene_constants dict.
-    scene_state: pipeline scene_state dict.
-    tracks_3d: (T, N, 3) 3D track positions, or None.
-    track_colors: (N, 3) uint8 RGB, or None for auto-rainbow by y.
-    track_vis: (T, N) bool visibility, or None for all-visible.
-    track_history: number of trailing frames to show per track.
-    track_sphere_radius: radius of each track sphere.
-    frustum_depth: depth of camera frustum wireframe.
-    frustum_fov_y: vertical FOV (degrees) for frustum shape.
-    frustum_aspect: aspect ratio for frustum shape.
-    max_render_points: max background point cloud points per frame.
-    max_render_tracks: subsample tracks to this count if more.
-    width: output frame width.
-    height: output frame height.
-    orbit_center: (3,) orbit look-at center.
-    orbit_radius: radius of the orbit path.
-    camera_height: z-height of the orbiting camera.
-    angle_start: starting angle (radians); default pi/2.
-    max_frames: max frames to render; None = all.
-
-  Returns:
-    List of (H, W, 3) uint8 RGB frames.
-  """
-  import pyrender  # lazy import
-  import trimesh   # lazy import
+  import pyrender
+  import trimesh
   if angle_start is None:
     angle_start = np.pi / 2
 
@@ -597,7 +492,6 @@ def render_4d_orbit_with_tracks(
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
 
-  # --- Prepare tracks ---
   if tracks_3d is not None:
     n_total_tracks = tracks_3d.shape[1]
     if n_total_tracks > max_render_tracks:
@@ -613,7 +507,6 @@ def render_4d_orbit_with_tracks(
       track_colors = (plt.cm.hsv(norm(y0))[:, :3] * 255).astype(np.uint8)
     n_tracks = tracks_3d.shape[1]
 
-  # --- Precompute frustum corners in camera space ---
   half_h = frustum_depth * np.tan(np.radians(frustum_fov_y / 2))
   half_w = half_h * frustum_aspect
   corners_cam = np.array([
@@ -624,21 +517,19 @@ def render_4d_orbit_with_tracks(
       [-half_w,  half_h, frustum_depth]])
   frustum_edges = [(0,1),(0,2),(0,3),(0,4),(1,2),(2,3),(3,4),(4,1)]
   cam_colors_rgb = np.array([
-      [1.0, 0.4, 0.2, 1.0],   # orange
-      [0.2, 0.8, 0.2, 1.0],   # green
-      [0.2, 0.4, 1.0, 1.0],   # blue
-      [1.0, 1.0, 0.2, 1.0],   # yellow
+      [1.0, 0.4, 0.2, 1.0],
+      [0.2, 0.8, 0.2, 1.0],
+      [0.2, 0.4, 1.0, 1.0],
+      [1.0, 1.0, 0.2, 1.0],
   ], dtype=np.float32)
 
-  # --- Precompute track sphere template ---
   if tracks_3d is not None:
     sphere_template = trimesh.creation.icosphere(
         subdivisions=1, radius=track_sphere_radius)
-    tpl_v = sphere_template.vertices  # (42, 3)
-    tpl_f = sphere_template.faces     # (80, 3)
+    tpl_v = sphere_template.vertices
+    tpl_f = sphere_template.faces
     n_v, n_f = len(tpl_v), len(tpl_f)
 
-  # --- Setup pyrender scene ---
   scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 1.0])
   cam_node = scene.add(
       pyrender.PerspectiveCamera(
@@ -654,7 +545,6 @@ def render_4d_orbit_with_tracks(
                         desc="Rendering 4D orbit + tracks"):
     nodes_to_remove = []
 
-    # --- 1. Background point cloud ---
     points, colors = [], []
     for cam_id in camera_ids:
       cam_data = scene_constants['camera'][cam_id]
@@ -671,7 +561,6 @@ def render_4d_orbit_with_tracks(
     sample_idx = np.random.permutation(len(points))[:max_render_points]
     points, colors = points[sample_idx], colors[sample_idx]
 
-    # Orbiting camera
     angle = angle_start + (frame_idx * np.pi / n_frames)
     eye_pos = [orbit_center[0] + orbit_radius * np.cos(angle),
                orbit_center[1] + orbit_radius * np.sin(angle),
@@ -684,7 +573,6 @@ def render_4d_orbit_with_tracks(
         pyrender.Mesh.from_points(points, colors=colors))
     nodes_to_remove.append(pcl_node)
 
-    # --- 2. Track spheres (batch icospheres) ---
     if tracks_3d is not None:
       vis = track_vis[frame_idx] if track_vis is not None \
           else np.ones(n_tracks, dtype=bool)
@@ -693,12 +581,12 @@ def render_4d_orbit_with_tracks(
 
       if len(vis_pts) > 0:
         N = len(vis_pts)
-        all_verts = np.tile(tpl_v, (N, 1, 1))       # (N, 42, 3)
+        all_verts = np.tile(tpl_v, (N, 1, 1))
         all_verts += vis_pts[:, np.newaxis, :]
         all_verts = all_verts.reshape(-1, 3)
 
         offsets = np.arange(N) * n_v
-        all_faces = np.tile(tpl_f, (N, 1))            # (N*80, 3)
+        all_faces = np.tile(tpl_f, (N, 1))
         all_faces += np.repeat(offsets, n_f)[:, np.newaxis]
 
         face_rgba = np.column_stack([
@@ -709,7 +597,6 @@ def render_4d_orbit_with_tracks(
         tk_node = scene.add(pyrender.Mesh.from_trimesh(mesh, smooth=False))
         nodes_to_remove.append(tk_node)
 
-      # --- 3. Track trails (GL_LINES) ---
       trail_pos, trail_col = [], []
       for j in range(max(0, frame_idx - track_history), frame_idx):
         starts = tracks_3d[j]
@@ -720,7 +607,6 @@ def render_4d_orbit_with_tracks(
         lengths = np.linalg.norm(ends - starts, axis=1)
         mask &= lengths > 1e-6
         if mask.any():
-          # Interleave start/end: (n_valid, 2, 3) → (2*n_valid, 3)
           pairs = np.stack([starts[mask], ends[mask]], axis=1)
           trail_pos.append(pairs.reshape(-1, 3))
           tc = track_colors[mask].astype(np.float32) / 255.0
@@ -732,12 +618,11 @@ def render_4d_orbit_with_tracks(
         line_rgba = np.column_stack(
             [line_col, np.ones(len(line_col))]).astype(np.float32)
         trail_prim = pyrender.Primitive(
-            positions=line_pos, color_0=line_rgba, mode=1)  # GL_LINES
+            positions=line_pos, color_0=line_rgba, mode=1)
         trail_node = scene.add(
             pyrender.Mesh(primitives=[trail_prim]))
         nodes_to_remove.append(trail_node)
 
-    # --- 4. Camera frustum wireframes (GL_LINES) ---
     frust_pos, frust_col = [], []
     for ci, cam_id in enumerate(camera_ids):
       ext_c2w = scene_state[cam_id]['extrinsics'][frame_idx]
@@ -752,12 +637,11 @@ def render_4d_orbit_with_tracks(
       frust_pos = np.array(frust_pos, dtype=np.float32)
       frust_col = np.array(frust_col, dtype=np.float32)
       frust_prim = pyrender.Primitive(
-          positions=frust_pos, color_0=frust_col, mode=1)  # GL_LINES
+          positions=frust_pos, color_0=frust_col, mode=1)
       frust_node = scene.add(
           pyrender.Mesh(primitives=[frust_prim]))
       nodes_to_remove.append(frust_node)
 
-    # --- Render & cleanup ---
     color_img, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
     for node in nodes_to_remove:
       scene.remove_node(node)

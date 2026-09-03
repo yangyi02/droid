@@ -1,18 +1,4 @@
 #!/bin/bash
-# Parallel TAPVid-MV export. Separate from the repo-root run_parallel.sh
-# because this produces the release, not a pipeline stage.
-#
-# Runs over the selected episodes only. Exporting re-encodes every frame to
-# JPEG and writes the depth maps, so it is by far the most expensive step —
-# doing it before selection meant paying that for thousands of episodes to
-# keep fifty.
-#
-# Usage:
-#   bash tapvidmv/run_export.sh                             # episodes_eval50.txt
-#   bash tapvidmv/run_export.sh --list episodes_eval150.txt # a different set
-#   bash tapvidmv/run_export.sh --list all                  # everything with tracks
-#   bash tapvidmv/run_export.sh --limit 8                   # first 8 of the list
-
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 LIST="episodes_eval50.txt"
@@ -32,7 +18,6 @@ if [ "$LIST" != "all" ] && [ ! -f "$LIST" ]; then
     exit 1
 fi
 
-# CPU-only work: 75% of the cores, leaving headroom for IO.
 JOBS=$(( $(nproc) * 3 / 4 ))
 [ "$LIST" != "all" ] && JOBS=$(( $(wc -l < "$LIST") < JOBS ? $(wc -l < "$LIST") : JOBS ))
 [ "$JOBS" -lt 1 ] && JOBS=1

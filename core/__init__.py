@@ -1,1 +1,0 @@
-"""DROID pipeline shared modules."""
