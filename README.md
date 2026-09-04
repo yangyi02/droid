@@ -16,7 +16,8 @@ python3 -m venv venv
 source venv/bin/activate
 
 # 3. Install dependencies + download model weights
-bash setup.sh
+bash setup.sh              # everything, including the Stage 1 depth toolchain
+bash setup.sh --no-depth   # skip s2m2, Segment Anything, the ZED SDK and the weights
 
 # 4. Mount GCS input/output buckets
 bash mount_gcs.sh
@@ -108,7 +109,7 @@ droid/
 ├── compute_tracks.py          # Stage 3: Static prior + URDF FK dense 3D tracking
 ├── compute_metrics.py         # Batch quality metrics evaluation (GCP)
 ├── run_parallel.sh            # Multi-GPU parallel runner for the stages above
-├── setup.sh                   # One-shot dependency + weights setup
+├── setup.sh                   # One-shot dependency + weights setup (--no-depth skips Stage 1)
 ├── mount_gcs.sh               # GCS bucket mount helper
 ├── core/                      # Shared algorithmic modules
 │   ├── geometry.py            #   3D math: unproject, project, make_4x4, rodrigues
@@ -141,7 +142,8 @@ droid/
 └── third_party/               # Gitignored: submodule source + downloaded weights
     ├── s2m2/                  #   Stereo matching model (submodule)
     │   └── weights/           #     S2M2 XL weights (fetched by setup.sh)
-    └── sam_weights/           #   SAM ViT-H weights (fetched by setup.sh)
+    └── segment_anything/      #   Segment Anything
+        └── weights/           #     SAM ViT-H weights (fetched by setup.sh)
 ```
 
 ## Data Setup
@@ -269,12 +271,9 @@ The notebook uses **3 global boolean flags** at the top (`COMPUTE_DEPTH`, `COMPU
 
 ### ZED SDK (required for Stage 1 SVO decoding)
 
-```bash
-wget https://download.stereolabs.com/zedsdk/5.2/cu12/ubuntu22 -O ZED_SDK_Linux_Ubuntu22.run
-chmod +x ZED_SDK_Linux_Ubuntu22.run
-./ZED_SDK_Linux_Ubuntu22.run silent runtime_only skip_tools
-find /usr/local/zed/ -name "pyzed*.whl" -exec pip install {} \;
-```
+Installed by `bash setup.sh` (runtime only, from `download.stereolabs.com/zedsdk/5.2/cu12/ubuntu22`),
+together with the `pyzed` wheel it ships. `bash setup.sh --no-depth` skips it, along with
+everything else only Stage 1 needs — use that when depth is loaded from GCS rather than recomputed.
 
 ### Git Submodules (auto-cloned with `--recurse-submodules`)
 
@@ -282,9 +281,9 @@ find /usr/local/zed/ -name "pyzed*.whl" -exec pip install {} \;
 |-----------|------|-------|
 | `third_party/s2m2` | [junhong-3dv/s2m2](https://github.com/junhong-3dv/s2m2) | Stereo depth |
 
-### Model Weights (downloaded by `setup.sh`)
+### Model Weights (downloaded by `setup.sh`, skipped by `--no-depth`)
 
 | Model | Source | Path |
 |-------|--------|------|
 | S2M2 XL | HuggingFace `minimok/s2m2` | `third_party/s2m2/weights/` |
-| SAM ViT-H | `dl.fbaipublicfiles.com` | `third_party/sam_weights/` |
+| SAM ViT-H | `dl.fbaipublicfiles.com` | `third_party/segment_anything/weights/` |

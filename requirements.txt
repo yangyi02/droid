@@ -6,9 +6,6 @@ scipy
 matplotlib
 trimesh
 tqdm
-h5py
 mediapy
 plotly
 pyrender
-open3d
-segment-anything @ git+https://github.com/facebookresearch/segment-anything.git

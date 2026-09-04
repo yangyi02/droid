@@ -6,7 +6,8 @@ import mediapy as media
 import numpy as np
 import torch
 
-DATA_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_ROOT = os.path.join(REPO_ROOT, "data")
 META_ROOT = os.path.join(DATA_ROOT, "meta", "1.0.1")
 INPUT_ROOT = os.path.join(DATA_ROOT, "input")
 OUTPUT_ROOT = os.path.join(DATA_ROOT, "output", "droid")

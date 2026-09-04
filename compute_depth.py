@@ -6,6 +6,7 @@ import sys
 
 import cv2
 import h5py
+import mediapy as media
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import torch
@@ -19,38 +20,22 @@ import core.runner
 
 def init_all_models():
   device = core.io.get_accelerator()
-  print(
-    f"Launching models onto {device} | "
-    f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}"
-  )
-  repo_dir = os.path.dirname(os.path.abspath(__file__))
-  vendor_dir = os.path.join(repo_dir, "third_party")
-  s2m2_src = os.path.join(vendor_dir, "s2m2/src")
+  vendor_dir = os.path.join(core.io.REPO_ROOT, "third_party")
+  s2m2_src = os.path.join(vendor_dir, "s2m2", "src")
   if not os.path.exists(s2m2_src):
-    os.system(f"cd '{repo_dir}' && git submodule update --init --recursive")
-
-  for pkg in ["s2m2/src"]:
-    path = os.path.join(vendor_dir, pkg)
-    if path not in sys.path:
-      sys.path.append(path)
+    raise SystemExit(f"{s2m2_src} is missing -- run: bash setup.sh")
+  if s2m2_src not in sys.path:
+    sys.path.append(s2m2_src)
 
   from s2m2.core.utils.model_utils import load_model, run_stereo_matching
-  from segment_anything import sam_model_registry, SamPredictor
+  from segment_anything import SamPredictor, sam_model_registry
 
   s2m2_model = torch.compile(
-    load_model(
-      os.path.join(vendor_dir, "s2m2", "weights"),
-      "XL",
-      True,
-      3,
-      device,
-    ).eval()
+    load_model(os.path.join(vendor_dir, "s2m2", "weights"), "XL", True, 3, device).eval()
   )
-  sam = sam_model_registry["vit_h"](
-    checkpoint=os.path.join(vendor_dir, "sam_weights", "sam_vit_h_4b8939.pth")
-  ).to(device)
+  sam_ckpt = os.path.join(vendor_dir, "segment_anything", "weights", "sam_vit_h_4b8939.pth")
+  sam = sam_model_registry["vit_h"](checkpoint=sam_ckpt).to(device)
 
-  print("  All foundation models loaded.")
   return s2m2_model, SamPredictor(sam), run_stereo_matching
 
 
@@ -278,15 +263,6 @@ def align_temporal_streams(scene_constants):
   return scene_constants
 
 
-def _write_mp4(path, frames, fps=10.0):
-  h, w = frames[0].shape[:2]
-  fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-  writer = cv2.VideoWriter(path, fourcc, fps, (w, h))
-  for img in frames:
-    writer.write(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-  writer.release()
-
-
 def export_depth(scene_constants, export_root=os.path.join(core.io.OUTPUT_ROOT, "depth")):
   ep_id = scene_constants["meta"]["episode_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_id)))
@@ -306,7 +282,7 @@ def export_depth(scene_constants, export_root=os.path.join(core.io.OUTPUT_ROOT, 
     }
     for key, filename in video_keys.items():
       if key in data and len(data[key]) > 0:
-        _write_mp4(os.path.join(cam_dir, filename), data[key])
+        media.write_video(os.path.join(cam_dir, filename), data[key], fps=10)
 
     if "original_raw_depth" in data:
       np.savez_compressed(
