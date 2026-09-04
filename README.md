@@ -23,9 +23,9 @@ bash setup.sh --no-depth   # skip s2m2, Segment Anything, the ZED SDK and the we
 bash mount_gcs.sh
 
 # 5. Run pipeline (3 stages)
-bash run_parallel.sh --mode depth        # Stage 1: depth
-bash run_parallel.sh --mode extrinsics  # Stage 2: extrinsics
-bash run_parallel.sh --mode tracks      # Stage 3: tracks
+bash run_parallel.sh depth        # Stage 1: depth
+bash run_parallel.sh extrinsics   # Stage 2: extrinsics
+bash run_parallel.sh tracks       # Stage 3: tracks
 ```
 
 Every path, threshold and optimizer setting lives in `config.py`. The stage
@@ -180,19 +180,19 @@ bash mount_gcs.sh
 ## Running Options
 
 ```bash
-bash run_parallel.sh --mode depth              # depth, all episodes
-bash run_parallel.sh --mode extrinsics        # extrinsics, all episodes
-bash run_parallel.sh --mode tracks            # tracks, all episodes
-bash run_parallel.sh --mode metrics           # quality metrics, all episodes
-bash run_parallel.sh --mode depth --limit 32  # depth, first 32 episodes
+bash run_parallel.sh depth         # depth, all episodes
+bash run_parallel.sh extrinsics    # extrinsics, all episodes
+bash run_parallel.sh tracks        # tracks, all episodes
+bash run_parallel.sh metrics       # quality metrics, all episodes
+bash run_parallel.sh depth 32      # depth, first 32 episodes
 ```
 
-| Flag | Short | Values | Default | Description |
-|------|-------|--------|---------|-------------|
-| `--mode` | `-m` | `depth`, `extrinsics`, `tracks`, `metrics` | required | Pipeline stage |
-| `--limit` | `-l` | integer | all | Max episodes to process |
+| Argument | Values | Default | Description |
+|----------|--------|---------|-------------|
+| stage | `depth`, `extrinsics`, `tracks`, `metrics` | required | Pipeline stage |
+| limit | integer | all | Max episodes to process |
 
-Jobs auto-scale to the number of GPUs detected by `nvidia-smi`.
+One worker per GPU detected by `nvidia-smi`, episodes sharded by rank.
 
 ## Episode Evaluation & Selection
 
@@ -201,7 +201,7 @@ After running all 3 stages, compute quality metrics across episodes and select a
 ### Step 1: Batch Metrics (on GCP)
 
 ```bash
-bash run_parallel.sh --mode metrics
+bash run_parallel.sh metrics
 ```
 
 Auto-detects GPUs and runs `compute_metrics.py` in parallel across all of them.
@@ -258,7 +258,7 @@ Converts the selected episodes into the TAPVid-MV release layout. This runs
 maps, so exporting first and selecting second meant paying that over thousands
 of episodes to keep fifty. CPU-only, so it sizes itself to the core count
 rather than the GPU count — which is why it is a separate runner from
-`run_parallel.sh` rather than another `--mode`.
+`run_parallel.sh` rather than another stage.
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
