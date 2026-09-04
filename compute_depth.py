@@ -22,8 +22,6 @@ def init_all_models():
   device = core.io.get_accelerator()
   vendor_dir = os.path.join(core.io.REPO_ROOT, "third_party")
   s2m2_src = os.path.join(vendor_dir, "s2m2", "src")
-  if not os.path.exists(s2m2_src):
-    raise SystemExit(f"{s2m2_src} is missing -- run: bash setup.sh")
   if s2m2_src not in sys.path:
     sys.path.append(s2m2_src)
 
@@ -61,7 +59,6 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
     for start, end in ranges:
       indices.extend(range(start, end))
     valid_indices = np.array(indices)
-    print(f"  Loaded action ranges, marked {len(valid_indices)} frames as valid keyframes.")
 
   return {
     "meta": {
@@ -83,7 +80,6 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
 def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
   import pyzed.sl as sl
 
-  print("  Fast-decoding SVO video streams and physical calibration data (including timestamps)...")
   episode_path = scene_constants["meta"]["episode_path"]
 
   for cam in scene_constants["camera"]:
@@ -98,11 +94,9 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
 
     n_svo_frames = zed.get_svo_number_of_frames() - 2
     if max_frames > 0 and n_svo_frames > max_frames:
-      print(f"  Skipping SVO [{cam}]: {n_svo_frames} frames exceeds --max_frames={max_frames}.")
       zed.close()
       continue
     if min_frames > 0 and n_svo_frames < min_frames:
-      print(f"  Skipping SVO [{cam}]: {n_svo_frames} frames below --min_frames={min_frames}.")
       zed.close()
       continue
 
@@ -201,7 +195,6 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
 
 
 def parse_robot_kinematics(scene_constants):
-  print("  Parsing robot H5 kinematics and dynamic hand-eye matrices...")
   ep_path = scene_constants["meta"]["episode_path"]
 
   with h5py.File(f"{ep_path}/trajectory.h5", "r") as f:
@@ -234,32 +227,28 @@ def parse_robot_kinematics(scene_constants):
 
 
 def align_temporal_streams(scene_constants):
-  print("  Running global temporal alignment check...")
 
   lengths = [
     len(scene_constants["robot"]["joint_positions"]),
     len(scene_constants["robot"]["gripper_positions"]),
     len(scene_constants["robot"]["T_ee_base_all"]),
   ]
-  for cam_id, cam_data in scene_constants["camera"].items():
+  for cam_data in scene_constants["camera"].values():
     lengths.append(len(cam_data["video_rgb"]))
     lengths.append(len(cam_data["video_right"]))
 
   min_frames = min(lengths)
   max_frames = max(lengths)
 
-  print(f"    Truncating all streams to {min_frames} frames...")
-
   for key in ["joint_positions", "gripper_positions", "T_ee_base_all", "timestamps"]:
     if key in scene_constants["robot"]:
       scene_constants["robot"][key] = scene_constants["robot"][key][:min_frames]
 
-  for cam_id, cam_data in scene_constants["camera"].items():
+  for cam_data in scene_constants["camera"].values():
     for key, value in cam_data.items():
       if isinstance(value, (list, np.ndarray)) and len(value) == max_frames:
         cam_data[key] = value[:min_frames]
 
-  print("    Global alignment complete. All dimensions are now consistent.")
   return scene_constants
 
 
@@ -267,8 +256,6 @@ def export_depth(scene_constants, export_root=os.path.join(core.io.OUTPUT_ROOT, 
   ep_id = scene_constants["meta"]["episode_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_id)))
   os.makedirs(ep_dir, exist_ok=True)
-
-  print(f"  Exporting multi-view data to {ep_dir}...")
 
   for cam_id, data in scene_constants["camera"].items():
     cam_dir = os.path.join(ep_dir, str(cam_id))
@@ -389,7 +376,6 @@ if __name__ == "__main__":
   )
   args = parser.parse_args()
 
-  print("DROID Stage 1: Stereo Depth")
   device = core.io.get_accelerator()
   s2m2_model, sam_predictor, run_stereo_matching = init_all_models()
   serials_db, id_to_path, keep_ranges, _, valid_ids = core.io.load_metadata()

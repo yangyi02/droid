@@ -31,7 +31,6 @@ def load_metadata(meta_root=META_ROOT):
     "cam2base_extrinsic_superset.json",
   ]
 
-  print(f"Synchronizing metadata to {root_path}...")
   for f in files:
     dest = os.path.join(root_path, f)
     if not os.path.exists(dest):
@@ -47,7 +46,6 @@ def load_metadata(meta_root=META_ROOT):
   extrinsics_db = _load("cam2base_extrinsic_superset.json")
 
   valid_ids = sorted(set(serials_db.keys()) & set(id_to_path.keys()) & set(extrinsics_db.keys()))
-  print(f"Metadata ready: {len(valid_ids)} episodes with pre-calibrated extrinsics.")
   return serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids
 
 
@@ -58,7 +56,6 @@ def load_depth_data(
   inspection=False,
 ):
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(depth_root, episode_id)))
-  print(f"  Loading depth data from {ep_dir}...")
 
   robot_data = np.load(os.path.join(ep_dir, "robot.npz"), allow_pickle=True)
   wrist_serial = str(robot_data["wrist_serial"]) if "wrist_serial" in robot_data else None
@@ -135,9 +132,6 @@ def load_depth_data(
     "camera": camera,
   }
 
-  n_frames = len(robot["joint_positions"])
-  n_cams = len(camera)
-  print(f"  Loaded: {n_cams} cameras, {n_frames} frames.")
   return scene_constants
 
 
@@ -157,5 +151,4 @@ def load_extrinsics(scene_constants, extrinsics_root=os.path.join(OUTPUT_ROOT, "
       "extrinsics": np.array(payload["extrinsics"], dtype=np.float32),
     }
 
-  print(f"  Loaded extrinsics for {len(scene_state)} cameras.")
   return scene_state

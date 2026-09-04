@@ -27,7 +27,6 @@ def get_s2m2_disparity(
 
 
 def compute_stereo_depth(scene_constants, s2m2_model, run_stereo_matching, device):
-  print("  Running S2M2 stereo depth inference (frame-by-frame)...")
 
   for cam_id in scene_constants["camera"]:
     cam_data = scene_constants["camera"][cam_id]
@@ -103,7 +102,6 @@ def build_universal_gripper_mask(scene_constants, sam_predictor):
   cam_data = scene_constants["camera"][wrist_cam]
   gripper_states = scene_constants["robot"].get("gripper_positions")
   closed_indices = np.where(gripper_states < 0.05)[0]
-  print(f"  Building consensus gripper mask from {len(closed_indices)} closed-gripper frames...")
 
   masks_list = []
   for idx in tqdm(closed_indices, desc="SAM mask"):
@@ -116,7 +114,6 @@ def build_universal_gripper_mask(scene_constants, sam_predictor):
   n_frames = len(gripper_states)
   cam_data["sam_real_masks"] = np.zeros((n_frames, *final_mask.shape), dtype=bool)
   cam_data["sam_real_masks"][closed_indices] = final_mask
-  print(f"  Gripper consensus mask built and broadcast to {len(closed_indices)} frames.")
 
   return scene_constants
 
@@ -129,7 +126,6 @@ def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
   h, w = cam_data["video_rgb"][0].shape[:2]
   num_frames = len(closed_indices)
 
-  print(f"  Distilling gripper depth from {num_frames} closed-gripper frames...")
   depth_bank = np.full((num_frames, h, w), np.nan, dtype=np.float32)
 
   for i, idx in enumerate(tqdm(closed_indices, desc="Depth collect")):
@@ -138,12 +134,10 @@ def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
     valid_pixels = (mask > 0) & (raw_depth > 0) & (raw_depth < max_depth_thresh)
     depth_bank[i, valid_pixels] = raw_depth[valid_pixels]
 
-  print("  Computing temporal median depth...")
   observed = ~np.isnan(depth_bank).all(axis=0)
   median_depth = np.zeros((h, w), dtype=np.float32)
   median_depth[observed] = np.nanmedian(depth_bank[:, observed], axis=0)
   cam_data["empirical_gripper_depth"] = median_depth
-  print("  Gripper depth distillation complete.")
 
   return scene_constants
 
@@ -157,15 +151,10 @@ def inject_gripper_depth(scene_constants):
   closed_indices = np.where(gripper_states < 0.05)[0]
   valid_mask = empirical_depth > 0
 
-  print(f"  Injecting distilled gripper depth into {len(closed_indices)} frames...")
   cam_data["raw_depth"][closed_indices] = np.where(
     valid_mask,
     empirical_depth,
     cam_data["raw_depth"][closed_indices],
   )
-
-  replaced_pixels_per_frame = int(np.sum(valid_mask))
-  total_replaced = len(closed_indices) * replaced_pixels_per_frame
-  print(f"  Injection complete! {total_replaced} noisy depth pixels replaced.")
 
   return scene_constants

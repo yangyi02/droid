@@ -26,7 +26,6 @@ def find_static_candidates(
   wrist_serial = scene_constants["meta"].get("wrist_serial")
 
   static_cams = [c for c in camera_ids if c != wrist_serial]
-  print(f"  Querying at frame 0 on all {len(camera_ids)} cameras (dense)")
 
   pb_renderer.update_robot_pose(
     scene_constants["robot"]["joint_positions"][0],
@@ -53,7 +52,6 @@ def find_static_candidates(
     vs, us = np.where(valid_mask)
 
     if len(us) == 0:
-      print(f"    [{cam_id}] 0 env pixels with depth")
       continue
 
     z = depth[vs, us]
@@ -66,12 +64,6 @@ def find_static_candidates(
 
     per_cam_pts[cam_id] = pts_3d
     per_cam_rgb[cam_id] = rgb
-    n_robot = np.sum(robot_mask_dilated & has_depth)
-    n_no_depth = np.sum(is_env & ~has_depth)
-    print(
-      f"    [{cam_id}] {len(us)} env / {n_robot} robot / "
-      f"{n_no_depth} no-depth  (dense {w_img}×{h_img})"
-    )
 
   all_verified_pts = []
   all_verified_rgb = []
@@ -105,7 +97,6 @@ def find_static_candidates(
 
     verified = n_agree >= 1
     n_verified = np.sum(verified)
-    print(f"    [{src_cam[:8]}] {n_verified}/{len(pts)} verified by cross-view depth")
 
     if n_verified > 0:
       all_verified_pts.append(pts[verified])
@@ -113,11 +104,10 @@ def find_static_candidates(
 
   all_pts = np.concatenate(all_verified_pts, axis=0)
   all_rgb = np.concatenate(all_verified_rgb, axis=0)
-  print(f"\n  Total verified points (pre-dedup): {len(all_pts)}")
+  print(f"  Total verified points (pre-dedup): {len(all_pts)}")
 
   dedup_pts, dedup_rgb = _voxel_dedup(all_pts, all_rgb, voxel_size=match_radius * 2)
-  if len(dedup_pts) < len(all_pts):
-    print(f"  After dedup: {len(dedup_pts)}")
+  print(f"  After dedup: {len(dedup_pts)}")
 
   n_before = len(dedup_pts)
   stats = _measure_depth_gaps(
@@ -137,30 +127,13 @@ def find_static_candidates(
   )
   keep = ~(gone | jitters)
   dedup_pts, dedup_rgb = dedup_pts[keep], dedup_rgb[keep]
-  print(
-    f"  Static verification ({stats['n_frames']} frames, tau "
-    f"{tau * 1000:.0f}mm): {n_before} -> {len(dedup_pts)} points"
-  )
-  print(
-    f"    support left ({min_run_frames}+ consecutive frames past the surface): {int(gone.sum())}"
-  )
-  if flicker is None:
-    print("    visibility flicker: disabled")
-  else:
-    print(
-      f"    visibility flicker (>{flicker:.0%} of frames): "
-      f"{int(jitters.sum())} ({int((jitters & ~gone).sum())} for this "
-      f"reason alone)"
-    )
 
   if num_points is not None and len(dedup_pts) > num_points:
     rng = np.random.default_rng(42)
     idx = rng.choice(len(dedup_pts), num_points, replace=False)
     dedup_pts = dedup_pts[idx]
     dedup_rgb = dedup_rgb[idx]
-    print(f"  Subsampled to {num_points} points")
 
-  print(f"  Found {len(dedup_pts)} static background points")
   return dedup_pts, dedup_rgb
 
 
@@ -270,8 +243,6 @@ def project_static_tracks(
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
   N = len(static_pts_3d)
 
-  print(f"\nProject {N} Static Points -> {len(camera_ids)} Views x {T_frames} Frames")
-
   per_cam_tracks = {cam: np.zeros((T_frames, N, 2), dtype=np.float32) for cam in camera_ids}
   per_cam_vis = {cam: np.zeros((T_frames, N), dtype=bool) for cam in camera_ids}
   kernel = np.ones((safe_margin, safe_margin), np.uint8)
@@ -319,9 +290,7 @@ def project_static_tracks(
 
     per_cam_tracks[cam_id] = tracks
     per_cam_vis[cam_id] = vis
-
-    vis_rate = vis.mean() * 100
-    print(f"  [{cam_id}] avg visibility: {vis_rate:.1f}%")
+    print(f"  [{cam_id}] avg visibility: {vis.mean() * 100:.1f}%")
 
   return per_cam_tracks, per_cam_vis
 
@@ -329,8 +298,6 @@ def project_static_tracks(
 def compute_robot_tracks(scene_constants, scene_state, pb_renderer, max_robot_pts_per_cam=None):
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
-
-  print(f"\nURDF FK Robot Tracking (max {max_robot_pts_per_cam} pts/cam)")
 
   urdf_tracker = core.tracking.URDFKinematicsTracker(pb_renderer)
   robot_traj_3d_all = []
@@ -366,7 +333,6 @@ def compute_robot_tracks(scene_constants, scene_state, pb_renderer, max_robot_pt
       cam: np.concatenate(robot_per_cam_vis_all[cam], axis=1) for cam in camera_ids
     }
     n_robot = robot_traj_3d.shape[1]
-    print(f"  Total robot points: {n_robot}")
   else:
     robot_traj_3d = np.zeros((T_frames, 0, 3), dtype=np.float32)
     robot_per_cam_tracks = {cam: np.zeros((T_frames, 0, 2), dtype=np.float32) for cam in camera_ids}
@@ -388,8 +354,6 @@ def merge_tracks(
 ):
   n_static = len(static_pts_3d)
   n_robot = robot_traj_3d.shape[1]
-
-  print("\nMerging Static Background + Robot Tracks")
   print(f"  Static: {n_static} | Robot: {n_robot} | Total: {n_static + n_robot}")
 
   if n_static > 0:
@@ -448,8 +412,6 @@ def export_tracks(
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_id)))
   os.makedirs(ep_dir, exist_ok=True)
 
-  T, N, _ = final_traj_3d.shape
-
   np.savez_compressed(
     os.path.join(ep_dir, "tracks_3d.npz"),
     traj_3d=final_traj_3d.astype(np.float32),
@@ -489,7 +451,6 @@ def export_tracks(
     point_type=np.array([0] * n_static + [1] * n_robot, dtype=np.uint8),
   )
 
-  print(f"  Exported {N} tracks × {T} frames to {ep_dir}")
   return ep_dir
 
 
@@ -503,17 +464,14 @@ def process_episode(
   num_static_points=300,
   max_robot_pts_per_cam=100,
 ):
-  print(f"\nProcessing Episode: {episode_id}")
 
   scene_constants = core.io.load_depth_data(episode_id, depth_root, load_video="full")
   scene_state = core.io.load_extrinsics(scene_constants, extrinsics_root)
 
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
-  print(f"  {len(camera_ids)} cameras × {T_frames} frames (full video)")
 
-  print("\nDense at t=0 -> Cross-View Consensus -> Static Points")
-  static_pts_3d, static_rgb = find_static_candidates(
+  static_pts_3d, _ = find_static_candidates(
     scene_constants, scene_state, pb_renderer, num_points=num_static_points
   )
 
@@ -556,10 +514,6 @@ def process_episode(
     export_root,
   )
 
-  print(
-    f"\n  Episode {episode_id}: {n_static} static + {n_robot} robot "
-    f"= {n_static + n_robot} tracks exported."
-  )
   return n_static + n_robot
 
 
@@ -595,7 +549,6 @@ if __name__ == "__main__":
   )
   args = parser.parse_args()
 
-  print("DROID Stage 3: Static Background + Robot Tracks")
   device = core.io.get_accelerator()
   pb_renderer = core.physics.PyBulletRenderer()
 

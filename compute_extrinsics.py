@@ -299,7 +299,7 @@ def global_joint_alignment(
     loss_total.backward()
     optimizer.step()
 
-    if step % 50 == 0 or step == n_steps - 1:
+    if step % 100 == 0 or step == n_steps - 1:
       overlap = (o12 + o1w + o2w) / 3.0 * 100
       shift_c1 = torch.norm(d1[3:]).item() * 1000
       shift_c2 = torch.norm(d2[3:]).item() * 1000
