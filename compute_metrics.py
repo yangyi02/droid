@@ -415,6 +415,7 @@ def _read_done(csv_path):
 
 
 def _append_row(csv_path, metrics):
+  os.makedirs(os.path.dirname(csv_path), exist_ok=True)
   with open(csv_path, "a", newline="") as f:
     fcntl.flock(f, fcntl.LOCK_EX)
     f.seek(0, 2)
@@ -428,7 +429,6 @@ def _append_row(csv_path, metrics):
 def main(_):
   config = config_flag.value
   output_dir = os.path.abspath(os.path.expanduser(config.paths.metrics))
-  os.makedirs(output_dir, exist_ok=True)
   csv_path = os.path.join(output_dir, "metrics.csv")
 
   available = (
