@@ -116,37 +116,27 @@ def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=None):
   metrics["chamfer_12"] = sum_l12 / n_valid
   metrics["chamfer_1w"] = sum_l1w / n_valid
   metrics["chamfer_2w"] = sum_l2w / n_valid
-  metrics["chamfer_total"] = (sum_l12 + sum_l1w + sum_l2w) / n_valid
-  metrics["bg_overlap_pct"] = (sum_o12 + sum_o1w + sum_o2w) / (3.0 * n_valid) * 100
+  metrics["chamfer_mean"] = (sum_l12 + sum_l1w + sum_l2w) / (3.0 * n_valid)
+  metrics["overlap_12"] = sum_o12 / n_valid * 100
+  metrics["overlap_1w"] = sum_o1w / n_valid * 100
+  metrics["overlap_2w"] = sum_o2w / n_valid * 100
+  metrics["overlap_mean"] = (sum_o12 + sum_o1w + sum_o2w) / (3.0 * n_valid) * 100
 
   return metrics
 
 
 def print_metrics(metrics, stage_name=""):
-  chamfer = metrics.get("chamfer_total", float("nan"))
+  chamfer = metrics.get("chamfer_mean", float("nan"))
   rob1 = metrics.get("robot_loss_cam1", float("nan"))
   rob2 = metrics.get("robot_loss_cam2", float("nan"))
   robw = metrics.get("robot_loss_wrist", float("nan"))
-  overlap = metrics.get("bg_overlap_pct", float("nan"))
-  track = metrics.get("track_reproj_mean_px", float("nan"))
-  wrist_bg = metrics.get("track_reproj_wrist_bg_mean_px", float("nan"))
-  wrist_bg_med = metrics.get("track_reproj_wrist_bg_median_px", float("nan"))
-  static_robot = metrics.get("track_reproj_static_robot_mean_px", float("nan"))
-  static_robot_med = metrics.get("track_reproj_static_robot_median_px", float("nan"))
+  overlap = metrics.get("overlap_mean", float("nan"))
 
   header = f"Metrics after {stage_name}" if stage_name else "Metrics"
   print(f"\n{header}")
-  print(f"  Chamfer total: {chamfer:.4f}")
+  print(f"  Chamfer mean:  {chamfer:.4f}")
   print(f"  Robot depth:   cam1={rob1:.4f}  cam2={rob2:.4f}  wrist={robw:.4f}")
-  print(f"  BG overlap:    {overlap:.1f}%")
-  if not np.isnan(wrist_bg):
-    med_s = f"  median={wrist_bg_med:.2f}" if not np.isnan(wrist_bg_med) else ""
-    print(f"  Track wristBG: mean={wrist_bg:.2f} px{med_s}  primary")
-  if not np.isnan(static_robot):
-    med_s2 = f"  median={static_robot_med:.2f}" if not np.isnan(static_robot_med) else ""
-    print(f"  Track robot:   mean={static_robot:.2f} px{med_s2}")
-  if not np.isnan(track) and np.isnan(wrist_bg) and np.isnan(static_robot):
-    print(f"  Track reproj:  mean={track:.2f} px")
+  print(f"  Cloud overlap: {overlap:.1f}%")
 
   shift_keys = [k for k in sorted(metrics.keys()) if k.startswith("shift_mm_")]
   if shift_keys:
@@ -272,68 +262,6 @@ def compute_track_visibility_stats(final_per_cam_vis, n_static, n_robot):
   return stats
 
 
-def compute_reprojection_error(traj_3d, traj_2d, vis_2d, intrinsics, extrinsics_w2c):
-  T, N, _ = traj_3d.shape
-  fx, fy, cx, cy = intrinsics
-
-  ones = np.ones((T, N, 1), dtype=traj_3d.dtype)
-  pts_homo = np.concatenate([traj_3d, ones], axis=2)
-
-  pts_cam = np.einsum('tij,tnj->tni', extrinsics_w2c, pts_homo)
-
-  z = pts_cam[:, :, 2]
-  valid = vis_2d & (z > 0.01)
-
-  if not valid.any():
-    return np.array([], dtype=np.float32)
-
-  with np.errstate(divide='ignore', invalid='ignore'):
-    u_proj = fx * pts_cam[:, :, 0] / z + cx
-    v_proj = fy * pts_cam[:, :, 1] / z + cy
-
-  du = u_proj - traj_2d[:, :, 0]
-  dv = v_proj - traj_2d[:, :, 1]
-  errors = np.sqrt(du * du + dv * dv)
-
-  return errors[valid].astype(np.float32)
-
-
-def compute_reprojection_stats(traj_3d, per_cam_tracks_2d, tracks_root, episode_id):
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(tracks_root, episode_id)))
-
-  all_errors = []
-  cam_dirs = sorted([d for d in os.listdir(ep_dir) if os.path.isdir(os.path.join(ep_dir, d))])
-
-  for cam_dir_name in cam_dirs:
-    cam_dir = os.path.join(ep_dir, cam_dir_name)
-    tracks_2d_path = os.path.join(cam_dir, "tracks_2d.npz")
-    intrinsics_path = os.path.join(cam_dir, "intrinsics.npy")
-    extrinsics_path = os.path.join(cam_dir, "extrinsics_w2c.npy")
-
-    if not all(os.path.exists(p) for p in [tracks_2d_path, intrinsics_path, extrinsics_path]):
-      continue
-
-    cam_data = np.load(tracks_2d_path)
-    traj_2d = cam_data["traj_2d"]
-    vis_2d = cam_data["vis_2d"]
-    intrinsics = np.load(intrinsics_path)
-    extrinsics_w2c = np.load(extrinsics_path)
-
-    errs = compute_reprojection_error(traj_3d, traj_2d, vis_2d, intrinsics, extrinsics_w2c)
-    if len(errs) > 0:
-      all_errors.append(errs)
-
-  if not all_errors:
-    return {}
-
-  all_errs = np.concatenate(all_errors)
-  return {
-    "reproj_mean_px": float(np.mean(all_errs)),
-    "reproj_median_px": float(np.median(all_errs)),
-    "reproj_p95_px": float(np.percentile(all_errs, 95)),
-  }
-
-
 def compute_motion_stats(scene_constants):
   robot = scene_constants["robot"]
   joints = robot["joint_positions"]
@@ -384,31 +312,6 @@ def compute_scene_metadata(scene_constants):
   }
 
 
-def compute_depth_coverage_stats(scene_constants):
-  stats = {}
-  all_coverage = []
-
-  for cam_id in scene_constants["camera"]:
-    cam_data = scene_constants["camera"][cam_id]
-    if "raw_depth" not in cam_data:
-      continue
-
-    depth = cam_data["raw_depth"]
-    valid = (depth > 0.05) & (depth < 10.0)
-    coverage = float(valid.mean() * 100)
-    median_depth = float(np.median(depth[valid])) if valid.any() else float("nan")
-    depth_range = float(depth[valid].max() - depth[valid].min()) if valid.any() else float("nan")
-
-    stats[f"depth_coverage_pct_{cam_id[:8]}"] = coverage
-    stats[f"depth_median_m_{cam_id[:8]}"] = median_depth
-    stats[f"depth_range_m_{cam_id[:8]}"] = depth_range
-    all_coverage.append(coverage)
-
-  stats["depth_coverage_pct_avg"] = float(np.mean(all_coverage)) if all_coverage else 0.0
-
-  return stats
-
-
 def evaluate_episode(
   scene_constants,
   scene_state,
@@ -417,7 +320,6 @@ def evaluate_episode(
   final_per_cam_vis=None,
   n_static=0,
   n_robot=0,
-  tracks_root=None,
   compute_extrinsics_metrics=True,
   pb_renderer=None,
 ):
@@ -427,8 +329,6 @@ def evaluate_episode(
   metrics.update(compute_scene_metadata(scene_constants))
 
   metrics.update(compute_motion_stats(scene_constants))
-
-  metrics.update(compute_depth_coverage_stats(scene_constants))
 
   if compute_extrinsics_metrics:
     ext_metrics = evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=pb_renderer)
@@ -447,10 +347,6 @@ def evaluate_episode(
     )
 
     metrics.update(compute_track_visibility_stats(final_per_cam_vis, n_static, n_robot))
-
-    if tracks_root is not None:
-      reproj = compute_reprojection_stats(final_traj_3d, None, tracks_root, ep_id)
-      metrics.update(reproj)
 
   return metrics
 
@@ -509,7 +405,6 @@ def evaluate_single_episode(
     final_per_cam_vis=final_per_cam_vis,
     n_static=n_static,
     n_robot=n_robot,
-    tracks_root=tracks_root,
     compute_extrinsics_metrics=True,
     pb_renderer=pb_renderer,
   )
@@ -578,7 +473,7 @@ def main():
     _append_row(csv_path, metrics)
     print(
       f"  [OK] Done in {time.time() - t0:.1f}s | "
-      f"chamfer={metrics.get('chamfer_total', float('nan')):.4f} | "
+      f"chamfer={metrics.get('chamfer_mean', float('nan')):.4f} | "
       f"depth_residual_median="
       f"{metrics.get('depth_residual_overall_median_mm', float('nan')):.1f}mm"
     )

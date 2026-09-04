@@ -35,7 +35,7 @@ def apply_quality_filter(
   filtered = []
   n_frozen = 0
   for row in rows:
-    chamfer = safe_float(row.get("chamfer_total"))
+    chamfer = safe_float(row.get("chamfer_mean"))
     depth_res = safe_float(row.get("depth_residual_overall_median_mm"))
     n_static = safe_float(row.get("n_static"), 0)
     n_frames = safe_float(row.get("n_frames"), 0)
@@ -126,7 +126,10 @@ def main():
   )
   parser.add_argument("--n", type=int, default=50, help="Number of episodes to select")
   parser.add_argument(
-    "--max_chamfer", type=float, default=0.10, help="Max chamfer_total threshold (metres)"
+    "--max_chamfer",
+    type=float,
+    default=0.0333,
+    help="Max chamfer_mean threshold (metres, mean over the 3 camera pairs)",
   )
   parser.add_argument(
     "--max_depth_residual",
@@ -202,7 +205,7 @@ def main():
     sites[s] = sites.get(s, 0) + 1
   print(f"   Sites: {dict(sorted(sites.items()))}")
 
-  chamfers = [safe_float(r.get("chamfer_total")) for r in selected]
+  chamfers = [safe_float(r.get("chamfer_mean")) for r in selected]
   chamfers = [c for c in chamfers if not np.isnan(c)]
   if chamfers:
     print(

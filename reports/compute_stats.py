@@ -300,13 +300,13 @@ def main():
         "n_episodes": len(o_med) if o_med else len(s_med),
       }
 
-    chamfer = _extract_metric("chamfer_total")
-    overlap = _extract_metric("bg_overlap_pct")
+    chamfer = _extract_metric("chamfer_mean")
+    overlap = _extract_metric("overlap_mean")
     if chamfer:
       summary["extrinsics_quality"] = {
-        "chamfer_total_mean": round(float(np.mean(chamfer)), 4),
-        "chamfer_total_median": round(float(np.median(chamfer)), 4),
-        "bg_overlap_pct_mean": round(float(np.mean(overlap)), 2) if overlap else None,
+        "mean_chamfer": round(float(np.mean(chamfer)), 4),
+        "median_chamfer": round(float(np.median(chamfer)), 4),
+        "mean_overlap": round(float(np.mean(overlap)), 2) if overlap else None,
         "n_episodes": len(chamfer),
       }
 

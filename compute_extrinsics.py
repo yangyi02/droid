@@ -289,32 +289,33 @@ def global_joint_alignment(
     l12, o12 = batched_chamfer_distance(bc1, bc2, device)
     l1w, o1w = batched_chamfer_distance(bc1, bcw, device)
     l2w, o2w = batched_chamfer_distance(bc2, bcw, device)
-    loss_chamfer = l12 + l1w + l2w
 
     l_rob1 = robot_depth_loss(batch_X1, T1_opt, K_t1, batch_obs1, is_wrist=False)
     l_rob2 = robot_depth_loss(batch_X2, T2_opt, K_t2, batch_obs2, is_wrist=False)
     l_wrist = robot_depth_loss(batch_P_ee, Tee_opt, K_t_w, batch_obs_w, is_wrist=True)
 
-    loss_total = chamfer_weight * loss_chamfer + robot_weight * (l_rob1 + l_rob2 + l_wrist)
+    loss_total = chamfer_weight * (l12 + l1w + l2w) + robot_weight * (l_rob1 + l_rob2 + l_wrist)
 
     loss_total.backward()
     optimizer.step()
 
     if step % 50 == 0 or step == n_steps - 1:
-      bg_overlap = (o12 + o1w + o2w) / 3.0 * 100
+      overlap = (o12 + o1w + o2w) / 3.0 * 100
       shift_c1 = torch.norm(d1[3:]).item() * 1000
       shift_c2 = torch.norm(d2[3:]).item() * 1000
       shift_w = torch.norm(dhe[3:]).item() * 1000
       log_parts = [
         f"Step {step:03d}",
-        f"Chmf: {loss_chamfer.item():.4f}",
+        f"Ch12: {l12.item():.4f}",
+        f"Ch1w: {l1w.item():.4f}",
+        f"Ch2w: {l2w.item():.4f}",
         f"Rob1: {l_rob1.item():.4f}",
         f"Rob2: {l_rob2.item():.4f}",
         f"Wrst: {l_wrist.item():.4f}",
       ]
       log_parts.extend(
         [
-          f"BG Overlap: {bg_overlap:.1f}%",
+          f"Overlap: {overlap:.1f}%",
           f"Shift: C1: {shift_c1:.2f}mm, C2: {shift_c2:.2f}mm, W: {shift_w:.2f}mm",
         ]
       )
