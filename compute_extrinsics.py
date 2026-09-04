@@ -39,10 +39,7 @@ def init_camera_states(scene_constants, extrinsics_db):
       base_ext = None
       cam_trajectory = None
 
-    scene_state[cam_id] = {
-      "base_extrinsic": base_ext,
-      "extrinsics": cam_trajectory,
-    }
+    scene_state[cam_id] = {"base_extrinsic": base_ext, "extrinsics": cam_trajectory}
 
   return scene_state
 
@@ -330,22 +327,13 @@ def global_joint_alignment(
 
   ultimate_scene_state = {c: {} for c in scene_constants['camera'].keys()}
   ultimate_scene_state[cam1].update(
-    {
-      "base_extrinsic": final_p1,
-      "extrinsics": np.tile(final_p1, (n_frames, 1, 1)),
-    }
+    {"base_extrinsic": final_p1, "extrinsics": np.tile(final_p1, (n_frames, 1, 1))}
   )
   ultimate_scene_state[cam2].update(
-    {
-      "base_extrinsic": final_p2,
-      "extrinsics": np.tile(final_p2, (n_frames, 1, 1)),
-    }
+    {"base_extrinsic": final_p2, "extrinsics": np.tile(final_p2, (n_frames, 1, 1))}
   )
   ultimate_scene_state[wrist_cam].update(
-    {
-      "base_extrinsic": final_cam_ee,
-      "extrinsics": T_ee_all @ final_cam_ee,
-    }
+    {"base_extrinsic": final_cam_ee, "extrinsics": T_ee_all @ final_cam_ee}
   )
 
   return ultimate_scene_state
@@ -436,10 +424,5 @@ if __name__ == "__main__":
     process_episode(ep_id, pb_renderer, extrinsics_db, args.depth_root, args.export_root, device)
 
   core.runner.run_episodes(
-    target,
-    run_one,
-    rank=args.rank,
-    world_size=args.world_size,
-    done=done,
-    stage="Stage 2",
+    target, run_one, rank=args.rank, world_size=args.world_size, done=done, stage="Stage 2"
   )

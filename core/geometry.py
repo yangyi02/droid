@@ -48,31 +48,22 @@ def make_4x4(vec_6d):
   return transform
 
 
-def axis_angle_to_matrix(rot_vec):
-  theta2 = torch.sum(rot_vec**2)
+def axis_angle_to_matrix(v):
+  theta2 = torch.sum(v**2)
   theta = torch.sqrt(theta2 + 1e-16)
-  k = rot_vec / theta
+  k = v / theta
 
-  K = torch.zeros((3, 3), device=rot_vec.device)
+  K = torch.zeros((3, 3), device=v.device)
   K[0, 1], K[0, 2], K[1, 0], K[1, 2], K[2, 0], K[2, 1] = -k[2], k[1], k[2], -k[0], -k[1], k[0]
 
   R_exact = (
-    torch.eye(3, device=rot_vec.device)
-    + torch.sin(theta) * K
-    + (1 - torch.cos(theta)) * torch.mm(K, K)
+    torch.eye(3, device=v.device) + torch.sin(theta) * K + (1 - torch.cos(theta)) * torch.mm(K, K)
   )
 
-  K_approx = torch.zeros_like(K)
-  K_approx[0, 1], K_approx[0, 2], K_approx[1, 0], K_approx[1, 2], K_approx[2, 0], K_approx[2, 1] = (
-    -rot_vec[2],
-    rot_vec[1],
-    rot_vec[2],
-    -rot_vec[0],
-    -rot_vec[1],
-    rot_vec[0],
-  )
+  Ka = torch.zeros_like(K)
+  Ka[0, 1], Ka[0, 2], Ka[1, 0], Ka[1, 2], Ka[2, 0], Ka[2, 1] = -v[2], v[1], v[2], -v[0], -v[1], v[0]
 
-  return torch.where(theta2 < 1e-8, torch.eye(3, device=rot_vec.device) + K_approx, R_exact)
+  return torch.where(theta2 < 1e-8, torch.eye(3, device=v.device) + Ka, R_exact)
 
 
 def make_T(delta, device):

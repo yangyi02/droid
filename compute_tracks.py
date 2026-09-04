@@ -427,9 +427,7 @@ def export_tracks(
     traj_2d[~vis] = -1000.0
 
     np.savez_compressed(
-      os.path.join(cam_dir, "tracks_2d.npz"),
-      traj_2d=traj_2d.astype(np.float32),
-      vis_2d=vis,
+      os.path.join(cam_dir, "tracks_2d.npz"), traj_2d=traj_2d.astype(np.float32), vis_2d=vis
     )
 
     cam_data = scene_constants["camera"][cam_id]
@@ -571,10 +569,5 @@ if __name__ == "__main__":
     )
 
   core.runner.run_episodes(
-    target,
-    run_one,
-    rank=args.rank,
-    world_size=args.world_size,
-    done=done,
-    stage="Stage 3",
+    target, run_one, rank=args.rank, world_size=args.world_size, done=done, stage="Stage 3"
   )

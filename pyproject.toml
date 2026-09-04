@@ -6,6 +6,10 @@ extend-exclude = ["third_party", "venv", "data"]
 [tool.ruff.lint]
 extend-select = ["E501"]
 
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
 [tool.ruff.format]
 indent-style = "space"
 quote-style = "preserve"
+skip-magic-trailing-comma = true

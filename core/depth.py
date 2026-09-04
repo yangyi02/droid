@@ -152,9 +152,7 @@ def inject_gripper_depth(scene_constants):
   valid_mask = empirical_depth > 0
 
   cam_data["raw_depth"][closed_indices] = np.where(
-    valid_mask,
-    empirical_depth,
-    cam_data["raw_depth"][closed_indices],
+    valid_mask, empirical_depth, cam_data["raw_depth"][closed_indices]
   )
 
   return scene_constants

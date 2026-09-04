@@ -11,10 +11,7 @@ import torch.nn.functional as F
 
 _SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_URDF = os.path.join(
-  _SCRIPT_DIR,
-  "assets",
-  "franka_description",
-  "franka_panda_robotiq_2f85_og.urdf",
+  _SCRIPT_DIR, "assets", "franka_description", "franka_panda_robotiq_2f85_og.urdf"
 )
 
 
@@ -212,25 +209,12 @@ def get_foreground_robot_points(
     return None
 
   P_cam_r = np.stack(
-    [
-      (u_r - K[0, 2]) * z_r / K[0, 0],
-      (v_r - K[1, 2]) * z_r / K[1, 1],
-      z_r,
-      np.ones_like(z_r),
-    ]
+    [(u_r - K[0, 2]) * z_r / K[0, 0], (v_r - K[1, 2]) * z_r / K[1, 1], z_r, np.ones_like(z_r)]
   )
   pts_robot_world = (T_init @ P_cam_r)[:3, :].T
 
-  idx = np.random.choice(
-    len(pts_robot_world),
-    max_pts,
-    replace=(len(pts_robot_world) < max_pts),
-  )
-  return torch.tensor(
-    pts_robot_world[idx],
-    dtype=torch.float32,
-    device=device,
-  )
+  idx = np.random.choice(len(pts_robot_world), max_pts, replace=(len(pts_robot_world) < max_pts))
+  return torch.tensor(pts_robot_world[idx], dtype=torch.float32, device=device)
 
 
 def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer, device, max_pts=2000):
@@ -239,9 +223,7 @@ def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer, device
   cam_pos = T_cam_world[:3, 3]
   target_pos = T_cam_world[:3, 3] + T_cam_world[:3, 2]
   view_matrix = p.computeViewMatrix(
-    cam_pos.tolist(),
-    target_pos.tolist(),
-    (-T_cam_world[:3, 1]).tolist(),
+    cam_pos.tolist(), target_pos.tolist(), (-T_cam_world[:3, 1]).tolist()
   )
   proj_matrix = pb_renderer._get_projection_matrix(K, w_img, h_img)
 
@@ -265,12 +247,7 @@ def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer, device
     return None
 
   P_cam_r = np.stack(
-    [
-      (u_r - K[0, 2]) * z_r / K[0, 0],
-      (v_r - K[1, 2]) * z_r / K[1, 1],
-      z_r,
-      np.ones_like(z_r),
-    ]
+    [(u_r - K[0, 2]) * z_r / K[0, 0], (v_r - K[1, 2]) * z_r / K[1, 1], z_r, np.ones_like(z_r)]
   )
 
   idx = np.random.choice(len(z_r), max_pts, replace=(len(z_r) < max_pts))
@@ -286,22 +263,10 @@ def compute_robot_loss_batched(batch_X, T_opt, K, batch_obs):
   u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
   v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
 
-  grid = torch.stack(
-    [
-      (u / (w_img - 1)) * 2 - 1,
-      (v / (h_img - 1)) * 2 - 1,
-    ],
-    dim=-1,
-  ).unsqueeze(1)
+  grid = torch.stack([(u / (w_img - 1)) * 2 - 1, (v / (h_img - 1)) * 2 - 1], dim=-1).unsqueeze(1)
 
   Z_obs_raw = (
-    F.grid_sample(
-      batch_obs,
-      grid,
-      mode='bilinear',
-      padding_mode='border',
-      align_corners=True,
-    )
+    F.grid_sample(batch_obs, grid, mode='bilinear', padding_mode='border', align_corners=True)
     .squeeze(1)
     .squeeze(1)
   )
@@ -331,22 +296,10 @@ def compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K, batch_obs):
   u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
   v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
 
-  grid = torch.stack(
-    [
-      (u / (w_img - 1)) * 2 - 1,
-      (v / (h_img - 1)) * 2 - 1,
-    ],
-    dim=-1,
-  ).unsqueeze(1)
+  grid = torch.stack([(u / (w_img - 1)) * 2 - 1, (v / (h_img - 1)) * 2 - 1], dim=-1).unsqueeze(1)
 
   Z_obs_raw = (
-    F.grid_sample(
-      batch_obs,
-      grid,
-      mode='bilinear',
-      padding_mode='border',
-      align_corners=True,
-    )
+    F.grid_sample(batch_obs, grid, mode='bilinear', padding_mode='border', align_corners=True)
     .squeeze(1)
     .squeeze(1)
   )

@@ -68,12 +68,7 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
       "valid_indices": valid_indices,
     },
     "robot": {},
-    "camera": {
-      cam: {
-        "baseline": 0.063 if cam == wrist_serial else 0.120,
-      }
-      for cam in valid_cams
-    },
+    "camera": {cam: {"baseline": 0.063 if cam == wrist_serial else 0.120} for cam in valid_cams},
   }
 
 
@@ -278,21 +273,14 @@ def export_depth(scene_constants, export_root=os.path.join(core.io.OUTPUT_ROOT, 
       )
     if "raw_depth" in data:
       np.savez_compressed(
-        os.path.join(cam_dir, "raw_depth.npz"),
-        depth=(data["raw_depth"] * 1000).astype(np.uint16),
+        os.path.join(cam_dir, "raw_depth.npz"), depth=(data["raw_depth"] * 1000).astype(np.uint16)
       )
 
     if "sam_real_masks" in data:
-      np.savez_compressed(
-        os.path.join(cam_dir, "gripper_mask.npz"),
-        mask=data["sam_real_masks"],
-      )
+      np.savez_compressed(os.path.join(cam_dir, "gripper_mask.npz"), mask=data["sam_real_masks"])
     if "empirical_gripper_depth" in data:
       gripper_uint16 = (data["empirical_gripper_depth"] * 1000).astype(np.uint16)
-      np.savez_compressed(
-        os.path.join(cam_dir, "gripper_depth.npz"),
-        depth=gripper_uint16,
-      )
+      np.savez_compressed(os.path.join(cam_dir, "gripper_depth.npz"), depth=gripper_uint16)
 
     if "zed_calibration" in data:
       calib = data["zed_calibration"]
@@ -397,10 +385,5 @@ if __name__ == "__main__":
     )
 
   core.runner.run_episodes(
-    target,
-    run_one,
-    rank=args.rank,
-    world_size=args.world_size,
-    done=done,
-    stage="Stage 1",
+    target, run_one, rank=args.rank, world_size=args.world_size, done=done, stage="Stage 1"
   )
