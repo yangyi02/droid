@@ -28,6 +28,16 @@ bash run_parallel.sh --mode extrinsics  # Stage 2: extrinsics
 bash run_parallel.sh --mode tracks      # Stage 3: tracks
 ```
 
+Every path, threshold and optimizer setting lives in `config.py`. The stage
+scripts read it through `ml_collections.config_flags`, so any field can be
+overridden on the command line without editing the file:
+
+```bash
+python compute_tracks.py --config.tracks.tau=0.02 --config.tracks.num_static_points=500
+python compute_extrinsics.py --config.extrinsics.lr=0.005 --config.extrinsics.n_steps=800
+python compute_depth.py --config.depth.max_frames=400 --config.runner.limit=20
+```
+
 > If you cloned **without** `--recurse-submodules`, run `bash setup.sh` —
 > it calls `git submodule update --init --recursive` automatically.
 
@@ -109,6 +119,7 @@ droid/
 ├── compute_tracks.py          # Stage 3: Static prior + URDF FK dense 3D tracking
 ├── compute_metrics.py         # Batch quality metrics evaluation (GCP)
 ├── run_parallel.sh            # Multi-GPU parallel runner for the stages above
+├── config.py                  # Paths, GCS buckets and every hyperparameter (ConfigDict)
 ├── setup.sh                   # One-shot dependency + weights setup (--no-depth skips Stage 1)
 ├── mount_gcs.sh               # GCS bucket mount helper
 ├── core/                      # Shared algorithmic modules

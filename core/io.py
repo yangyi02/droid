@@ -6,12 +6,6 @@ import mediapy as media
 import numpy as np
 import torch
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_ROOT = os.path.join(REPO_ROOT, "data")
-META_ROOT = os.path.join(DATA_ROOT, "meta", "1.0.1")
-INPUT_ROOT = os.path.join(DATA_ROOT, "input")
-OUTPUT_ROOT = os.path.join(DATA_ROOT, "output", "droid")
-
 
 def get_accelerator(force_egl=True):
   if force_egl:
@@ -19,11 +13,11 @@ def get_accelerator(force_egl=True):
   return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def load_metadata(meta_root=META_ROOT):
-  root_path = os.path.expanduser(meta_root)
+def load_metadata(config):
+  root_path = os.path.expanduser(config.paths.meta)
   os.makedirs(root_path, exist_ok=True)
 
-  base_url = "https://huggingface.co/KarlP/droid/resolve/main"
+  base_url = config.urls.meta
   files = [
     "camera_serials.json",
     "episode_id_to_path.json",
@@ -49,12 +43,7 @@ def load_metadata(meta_root=META_ROOT):
   return serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids
 
 
-def load_depth_data(
-  episode_id,
-  depth_root=os.path.join(OUTPUT_ROOT, "depth"),
-  load_video="first_frame",
-  inspection=False,
-):
+def load_depth_data(episode_id, depth_root, load_video="first_frame", inspection=False):
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(depth_root, episode_id)))
 
   robot_data = np.load(os.path.join(ep_dir, "robot.npz"), allow_pickle=True)
@@ -135,7 +124,7 @@ def load_depth_data(
   return scene_constants
 
 
-def load_extrinsics(scene_constants, extrinsics_root=os.path.join(OUTPUT_ROOT, "extrinsics")):
+def load_extrinsics(scene_constants, extrinsics_root):
   ep_id = scene_constants["meta"]["episode_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(extrinsics_root, ep_id)))
 

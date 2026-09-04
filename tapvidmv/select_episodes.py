@@ -8,7 +8,9 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import core.io
+from config import get_config
+
+config = get_config()
 
 
 def load_metrics(csv_path):
@@ -121,7 +123,7 @@ def main():
   parser.add_argument(
     "--input",
     type=str,
-    default=os.path.join(core.io.OUTPUT_ROOT, "metrics", "metrics.csv"),
+    default=os.path.join(config.paths.metrics, "metrics.csv"),
     help="Path to metrics CSV",
   )
   parser.add_argument("--n", type=int, default=50, help="Number of episodes to select")

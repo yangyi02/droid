@@ -9,11 +9,6 @@ import pybullet_data
 import torch
 import torch.nn.functional as F
 
-_SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DEFAULT_URDF = os.path.join(
-  _SCRIPT_DIR, "assets", "franka_description", "franka_panda_robotiq_2f85_og.urdf"
-)
-
 
 def _hidden_on_arm(name):
   return "hand" in name or "finger" in name
@@ -52,9 +47,7 @@ def _trimmed_urdf(src, hidden):
 
 
 class PyBulletRenderer:
-  def __init__(self, ghost_urdf=None, gpu=False):
-    if ghost_urdf is None:
-      ghost_urdf = _DEFAULT_URDF
+  def __init__(self, ghost_urdf, gpu=False):
 
     if p.isConnected():
       p.disconnect()

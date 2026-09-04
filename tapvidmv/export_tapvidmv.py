@@ -7,8 +7,11 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from config import get_config
 import core.io
 import core.runner
+
+config = get_config()
 
 
 def read_episode_list(path):
@@ -74,7 +77,7 @@ def export_to_tapvid3d(
   final_traj_3d,
   final_per_cam_tracks,
   final_per_cam_vis,
-  output_root=os.path.join(core.io.OUTPUT_ROOT, "tapvidmv"),
+  output_root=config.paths.tapvidmv,
   include_depth=True,
   include_foreground_mask=True,
   jpeg_quality=95,
@@ -185,7 +188,9 @@ def process_episode(episode_id, args):
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Export DROID pipeline outputs to TAPVid-3D format")
-  core.runner.add_sharding_args(parser)
+  parser.add_argument("--rank", type=int, default=0)
+  parser.add_argument("--world_size", type=int, default=1)
+  parser.add_argument("--limit", type=int, default=-1)
   parser.add_argument(
     "--episode_id",
     type=str,
@@ -203,18 +208,11 @@ if __name__ == "__main__":
     "that has tracks instead",
   )
   parser.add_argument(
-    "--output_root",
-    type=str,
-    default=os.path.join(core.io.OUTPUT_ROOT, "tapvidmv"),
-    help="Root output directory",
+    "--output_root", type=str, default=config.paths.tapvidmv, help="Root output directory"
   )
-  parser.add_argument("--depth_root", type=str, default=os.path.join(core.io.OUTPUT_ROOT, "depth"))
-  parser.add_argument(
-    "--extrinsics_root", type=str, default=os.path.join(core.io.OUTPUT_ROOT, "extrinsics")
-  )
-  parser.add_argument(
-    "--tracks_root", type=str, default=os.path.join(core.io.OUTPUT_ROOT, "tracks")
-  )
+  parser.add_argument("--depth_root", type=str, default=config.paths.depth)
+  parser.add_argument("--extrinsics_root", type=str, default=config.paths.extrinsics)
+  parser.add_argument("--tracks_root", type=str, default=config.paths.tracks)
   parser.add_argument("--no_depth", action="store_true", help="Skip depth.npy export")
   parser.add_argument(
     "--no_foreground_mask", action="store_true", help="Skip foreground_mask.npy export"

@@ -26,14 +26,18 @@ def get_s2m2_disparity(
   return disp
 
 
-def compute_stereo_depth(scene_constants, s2m2_model, run_stereo_matching, device):
+def compute_stereo_depth(
+  scene_constants, s2m2_model, run_stereo_matching, device, conf_thresh=0.95
+):
 
   for cam_id in scene_constants["camera"]:
     cam_data = scene_constants["camera"][cam_id]
     left_seq, right_seq = cam_data["video_rgb"], cam_data["video_right"]
 
     disp_frames = [
-      get_s2m2_disparity(left_img, right_img, s2m2_model, run_stereo_matching, device=device)
+      get_s2m2_disparity(
+        left_img, right_img, s2m2_model, run_stereo_matching, device=device, conf_thresh=conf_thresh
+      )
       for left_img, right_img in tqdm(
         zip(left_seq, right_seq), total=len(left_seq), desc=f"Depth [{cam_id}]"
       )
@@ -97,7 +101,7 @@ def compute_consensus_mask(masks_list, consensus_thresh=0.5):
   return consensus_mask
 
 
-def build_universal_gripper_mask(scene_constants, sam_predictor):
+def build_universal_gripper_mask(scene_constants, sam_predictor, consensus_thresh=0.5):
   wrist_cam = scene_constants["meta"].get("wrist_serial")
   cam_data = scene_constants["camera"][wrist_cam]
   gripper_states = scene_constants["robot"].get("gripper_positions")
@@ -109,7 +113,7 @@ def build_universal_gripper_mask(scene_constants, sam_predictor):
     mask = extract_single_frame_mask(img, sam_predictor)
     masks_list.append(mask)
 
-  final_mask = compute_consensus_mask(masks_list)
+  final_mask = compute_consensus_mask(masks_list, consensus_thresh=consensus_thresh)
 
   n_frames = len(gripper_states)
   cam_data["sam_real_masks"] = np.zeros((n_frames, *final_mask.shape), dtype=bool)

@@ -1,9 +1,10 @@
 torch
 numpy
-pybullet  # setup.sh rebuilds this from source so NumPy support is on
+pybullet
 opencv-python
 scipy
 matplotlib
+ml-collections
 trimesh
 tqdm
 mediapy

@@ -1,4 +1,3 @@
-import argparse
 import glob
 import json
 import os
@@ -8,10 +7,13 @@ import cv2
 import h5py
 import mediapy as media
 import numpy as np
+from absl import app
+from ml_collections import config_flags
 from scipy.spatial.transform import Rotation as R
 import torch
 from tqdm import tqdm
 
+import config
 import core.depth
 import core.geometry
 import core.io
@@ -247,7 +249,7 @@ def align_temporal_streams(scene_constants):
   return scene_constants
 
 
-def export_depth(scene_constants, export_root=os.path.join(core.io.OUTPUT_ROOT, "depth")):
+def export_depth(scene_constants, export_root):
   ep_id = scene_constants["meta"]["episode_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_id)))
   os.makedirs(ep_dir, exist_ok=True)
@@ -318,16 +320,18 @@ def export_depth(scene_constants, export_root=os.path.join(core.io.OUTPUT_ROOT, 
   return ep_dir
 
 
-def process_episode(ep_id, models, dbs, raw_root, min_frames, max_frames, export_root):
+def process_episode(ep_id, models, dbs, raw_root, config):
   s2m2_model, sam_predictor, run_stereo_matching, device = models
   id_to_path, serials_db, keep_ranges = dbs
 
   scene_constants = init_episode(ep_id, raw_root, id_to_path, serials_db, keep_ranges)
-  scene_constants = extract_svo_video(scene_constants, min_frames=min_frames, max_frames=max_frames)
+  scene_constants = extract_svo_video(
+    scene_constants, min_frames=config.depth.min_frames, max_frames=config.depth.max_frames
+  )
   scene_constants = parse_robot_kinematics(scene_constants)
   scene_constants = align_temporal_streams(scene_constants)
   scene_constants = core.depth.compute_stereo_depth(
-    scene_constants, s2m2_model, run_stereo_matching, device
+    scene_constants, s2m2_model, run_stereo_matching, device, conf_thresh=config.depth.conf_thresh
   )
 
   wrist_serial = scene_constants["meta"].get("wrist_serial")
@@ -335,42 +339,27 @@ def process_episode(ep_id, models, dbs, raw_root, min_frames, max_frames, export
   if "raw_depth" in wrist_data:
     wrist_data["original_raw_depth"] = wrist_data["raw_depth"].copy()
 
-  scene_constants = core.depth.build_universal_gripper_mask(scene_constants, sam_predictor)
-  scene_constants = core.depth.distill_empirical_gripper_depth(scene_constants)
+  scene_constants = core.depth.build_universal_gripper_mask(
+    scene_constants, sam_predictor, consensus_thresh=config.depth.consensus_thresh
+  )
+  scene_constants = core.depth.distill_empirical_gripper_depth(
+    scene_constants, max_depth_thresh=config.depth.max_depth_thresh
+  )
   scene_constants = core.depth.inject_gripper_depth(scene_constants)
-  export_depth(scene_constants, export_root=export_root)
+  export_depth(scene_constants, export_root=config.paths.depth)
 
 
-if __name__ == "__main__":
-  parser = argparse.ArgumentParser(description="DROID Stage 1: Stereo Depth")
-  core.runner.add_sharding_args(parser)
-  parser.add_argument(
-    "--min_frames",
-    type=int,
-    default=48,
-    help="Skip episodes with fewer than this many frames (default: 48, -1 to disable)",
-  )
-  parser.add_argument(
-    "--max_frames",
-    type=int,
-    default=250,
-    help="Skip episodes with more than this many frames (default: 250, -1 to disable)",
-  )
-  parser.add_argument(
-    "--export_root",
-    type=str,
-    default=os.path.join(core.io.OUTPUT_ROOT, "depth"),
-    help="Root directory for depth output",
-  )
-  args = parser.parse_args()
-
+def main(_):
+  config = config_flag.value
   device = core.io.get_accelerator()
   s2m2_model, sam_predictor, run_stereo_matching = init_all_models()
-  serials_db, id_to_path, keep_ranges, _, valid_ids = core.io.load_metadata()
-  raw_root = os.path.expanduser(os.path.join(core.io.INPUT_ROOT, "robotics", "droid_raw", "1.0.1"))
+  serials_db, id_to_path, keep_ranges, _, valid_ids = core.io.load_metadata(config)
+  raw_root = os.path.expanduser(config.paths.raw)
 
-  target = core.runner.shard_episodes(valid_ids, args.rank, args.world_size, args.limit)
-  export_abs = os.path.abspath(os.path.expanduser(args.export_root))
+  target = core.runner.shard_episodes(
+    valid_ids, config.runner.rank, config.runner.world_size, config.runner.limit
+  )
+  export_abs = os.path.abspath(os.path.expanduser(config.paths.depth))
   done = {ep for ep in target if os.path.exists(os.path.join(export_abs, ep, "robot.npz"))}
 
   def run_one(ep_id):
@@ -379,11 +368,19 @@ if __name__ == "__main__":
       (s2m2_model, sam_predictor, run_stereo_matching, device),
       (id_to_path, serials_db, keep_ranges),
       raw_root,
-      args.min_frames,
-      args.max_frames,
-      args.export_root,
+      config,
     )
 
   core.runner.run_episodes(
-    target, run_one, rank=args.rank, world_size=args.world_size, done=done, stage="Stage 1"
+    target,
+    run_one,
+    rank=config.runner.rank,
+    world_size=config.runner.world_size,
+    done=done,
+    stage="Stage 1",
   )
+
+
+if __name__ == "__main__":
+  config_flag = config_flags.DEFINE_config_file("config", config.__file__)
+  app.run(main)

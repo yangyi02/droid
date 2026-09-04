@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import csv
 import fcntl
 import os
@@ -7,8 +6,11 @@ import time
 
 import numpy as np
 import torch
+from absl import app
+from ml_collections import config_flags
 
 import compute_extrinsics
+import config
 import core.geometry
 import core.io
 import core.physics
@@ -391,26 +393,18 @@ def evaluate_single_episode(
   scene_state = core.io.load_extrinsics(scene_constants, extrinsics_root)
 
   tracks = load_track_data(episode_id, tracks_root)
-  has_tracks = tracks is not None
-  final_traj_3d = tracks["traj_3d"] if has_tracks else None
-  final_per_cam_vis = tracks["per_cam_vis"] if has_tracks else None
-  n_static = tracks["n_static"] if has_tracks else 0
-  n_robot = tracks["n_robot"] if has_tracks else 0
 
-  metrics = evaluate_episode(
+  return evaluate_episode(
     scene_constants,
     scene_state,
     device,
-    final_traj_3d=final_traj_3d,
-    final_per_cam_vis=final_per_cam_vis,
-    n_static=n_static,
-    n_robot=n_robot,
+    final_traj_3d=tracks["traj_3d"],
+    final_per_cam_vis=tracks["per_cam_vis"],
+    n_static=tracks["n_static"],
+    n_robot=tracks["n_robot"],
     compute_extrinsics_metrics=True,
     pb_renderer=pb_renderer,
   )
-  metrics["has_tracks"] = has_tracks
-
-  return metrics
 
 
 def _read_done(csv_path):
@@ -431,44 +425,25 @@ def _append_row(csv_path, metrics):
     fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def main():
-  parser = argparse.ArgumentParser(
-    description="Batch quality metrics evaluation for DROID episodes"
-  )
-  core.runner.add_sharding_args(parser)
-  parser.add_argument("--depth_root", type=str, default=os.path.join(core.io.OUTPUT_ROOT, "depth"))
-  parser.add_argument(
-    "--extrinsics_root", type=str, default=os.path.join(core.io.OUTPUT_ROOT, "extrinsics")
-  )
-  parser.add_argument(
-    "--tracks_root", type=str, default=os.path.join(core.io.OUTPUT_ROOT, "tracks")
-  )
-  parser.add_argument(
-    "--output_dir", type=str, default=os.path.join(core.io.OUTPUT_ROOT, "metrics")
-  )
-  parser.add_argument(
-    "--require_tracks", action="store_true", help="Only evaluate episodes with track data"
-  )
-  args = parser.parse_args()
-
-  output_dir = os.path.abspath(os.path.expanduser(args.output_dir))
+def main(_):
+  config = config_flag.value
+  output_dir = os.path.abspath(os.path.expanduser(config.paths.metrics))
   os.makedirs(output_dir, exist_ok=True)
   csv_path = os.path.join(output_dir, "metrics.csv")
 
-  available = core.runner.list_episode_dirs(args.depth_root) & core.runner.list_episode_dirs(
-    args.extrinsics_root
+  available = (
+    core.runner.list_episode_dirs(config.paths.depth)
+    & core.runner.list_episode_dirs(config.paths.extrinsics)
+    & core.runner.list_episode_dirs(config.paths.tracks)
   )
-  if args.require_tracks:
-    available &= core.runner.list_episode_dirs(args.tracks_root)
-  print(f"Found {len(available)} episodes with depth + extrinsics")
 
   device = core.io.get_accelerator()
-  pb_renderer = core.physics.PyBulletRenderer()
+  pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf)
 
   def evaluate(ep_id):
     t0 = time.time()
     metrics = evaluate_single_episode(
-      ep_id, args.depth_root, args.extrinsics_root, args.tracks_root, device, pb_renderer
+      ep_id, config.paths.depth, config.paths.extrinsics, config.paths.tracks, device, pb_renderer
     )
     _append_row(csv_path, metrics)
     print(
@@ -479,15 +454,17 @@ def main():
     )
 
   core.runner.run_episodes(
-    core.runner.shard_episodes(available, args.rank, args.world_size, args.limit),
+    core.runner.shard_episodes(
+      available, config.runner.rank, config.runner.world_size, config.runner.limit
+    ),
     evaluate,
-    rank=args.rank,
-    world_size=args.world_size,
+    rank=config.runner.rank,
+    world_size=config.runner.world_size,
     done=_read_done(csv_path),
     stage="Evaluation",
   )
-  print(f"   Output: {csv_path}")
 
 
 if __name__ == "__main__":
-  main()
+  config_flag = config_flags.DEFINE_config_file("config", config.__file__)
+  app.run(main)

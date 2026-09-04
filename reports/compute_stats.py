@@ -3,14 +3,17 @@ import argparse
 import csv
 import json
 import os
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 from tqdm import tqdm
 
-OUTPUT_ROOT = os.path.join(
-  os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "output", "droid"
-)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from config import get_config
+
+config = get_config()
 
 
 def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):
@@ -163,11 +166,9 @@ def _worker(episode_id, tracks_root, depth_root):
 
 def main():
   parser = argparse.ArgumentParser(description="Compute DROID dataset statistics for tech report")
-  parser.add_argument("--depth_root", type=str, default=os.path.join(OUTPUT_ROOT, "depth"))
-  parser.add_argument(
-    "--extrinsics_root", type=str, default=os.path.join(OUTPUT_ROOT, "extrinsics")
-  )
-  parser.add_argument("--tracks_root", type=str, default=os.path.join(OUTPUT_ROOT, "tracks"))
+  parser.add_argument("--depth_root", type=str, default=config.paths.depth)
+  parser.add_argument("--extrinsics_root", type=str, default=config.paths.extrinsics)
+  parser.add_argument("--tracks_root", type=str, default=config.paths.tracks)
   parser.add_argument(
     "--output_dir",
     type=str,

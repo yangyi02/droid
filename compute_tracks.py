@@ -1,9 +1,11 @@
-import argparse
 import os
 
 import cv2
 import numpy as np
+from absl import app
+from ml_collections import config_flags
 
+import config
 import core.geometry
 import core.io
 import core.physics
@@ -295,7 +297,9 @@ def project_static_tracks(
   return per_cam_tracks, per_cam_vis
 
 
-def compute_robot_tracks(scene_constants, scene_state, pb_renderer, max_robot_pts_per_cam=None):
+def compute_robot_tracks(
+  scene_constants, scene_state, pb_renderer, max_robot_pts_per_cam=None, safe_margin=7
+):
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
 
@@ -306,7 +310,11 @@ def compute_robot_tracks(scene_constants, scene_state, pb_renderer, max_robot_pt
 
   for src_cam in camera_ids:
     traj_3d_rob, traj_2d_rob, vis_rob, robot_indices = urdf_tracker.extract_robot_tracks(
-      src_cam, scene_constants, scene_state, max_robot_pts=max_robot_pts_per_cam
+      src_cam,
+      scene_constants,
+      scene_state,
+      safe_margin=safe_margin,
+      max_robot_pts=max_robot_pts_per_cam,
     )
 
     if traj_3d_rob is None or len(robot_indices) == 0:
@@ -405,7 +413,7 @@ def export_tracks(
   final_per_cam_vis,
   n_static,
   n_robot,
-  export_root=os.path.join(core.io.OUTPUT_ROOT, "tracks"),
+  export_root,
 ):
   ep_id = scene_constants["meta"]["episode_id"]
   camera_ids = list(scene_constants["camera"].keys())
@@ -452,16 +460,12 @@ def export_tracks(
   return ep_dir
 
 
-def process_episode(
-  episode_id,
-  pb_renderer,
-  device,
-  depth_root,
-  extrinsics_root,
-  export_root,
-  num_static_points=300,
-  max_robot_pts_per_cam=100,
-):
+def process_episode(episode_id, pb_renderer, device, config):
+  depth_root, extrinsics_root, export_root = (
+    config.paths.depth,
+    config.paths.extrinsics,
+    config.paths.tracks,
+  )
 
   scene_constants = core.io.load_depth_data(episode_id, depth_root, load_video="full")
   scene_state = core.io.load_extrinsics(scene_constants, extrinsics_root)
@@ -470,12 +474,25 @@ def process_episode(
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
 
   static_pts_3d, _ = find_static_candidates(
-    scene_constants, scene_state, pb_renderer, num_points=num_static_points
+    scene_constants,
+    scene_state,
+    pb_renderer,
+    match_radius=config.tracks.match_radius,
+    num_points=config.tracks.num_static_points,
+    safe_margin=config.tracks.safe_margin,
+    tau=config.tracks.tau,
+    min_run_frames=config.tracks.min_run_frames,
+    flicker=config.tracks.flicker,
   )
 
   if len(static_pts_3d) > 0:
     static_per_cam_tracks, static_per_cam_vis = project_static_tracks(
-      static_pts_3d, scene_constants, scene_state, pb_renderer
+      static_pts_3d,
+      scene_constants,
+      scene_state,
+      pb_renderer,
+      depth_tolerance=config.tracks.depth_tolerance,
+      safe_margin=config.tracks.safe_margin,
     )
   else:
     static_per_cam_tracks = {
@@ -484,7 +501,11 @@ def process_episode(
     static_per_cam_vis = {cam: np.zeros((T_frames, 0), dtype=bool) for cam in camera_ids}
 
   robot_traj_3d, robot_per_cam_tracks, robot_per_cam_vis, n_robot = compute_robot_tracks(
-    scene_constants, scene_state, pb_renderer, max_robot_pts_per_cam=max_robot_pts_per_cam
+    scene_constants,
+    scene_state,
+    pb_renderer,
+    max_robot_pts_per_cam=config.tracks.max_robot_pts_per_cam,
+    safe_margin=config.tracks.robot_safe_margin,
   )
 
   (final_traj_3d, final_vis_global, final_per_cam_tracks, final_per_cam_vis, n_static, n_robot) = (
@@ -515,59 +536,33 @@ def process_episode(
   return n_static + n_robot
 
 
-if __name__ == "__main__":
-  parser = argparse.ArgumentParser(description="DROID Stage 3: Static Background + Robot Tracks")
-  core.runner.add_sharding_args(parser)
-  parser.add_argument(
-    "--depth_root",
-    type=str,
-    default=os.path.join(core.io.OUTPUT_ROOT, "depth"),
-    help="Root directory of depth outputs",
-  )
-  parser.add_argument(
-    "--extrinsics_root",
-    type=str,
-    default=os.path.join(core.io.OUTPUT_ROOT, "extrinsics"),
-    help="Root directory of extrinsics outputs",
-  )
-  parser.add_argument(
-    "--export_root",
-    type=str,
-    default=os.path.join(core.io.OUTPUT_ROOT, "tracks"),
-    help="Root directory for tracks output",
-  )
-  parser.add_argument(
-    "--num_static_points",
-    type=int,
-    default=300,
-    help="Number of static background points to sample",
-  )
-  parser.add_argument(
-    "--max_robot_pts_per_cam", type=int, default=100, help="Max robot surface points per camera"
-  )
-  args = parser.parse_args()
-
+def main(_):
+  config = config_flag.value
   device = core.io.get_accelerator()
-  pb_renderer = core.physics.PyBulletRenderer()
+  pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf)
 
   target = core.runner.shard_episodes(
-    core.runner.list_episode_dirs(args.extrinsics_root), args.rank, args.world_size, args.limit
+    core.runner.list_episode_dirs(config.paths.extrinsics),
+    config.runner.rank,
+    config.runner.world_size,
+    config.runner.limit,
   )
-  export_abs = os.path.abspath(os.path.expanduser(args.export_root))
+  export_abs = os.path.abspath(os.path.expanduser(config.paths.tracks))
   done = {ep for ep in target if os.path.exists(os.path.join(export_abs, ep, "tracks_3d.npz"))}
 
   def run_one(episode_id):
-    process_episode(
-      episode_id,
-      pb_renderer,
-      device,
-      args.depth_root,
-      args.extrinsics_root,
-      args.export_root,
-      num_static_points=args.num_static_points,
-      max_robot_pts_per_cam=args.max_robot_pts_per_cam,
-    )
+    process_episode(episode_id, pb_renderer, device, config)
 
   core.runner.run_episodes(
-    target, run_one, rank=args.rank, world_size=args.world_size, done=done, stage="Stage 3"
+    target,
+    run_one,
+    rank=config.runner.rank,
+    world_size=config.runner.world_size,
+    done=done,
+    stage="Stage 3",
   )
+
+
+if __name__ == "__main__":
+  config_flag = config_flags.DEFINE_config_file("config", config.__file__)
+  app.run(main)

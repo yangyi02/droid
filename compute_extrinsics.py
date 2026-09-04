@@ -1,4 +1,3 @@
-import argparse
 import copy
 import gc
 import json
@@ -6,8 +5,11 @@ import os
 
 import numpy as np
 import torch
+from absl import app
+from ml_collections import config_flags
 import torch.optim as optim
 
+import config
 import core.geometry
 import core.io
 import core.physics
@@ -339,9 +341,7 @@ def global_joint_alignment(
   return ultimate_scene_state
 
 
-def export_extrinsics(
-  scene_constants, scene_state, export_root=os.path.join(core.io.OUTPUT_ROOT, "extrinsics")
-):
+def export_extrinsics(scene_constants, scene_state, export_root):
   ep_str = scene_constants["meta"]["episode_id"]
   wrist_serial = scene_constants["meta"]["wrist_serial"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_str)))
@@ -374,55 +374,66 @@ def _has_final_extrinsics(ep_dir):
   )
 
 
-def process_episode(ep_id, pb_renderer, extrinsics_db, depth_root, export_root, device):
-  scene_constants = core.io.load_depth_data(ep_id, depth_root)
+def process_episode(ep_id, pb_renderer, extrinsics_db, device, config):
+  scene_constants = core.io.load_depth_data(ep_id, config.paths.depth)
 
   init_state = init_camera_states(scene_constants, extrinsics_db)
 
-  aligned_state = per_camera_alignment(scene_constants, pb_renderer, init_state, device)
-
-  joint_state = global_joint_alignment(
-    scene_constants, aligned_state, pb_renderer, device, lr=0.001, n_steps=500, robot_weight=1.0
+  aligned_state = per_camera_alignment(
+    scene_constants,
+    pb_renderer,
+    init_state,
+    device,
+    outer_steps=config.extrinsics.outer_steps,
+    inner_steps=config.extrinsics.inner_steps,
   )
 
-  export_extrinsics(scene_constants, joint_state, export_root=export_root)
+  joint_state = global_joint_alignment(
+    scene_constants,
+    aligned_state,
+    pb_renderer,
+    device,
+    lr=config.extrinsics.lr,
+    n_steps=config.extrinsics.n_steps,
+    chamfer_weight=config.extrinsics.chamfer_weight,
+    robot_weight=config.extrinsics.robot_weight,
+    chamfer_n_points=config.extrinsics.chamfer_n_points,
+  )
+
+  export_extrinsics(scene_constants, joint_state, export_root=config.paths.extrinsics)
 
   gc.collect()
   torch.cuda.empty_cache()
 
 
-if __name__ == "__main__":
-  parser = argparse.ArgumentParser(description="DROID Stage 2: Camera Extrinsics Calibration")
-  core.runner.add_sharding_args(parser)
-  parser.add_argument(
-    "--depth_root",
-    type=str,
-    default=os.path.join(core.io.OUTPUT_ROOT, "depth"),
-    help="Root directory of depth outputs",
-  )
-  parser.add_argument(
-    "--export_root",
-    type=str,
-    default=os.path.join(core.io.OUTPUT_ROOT, "extrinsics"),
-    help="Root directory for extrinsics output",
-  )
-  args = parser.parse_args()
-
-  print("DROID Stage 2: Camera Extrinsics Calibration Pipeline")
+def main(_):
+  config = config_flag.value
   device = core.io.get_accelerator()
-  serials_db, _, _, extrinsics_db, _ = core.io.load_metadata()
-  pb_renderer = core.physics.PyBulletRenderer(gpu=True)
-  print(f"  Using PyBulletRenderer (EGL: {pb_renderer.gpu})")
+  serials_db, _, _, extrinsics_db, _ = core.io.load_metadata(config)
+  pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=True)
 
   target = core.runner.shard_episodes(
-    core.runner.list_episode_dirs(args.depth_root), args.rank, args.world_size, args.limit
+    core.runner.list_episode_dirs(config.paths.depth),
+    config.runner.rank,
+    config.runner.world_size,
+    config.runner.limit,
   )
-  export_abs = os.path.abspath(os.path.expanduser(args.export_root))
+  export_abs = os.path.abspath(os.path.expanduser(config.paths.extrinsics))
   done = {ep for ep in target if _has_final_extrinsics(os.path.join(export_abs, ep))}
 
   def run_one(ep_id):
-    process_episode(ep_id, pb_renderer, extrinsics_db, args.depth_root, args.export_root, device)
+    process_episode(ep_id, pb_renderer, extrinsics_db, device, config)
 
   core.runner.run_episodes(
-    target, run_one, rank=args.rank, world_size=args.world_size, done=done, stage="Stage 2"
+    target,
+    run_one,
+    rank=config.runner.rank,
+    world_size=config.runner.world_size,
+    done=done,
+    stage="Stage 2",
   )
+
+
+if __name__ == "__main__":
+  config_flag = config_flags.DEFINE_config_file("config", config.__file__)
+  app.run(main)
