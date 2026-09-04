@@ -32,6 +32,9 @@ def get_config():
   config.runner.world_size = 1
   config.runner.limit = -1
 
+  config.render = ml_collections.ConfigDict()
+  config.render.gpu = True
+
   config.depth = ml_collections.ConfigDict()
   config.depth.min_frames = 48
   config.depth.max_frames = 250

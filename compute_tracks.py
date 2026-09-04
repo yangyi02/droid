@@ -539,7 +539,7 @@ def process_episode(episode_id, pb_renderer, device, config):
 def main(_):
   config = config_flag.value
   device = core.io.get_accelerator()
-  pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf)
+  pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=config.render.gpu)
 
   target = core.runner.shard_episodes(
     core.runner.list_episode_dirs(config.paths.extrinsics),

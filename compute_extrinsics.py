@@ -410,7 +410,7 @@ def main(_):
   config = config_flag.value
   device = core.io.get_accelerator()
   serials_db, _, _, extrinsics_db, _ = core.io.load_metadata(config)
-  pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=True)
+  pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=config.render.gpu)
 
   target = core.runner.shard_episodes(
     core.runner.list_episode_dirs(config.paths.depth),

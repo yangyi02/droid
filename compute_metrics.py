@@ -438,7 +438,7 @@ def main(_):
   )
 
   device = core.io.get_accelerator()
-  pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf)
+  pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=config.render.gpu)
 
   def evaluate(ep_id):
     t0 = time.time()

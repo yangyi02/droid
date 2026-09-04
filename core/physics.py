@@ -54,7 +54,14 @@ class PyBulletRenderer:
     pybullet.connect(pybullet.DIRECT)
     pybullet.setAdditionalSearchPath(pybullet_data.getDataPath())
 
+    if not pybullet.isNumpyEnabled():
+      raise RuntimeError(
+        "pybullet was built without NumPy: getCameraImage is 2x slower. Rerun bash setup.sh"
+      )
+
     self.gpu = bool(gpu) and _load_egl()
+    if gpu and not self.gpu:
+      raise RuntimeError("EGL requested but the plugin did not load. --config.render.gpu=False")
     self.renderer = pybullet.ER_BULLET_HARDWARE_OPENGL if self.gpu else pybullet.ER_TINY_RENDERER
 
     robot_urdf = os.path.join(pybullet_data.getDataPath(), "franka_panda", "panda.urdf")
