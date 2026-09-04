@@ -334,10 +334,8 @@ def process_episode(ep_id, models, dbs, raw_root, config):
     scene_constants, s2m2_model, run_stereo_matching, device, conf_thresh=config.depth.conf_thresh
   )
 
-  wrist_serial = scene_constants["meta"].get("wrist_serial")
-  wrist_data = scene_constants["camera"].get(wrist_serial or "", {})
-  if "raw_depth" in wrist_data:
-    wrist_data["original_raw_depth"] = wrist_data["raw_depth"].copy()
+  wrist_data = scene_constants["camera"][scene_constants["meta"]["wrist_serial"]]
+  wrist_data["original_raw_depth"] = wrist_data["raw_depth"].copy()
 
   scene_constants = core.depth.build_universal_gripper_mask(
     scene_constants, sam_predictor, consensus_thresh=config.depth.consensus_thresh

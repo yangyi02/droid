@@ -102,9 +102,8 @@ def compute_consensus_mask(masks_list, consensus_thresh=0.5):
 
 
 def build_universal_gripper_mask(scene_constants, sam_predictor, consensus_thresh=0.5):
-  wrist_cam = scene_constants["meta"].get("wrist_serial")
-  cam_data = scene_constants["camera"][wrist_cam]
-  gripper_states = scene_constants["robot"].get("gripper_positions")
+  cam_data = scene_constants["camera"][scene_constants["meta"]["wrist_serial"]]
+  gripper_states = scene_constants["robot"]["gripper_positions"]
   closed_indices = np.where(gripper_states < 0.05)[0]
 
   masks_list = []
@@ -123,9 +122,8 @@ def build_universal_gripper_mask(scene_constants, sam_predictor, consensus_thres
 
 
 def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
-  wrist_cam = scene_constants["meta"].get("wrist_serial")
-  cam_data = scene_constants["camera"][wrist_cam]
-  gripper_states = scene_constants["robot"].get("gripper_positions")
+  cam_data = scene_constants["camera"][scene_constants["meta"]["wrist_serial"]]
+  gripper_states = scene_constants["robot"]["gripper_positions"]
   closed_indices = np.where(gripper_states < 0.05)[0]
   h, w = cam_data["video_rgb"][0].shape[:2]
   num_frames = len(closed_indices)
@@ -147,10 +145,9 @@ def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
 
 
 def inject_gripper_depth(scene_constants):
-  wrist_cam = scene_constants["meta"].get("wrist_serial")
-  cam_data = scene_constants["camera"][wrist_cam]
-  gripper_states = scene_constants["robot"].get("gripper_positions")
-  empirical_depth = cam_data.get("empirical_gripper_depth")
+  cam_data = scene_constants["camera"][scene_constants["meta"]["wrist_serial"]]
+  gripper_states = scene_constants["robot"]["gripper_positions"]
+  empirical_depth = cam_data["empirical_gripper_depth"]
 
   closed_indices = np.where(gripper_states < 0.05)[0]
   valid_mask = empirical_depth > 0
