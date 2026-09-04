@@ -4,7 +4,7 @@ import os
 import xml.etree.ElementTree as ET
 
 import numpy as np
-import pybullet as p
+import pybullet
 import pybullet_data
 import torch
 import torch.nn.functional as F
@@ -26,7 +26,7 @@ def _load_egl():
   spec = importlib.util.find_spec("eglRenderer")
   if spec is None:
     return False
-  return p.loadPlugin(spec.origin, "_eglRendererPlugin") >= 0
+  return pybullet.loadPlugin(spec.origin, "_eglRendererPlugin") >= 0
 
 
 def _trimmed_urdf(src, hidden):
@@ -49,53 +49,53 @@ def _trimmed_urdf(src, hidden):
 class PyBulletRenderer:
   def __init__(self, ghost_urdf, gpu=False):
 
-    if p.isConnected():
-      p.disconnect()
-    p.connect(p.DIRECT)
-    p.setAdditionalSearchPath(pybullet_data.getDataPath())
+    if pybullet.isConnected():
+      pybullet.disconnect()
+    pybullet.connect(pybullet.DIRECT)
+    pybullet.setAdditionalSearchPath(pybullet_data.getDataPath())
 
     self.gpu = bool(gpu) and _load_egl()
-    self.renderer = p.ER_BULLET_HARDWARE_OPENGL if self.gpu else p.ER_TINY_RENDERER
+    self.renderer = pybullet.ER_BULLET_HARDWARE_OPENGL if self.gpu else pybullet.ER_TINY_RENDERER
 
     robot_urdf = os.path.join(pybullet_data.getDataPath(), "franka_panda", "panda.urdf")
     if self.gpu:
       robot_urdf = _trimmed_urdf(robot_urdf, _hidden_on_arm)
-    self.robot_id = p.loadURDF(robot_urdf, useFixedBase=True)
+    self.robot_id = pybullet.loadURDF(robot_urdf, useFixedBase=True)
     self.arm_joints = [
       i
-      for i in range(p.getNumJoints(self.robot_id))
-      if "panda_joint" in p.getJointInfo(self.robot_id, i)[1].decode()
-      and p.getJointInfo(self.robot_id, i)[2] != p.JOINT_FIXED
+      for i in range(pybullet.getNumJoints(self.robot_id))
+      if "panda_joint" in pybullet.getJointInfo(self.robot_id, i)[1].decode()
+      and pybullet.getJointInfo(self.robot_id, i)[2] != pybullet.JOINT_FIXED
     ]
 
     self.hidden_robot_links = []
-    for i in range(-1, p.getNumJoints(self.robot_id)):
+    for i in range(-1, pybullet.getNumJoints(self.robot_id)):
       name = (
-        p.getBodyInfo(self.robot_id)[0].decode()
+        pybullet.getBodyInfo(self.robot_id)[0].decode()
         if i == -1
-        else p.getJointInfo(self.robot_id, i)[12].decode()
+        else pybullet.getJointInfo(self.robot_id, i)[12].decode()
       )
       if _hidden_on_arm(name):
         if not self.gpu:
-          p.changeVisualShape(self.robot_id, i, rgbaColor=[0, 0, 0, 0])
+          pybullet.changeVisualShape(self.robot_id, i, rgbaColor=[0, 0, 0, 0])
         self.hidden_robot_links.append(i)
 
     if self.gpu:
       ghost_urdf = _trimmed_urdf(ghost_urdf, _hidden_on_ghost)
-    self.ghost_id = p.loadURDF(ghost_urdf, useFixedBase=True)
+    self.ghost_id = pybullet.loadURDF(ghost_urdf, useFixedBase=True)
     self.ghost_arm_joints = [
       i
-      for i in range(p.getNumJoints(self.ghost_id))
-      if "panda_joint" in p.getJointInfo(self.ghost_id, i)[1].decode()
-      and p.getJointInfo(self.ghost_id, i)[2] != p.JOINT_FIXED
+      for i in range(pybullet.getNumJoints(self.ghost_id))
+      if "panda_joint" in pybullet.getJointInfo(self.ghost_id, i)[1].decode()
+      and pybullet.getJointInfo(self.ghost_id, i)[2] != pybullet.JOINT_FIXED
     ]
 
     self.gripper_joints = []
     self.gripper_signs = []
-    for i in range(p.getNumJoints(self.ghost_id)):
-      info = p.getJointInfo(self.ghost_id, i)
+    for i in range(pybullet.getNumJoints(self.ghost_id)):
+      info = pybullet.getJointInfo(self.ghost_id, i)
       jname = info[1].decode()
-      if info[2] != p.JOINT_FIXED and "panda_joint" not in jname:
+      if info[2] != pybullet.JOINT_FIXED and "panda_joint" not in jname:
         self.gripper_joints.append(i)
         base_sign = -1 if "right" in jname else 1
         if any(k in jname for k in ["inner_finger", "follower", "finger_tip"]):
@@ -104,29 +104,29 @@ class PyBulletRenderer:
           self.gripper_signs.append(base_sign)
 
     self.hidden_ghost_links = []
-    for i in range(-1, p.getNumJoints(self.ghost_id)):
+    for i in range(-1, pybullet.getNumJoints(self.ghost_id)):
       name = (
-        p.getBodyInfo(self.ghost_id)[0].decode()
+        pybullet.getBodyInfo(self.ghost_id)[0].decode()
         if i == -1
-        else p.getJointInfo(self.ghost_id, i)[12].decode()
+        else pybullet.getJointInfo(self.ghost_id, i)[12].decode()
       )
       if _hidden_on_ghost(name):
         if not self.gpu:
-          p.changeVisualShape(self.ghost_id, i, rgbaColor=[0, 0, 0, 0])
+          pybullet.changeVisualShape(self.ghost_id, i, rgbaColor=[0, 0, 0, 0])
         self.hidden_ghost_links.append(i)
 
   def update_robot_pose(self, joint_angles, gripper_state=None, gripper_width_offset=0.08):
     for i, angle in zip(self.arm_joints, joint_angles):
-      p.resetJointState(self.robot_id, i, angle)
+      pybullet.resetJointState(self.robot_id, i, angle)
     for i, angle in zip(self.ghost_arm_joints, joint_angles):
-      p.resetJointState(self.ghost_id, i, angle)
+      pybullet.resetJointState(self.ghost_id, i, angle)
 
     if gripper_state is not None and self.gripper_joints:
       raw_val = gripper_state[0] if isinstance(gripper_state, (list, np.ndarray)) else gripper_state
       raw_val = np.clip(raw_val, 0.0, 1.0)
       angle = (raw_val * 0.8028) - gripper_width_offset
       for i, sign in zip(self.gripper_joints, self.gripper_signs):
-        p.resetJointState(self.ghost_id, i, angle * sign)
+        pybullet.resetJointState(self.ghost_id, i, angle * sign)
 
   def _get_projection_matrix(self, K, w, h, near=0.01, far=10.0):
     fx, fy = K[0, 0], K[1, 1]
@@ -152,17 +152,17 @@ class PyBulletRenderer:
 
   def _render_raw(self, extrinsic, K, w, h):
     cam_pos = extrinsic[:3, 3]
-    view_matrix = p.computeViewMatrix(
+    view_matrix = pybullet.computeViewMatrix(
       cam_pos.tolist(), (cam_pos + extrinsic[:3, 2]).tolist(), (-extrinsic[:3, 1]).tolist()
     )
     proj_matrix = self._get_projection_matrix(K, w, h)
-    _, _, _, depth_buf, seg_buf = p.getCameraImage(
+    _, _, _, depth_buf, seg_buf = pybullet.getCameraImage(
       w,
       h,
       viewMatrix=view_matrix,
       projectionMatrix=proj_matrix,
       renderer=self.renderer,
-      flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
+      flags=pybullet.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
     )
     return depth_buf, seg_buf
 
@@ -215,18 +215,18 @@ def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer, device
 
   cam_pos = T_cam_world[:3, 3]
   target_pos = T_cam_world[:3, 3] + T_cam_world[:3, 2]
-  view_matrix = p.computeViewMatrix(
+  view_matrix = pybullet.computeViewMatrix(
     cam_pos.tolist(), target_pos.tolist(), (-T_cam_world[:3, 1]).tolist()
   )
   proj_matrix = pb_renderer._get_projection_matrix(K, w_img, h_img)
 
-  _, _, _, depth_buffer, seg_buffer = p.getCameraImage(
+  _, _, _, depth_buffer, seg_buffer = pybullet.getCameraImage(
     w_img,
     h_img,
     viewMatrix=view_matrix,
     projectionMatrix=proj_matrix,
     renderer=pb_renderer.renderer,
-    flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
+    flags=pybullet.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
   )
 
   metric_depth = 0.1 / (10.0 - 9.99 * np.reshape(depth_buffer, (h_img, w_img)))

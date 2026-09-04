@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-import pybullet as p
+import pybullet
 from scipy.spatial.transform import Rotation as R
 
 import core.geometry
@@ -13,9 +13,9 @@ class URDFKinematicsTracker:
 
   def _get_link_transform(self, obj_id, link_id):
     if link_id == -1:
-      pos, orn = p.getBasePositionAndOrientation(obj_id)
+      pos, orn = pybullet.getBasePositionAndOrientation(obj_id)
     else:
-      state = p.getLinkState(obj_id, link_id)
+      state = pybullet.getLinkState(obj_id, link_id)
       pos, orn = state[0], state[1]
     T = np.eye(4)
     T[:3, :3] = R.from_quat(orn).as_matrix()
