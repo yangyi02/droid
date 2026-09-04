@@ -102,6 +102,7 @@ track_metadata.npz             # n_static, n_robot
 
 ```
 droid/
+├── pipeline.ipynb             # Whole pipeline, one episode at a time (flag-based flow)
 ├── compute_depth.py           # Stage 1: SVO → stereo depth + gripper refinement
 ├── compute_extrinsics.py      # Stage 2: Dataset init + camera-robot alignment
 ├── compute_tracks.py          # Stage 3: Static prior + URDF FK dense 3D tracking
@@ -128,7 +129,6 @@ droid/
 │   ├── visualize_groundtruth_colab.ipynb   # Self-contained ground-truth viewer
 │   └── visualize_tracks_groundtruth.ipynb  # 3D/2D track inspection, all episodes
 ├── notebooks/                 # Interactive notebooks (run from anywhere in the checkout)
-│   ├── pipeline.ipynb         #   Whole pipeline, one episode at a time (flag-based flow)
 │   ├── filter_points.ipynb    #   Dropping background points carried away by the gripper
 │   ├── pybullet_numpy_benchmark.ipynb  # Why PyBullet must be built with NumPy support
 │   ├── pybullet_egl_mask_benchmark.ipynb  # Why the GPU rasteriser is off, and what it would take
@@ -136,7 +136,7 @@ droid/
 ├── reports/                   # Tech-report statistics and figures
 │   ├── compute_stats.py       #   Dataset-level statistics
 │   └── figures.ipynb          #   Qualitative figure generation
-├── episodes_success.txt       # Successful DROID episode IDs (notebooks/pipeline.ipynb samples from these)
+├── episodes_success.txt       # Successful DROID episode IDs (pipeline.ipynb samples from these)
 ├── assets/                    # Local assets (Franka + Robotiq URDF)
 └── third_party/               # Gitignored: submodule source + downloaded weights
     ├── s2m2/                  #   Stereo matching model (submodule)
@@ -254,10 +254,10 @@ rather than the GPU count — which is why it is a separate runner from
 
 ## Interactive Notebook
 
-`notebooks/pipeline.ipynb` runs one episode at a time, for debugging. It works
-both ways round: open it from a local checkout and it uses that checkout as-is
-(from any directory inside it), or open it
-[in Colab](https://colab.research.google.com/github/yangyi02/droid/blob/main/notebooks/pipeline.ipynb)
+`pipeline.ipynb` runs one episode at a time, for debugging. It sits at the repo
+root so that its working directory is the checkout. It works both ways round:
+open it from a local checkout and it uses that checkout as-is, or open it
+[in Colab](https://colab.research.google.com/github/yangyi02/droid/blob/main/pipeline.ipynb)
 and the first cell clones the repo. Nothing is pulled or cloned over a local
 working tree.
 
