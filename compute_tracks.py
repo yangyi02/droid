@@ -13,13 +13,35 @@ import core.runner
 import core.tracking
 
 
+def render_robot_masks(scene_constants, scene_state, pb_renderer, safe_margin=15):
+  """Dilated robot silhouette per frame per camera — the only thing the static
+  passes need from PyBullet, and the slowest part of Stage 3, so render it once."""
+  camera_ids = list(scene_constants["camera"].keys())
+  kernel = np.ones((safe_margin, safe_margin), np.uint8)
+  masks = {cam: [] for cam in camera_ids}
+
+  for t in range(len(scene_constants["camera"][camera_ids[0]]["video_rgb"])):
+    pb_renderer.update_robot_pose(
+      scene_constants["robot"]["joint_positions"][t],
+      gripper_state=scene_constants["robot"]["gripper_positions"][t],
+    )
+    for cam_id in camera_ids:
+      cam_data = scene_constants["camera"][cam_id]
+      h_img, w_img = cam_data["video_rgb"][0].shape[:2]
+      raw = pb_renderer.render_mask(
+        scene_state[cam_id]["extrinsics"][t], cam_data["K_mat"], w_img, h_img
+      )
+      masks[cam_id].append(cv2.dilate(raw.astype(np.uint8), kernel, iterations=1) > 0)
+
+  return {cam: np.array(m) for cam, m in masks.items()}
+
+
 def find_static_candidates(
   scene_constants,
   scene_state,
-  pb_renderer,
+  robot_masks,
   match_radius=0.005,
   num_points=None,
-  safe_margin=15,
   tau=0.015,
   min_run_frames=30,
   flicker=0.10,
@@ -29,11 +51,6 @@ def find_static_candidates(
 
   static_cams = [c for c in camera_ids if c != wrist_serial]
 
-  pb_renderer.update_robot_pose(
-    scene_constants["robot"]["joint_positions"][0],
-    gripper_state=scene_constants["robot"]["gripper_positions"][0],
-  )
-
   per_cam_pts = {}
   per_cam_rgb = {}
 
@@ -42,10 +59,7 @@ def find_static_candidates(
     ext = scene_state[cam_id]["extrinsics"][0]
     K = cam_data["K_mat"]
     h_img, w_img = cam_data["video_rgb"][0].shape[:2]
-
-    robot_mask = pb_renderer.render_mask(ext, K, w_img, h_img)
-    kernel = np.ones((safe_margin, safe_margin), np.uint8)
-    robot_mask_dilated = cv2.dilate(robot_mask.astype(np.uint8), kernel, iterations=1) > 0
+    robot_mask_dilated = robot_masks[cam_id][0]
 
     depth = cam_data["raw_depth"][0]
     is_env = ~robot_mask_dilated
@@ -117,9 +131,8 @@ def find_static_candidates(
     scene_constants,
     scene_state,
     static_cams,
-    pb_renderer,
+    robot_masks,
     tau=tau,
-    safe_margin=safe_margin,
   )
   gone = _filter_support_left(stats, min_run_frames=min_run_frames)
   jitters = (
@@ -143,29 +156,21 @@ def _voxel_dedup(pts, rgb, voxel_size=0.01):
   if len(pts) == 0:
     return pts, rgb
 
-  voxel_indices = np.floor(pts / voxel_size).astype(np.int64)
-  keys = (
-    voxel_indices[:, 0].astype(np.int64) * 1000000
-    + voxel_indices[:, 1].astype(np.int64) * 1000
-    + voxel_indices[:, 2].astype(np.int64)
-  )
+  voxels = np.floor(pts / voxel_size).astype(np.int64)
+  _, inverse = np.unique(voxels, axis=0, return_inverse=True)
 
-  unique_keys, inverse = np.unique(keys, return_inverse=True)
-  N_unique = len(unique_keys)
+  # Sorting once makes each voxel a contiguous run, so a voxel costs its own
+  # points rather than a scan of the whole cloud.
+  order = np.argsort(inverse, kind="stable")
+  cuts = np.cumsum(np.bincount(inverse))[:-1]
+  out_pts = [np.median(v, axis=0) for v in np.split(pts[order], cuts)]
+  out_rgb = [np.median(v, axis=0) for v in np.split(rgb[order].astype(np.float32), cuts)]
 
-  out_pts = np.zeros((N_unique, 3), dtype=np.float32)
-  out_rgb = np.zeros((N_unique, 3), dtype=np.uint8)
-
-  for i in range(N_unique):
-    mask = inverse == i
-    out_pts[i] = np.median(pts[mask], axis=0)
-    out_rgb[i] = np.median(rgb[mask].astype(np.float32), axis=0).astype(np.uint8)
-
-  return out_pts, out_rgb
+  return np.array(out_pts, dtype=np.float32), np.array(out_rgb).astype(np.uint8)
 
 
 def _measure_depth_gaps(
-  pts, scene_constants, scene_state, static_cams, pb_renderer, tau=0.015, safe_margin=15, patch=5
+  pts, scene_constants, scene_state, static_cams, robot_masks, tau=0.015, patch=5
 ):
   N = len(pts)
   S = len(static_cams)
@@ -178,25 +183,17 @@ def _measure_depth_gaps(
   seen = np.zeros((S, N), dtype=np.int32)
   prev_vis = np.zeros((S, N), dtype=bool)
 
-  kernel = np.ones((safe_margin, safe_margin), np.uint8)
   rad = patch // 2
   dy, dx = np.mgrid[-rad : rad + 1, -rad : rad + 1].reshape(2, -1)
   min_valid = max(1, (patch * patch) // 6)
 
   for t in range(T_frames):
-    pb_renderer.update_robot_pose(
-      scene_constants["robot"]["joint_positions"][t],
-      gripper_state=scene_constants["robot"]["gripper_positions"][t],
-    )
-
     for s, cam_id in enumerate(static_cams):
       cam_data = scene_constants["camera"][cam_id]
       ext = scene_state[cam_id]["extrinsics"][t]
       K = cam_data["K_mat"]
       h_img, w_img = cam_data["video_rgb"][0].shape[:2]
-
-      robot_mask = pb_renderer.render_mask(ext, K, w_img, h_img)
-      robot_mask_dilated = cv2.dilate(robot_mask.astype(np.uint8), kernel, iterations=1) > 0
+      robot_mask_dilated = robot_masks[cam_id][t]
 
       u, v, z_pred = core.geometry.project_points(pts, K, ext)
       ok = np.isfinite(u) & np.isfinite(v) & (z_pred > 0)
@@ -239,7 +236,7 @@ def _filter_visibility_flicker(stats, flicker=0.10):
 
 
 def project_static_tracks(
-  static_pts_3d, scene_constants, scene_state, pb_renderer, depth_tolerance=0.05, safe_margin=15
+  static_pts_3d, scene_constants, scene_state, robot_masks, depth_tolerance=0.05
 ):
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
@@ -247,22 +244,6 @@ def project_static_tracks(
 
   per_cam_tracks = {cam: np.zeros((T_frames, N, 2), dtype=np.float32) for cam in camera_ids}
   per_cam_vis = {cam: np.zeros((T_frames, N), dtype=bool) for cam in camera_ids}
-  kernel = np.ones((safe_margin, safe_margin), np.uint8)
-
-  robot_masks_dilated = {cam: [] for cam in camera_ids}
-  for t in range(T_frames):
-    pb_renderer.update_robot_pose(
-      scene_constants["robot"]["joint_positions"][t],
-      gripper_state=scene_constants["robot"]["gripper_positions"][t],
-    )
-    for cam_id in camera_ids:
-      cam_data = scene_constants["camera"][cam_id]
-      ext = scene_state[cam_id]["extrinsics"][t]
-      K = cam_data["K_mat"]
-      h_img, w_img = cam_data["video_rgb"][0].shape[:2]
-      rmask = pb_renderer.render_mask(ext, K, w_img, h_img)
-      rmask_dil = cv2.dilate(rmask.astype(np.uint8), kernel, iterations=1) > 0
-      robot_masks_dilated[cam_id].append(rmask_dil)
 
   for cam_id in camera_ids:
     cam_data = scene_constants["camera"][cam_id]
@@ -286,7 +267,7 @@ def project_static_tracks(
       z_obs = cam_data["raw_depth"][t, vi, ui]
       depth_ok = (z_obs > 0.05) & (np.abs(z_pred - z_obs) < depth_tolerance)
 
-      not_robot = ~robot_masks_dilated[cam_id][t][vi, ui]
+      not_robot = ~robot_masks[cam_id][t][vi, ui]
 
       vis[t] = in_bounds & depth_ok & not_robot
 
@@ -473,13 +454,16 @@ def process_episode(episode_id, pb_renderer, device, config):
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = len(scene_constants["camera"][camera_ids[0]]["video_rgb"])
 
+  robot_masks = render_robot_masks(
+    scene_constants, scene_state, pb_renderer, safe_margin=config.tracks.safe_margin
+  )
+
   static_pts_3d, _ = find_static_candidates(
     scene_constants,
     scene_state,
-    pb_renderer,
+    robot_masks,
     match_radius=config.tracks.match_radius,
     num_points=config.tracks.num_static_points,
-    safe_margin=config.tracks.safe_margin,
     tau=config.tracks.tau,
     min_run_frames=config.tracks.min_run_frames,
     flicker=config.tracks.flicker,
@@ -490,9 +474,8 @@ def process_episode(episode_id, pb_renderer, device, config):
       static_pts_3d,
       scene_constants,
       scene_state,
-      pb_renderer,
+      robot_masks,
       depth_tolerance=config.tracks.depth_tolerance,
-      safe_margin=config.tracks.safe_margin,
     )
   else:
     static_per_cam_tracks = {
