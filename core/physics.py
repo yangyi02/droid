@@ -130,24 +130,22 @@ class PyBulletRenderer:
     return obj_ids, link_ids, metric
 
 
-def get_foreground_robot_points(
-  T_init, K, obs_depth, pb_renderer, device, max_pts=2000, min_pts=100
-):
+def get_foreground_robot_points(T_init, K, obs_depth, pb_renderer, device, max_pts=2000):
   h_img, w_img = obs_depth.shape
   render_d = pb_renderer.render_depth(T_init, K, w_img, h_img)
 
   v_r, u_r = np.where(render_d > 0)
-  z_r = render_d[v_r, u_r]
-  if len(z_r) < min_pts:
+  if len(u_r) < max_pts:
     return None
+
+  idx = np.random.choice(len(u_r), max_pts, replace=False)
+  v_r, u_r = v_r[idx], u_r[idx]
+  z_r = render_d[v_r, u_r]
 
   P_cam_r = np.stack(
     [(u_r - K[0, 2]) * z_r / K[0, 0], (v_r - K[1, 2]) * z_r / K[1, 1], z_r, np.ones_like(z_r)]
   )
-  pts_robot_world = (T_init @ P_cam_r)[:3, :].T
-
-  idx = np.random.choice(len(pts_robot_world), max_pts, replace=(len(pts_robot_world) < max_pts))
-  return torch.tensor(pts_robot_world[idx], dtype=torch.float32, device=device)
+  return torch.tensor((T_init @ P_cam_r)[:3, :].T, dtype=torch.float32, device=device)
 
 
 def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer, device, max_pts=2000):

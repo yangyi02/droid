@@ -43,8 +43,8 @@ def get_config():
   config.depth.max_depth_thresh = 0.15
 
   config.extrinsics = ml_collections.ConfigDict()
-  config.extrinsics.outer_steps = 1
-  config.extrinsics.inner_steps = 500
+  config.extrinsics.outer_steps = 5
+  config.extrinsics.inner_steps = 100
   config.extrinsics.lr = 0.001
   config.extrinsics.n_steps = 500
   config.extrinsics.chamfer_weight = 1.0

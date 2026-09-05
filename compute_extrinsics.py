@@ -91,7 +91,7 @@ def robot_depth_loss(batch_X, T_opt, K, batch_obs, is_wrist):
 
 
 def per_camera_alignment(
-  scene_constants, pb_renderer, prev_scene_state, device, outer_steps=1, inner_steps=500
+  scene_constants, pb_renderer, prev_scene_state, device, outer_steps=5, inner_steps=100
 ):
   print("\nUnified camera-robot alignment (external + wrist)...")
   wrist_cam = scene_constants['meta']['wrist_serial']
