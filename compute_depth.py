@@ -82,7 +82,7 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
   for cam in scene_constants["camera"]:
     svo_files = glob.glob(os.path.join(episode_path, f"**/{cam}.svo"), recursive=True)
     if not svo_files:
-      continue
+      return None
 
     zed, init_params = sl.Camera(), sl.InitParameters()
     init_params.set_from_svo_file(svo_files[0])
@@ -90,12 +90,9 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
     zed.open(init_params)
 
     n_svo_frames = zed.get_svo_number_of_frames() - 2
-    if max_frames > 0 and n_svo_frames > max_frames:
+    if not min_frames <= n_svo_frames <= max_frames:
       zed.close()
-      continue
-    if min_frames > 0 and n_svo_frames < min_frames:
-      zed.close()
-      continue
+      return None
 
     cam_info = zed.get_camera_information()
 
@@ -328,6 +325,9 @@ def process_episode(ep_id, models, dbs, raw_root, config):
   scene_constants = extract_svo_video(
     scene_constants, min_frames=config.depth.min_frames, max_frames=config.depth.max_frames
   )
+  if scene_constants is None:
+    return
+
   scene_constants = parse_robot_kinematics(scene_constants)
   scene_constants = align_temporal_streams(scene_constants)
   scene_constants = core.depth.compute_stereo_depth(
