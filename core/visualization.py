@@ -3,9 +3,7 @@ import matplotlib.pyplot as plt
 import mediapy as media
 import numpy as np
 import plotly.graph_objects as go
-import pyrender
 import torch
-import trimesh
 from tqdm import tqdm
 
 import core.geometry
@@ -473,6 +471,34 @@ def render_cross_camera_axes(
   return video_frames
 
 
+def splat(pts, cols, K, T_cam2world, height, width):
+  """Paint coloured 3D points into an image; the nearest point owns its pixel."""
+  T_world2cam = torch.linalg.inv(T_cam2world)
+  cam = pts @ T_world2cam[:3, :3].T + T_world2cam[:3, 3]
+  cam = cam * torch.tensor([1.0, -1.0, -1.0], device=pts.device)  # GL looks down -Z
+  z = cam[:, 2]
+  uv = (cam @ K.T)[:, :2] / z[:, None].clamp(min=1e-6)
+  u, v = uv.round().long().unbind(-1)
+
+  keep = (z > 0) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
+  idx, z = v[keep] * width + u[keep], z[keep]
+
+  depth = torch.full((height * width,), torch.inf, device=pts.device)
+  depth.scatter_reduce_(0, idx, z, reduce="amin", include_self=False)
+
+  img = torch.zeros((height * width, 3), dtype=torch.uint8, device=pts.device)
+  wins = z == depth[idx]
+  img[idx[wins]] = cols[keep][wins]
+  return img.reshape(height, width, 3)
+
+
+def sample_segments(starts, ends, cols, n=64):
+  """Turn line segments into points so splat can draw them like everything else."""
+  t = torch.linspace(0, 1, n, device=starts.device)[None, :, None]
+  pts = starts[:, None] + (ends - starts)[:, None] * t
+  return pts.reshape(-1, 3), cols.repeat_interleave(n, 0)
+
+
 def get_look_at_matrix(eye, target, up=(0, 0, 1)):
   z_axis = np.array(eye, dtype=float) - np.array(target, dtype=float)
   z_axis /= np.linalg.norm(z_axis) + 1e-6
@@ -504,7 +530,9 @@ def render_4d_orbit_with_tracks(
   camera_height=0.5,
   angle_start=None,
   max_frames=None,
+  device=None,
 ):
+  device = device or ("cuda" if torch.cuda.is_available() else "cpu")
   if angle_start is None:
     angle_start = np.pi / 2
 
@@ -513,10 +541,15 @@ def render_4d_orbit_with_tracks(
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
 
+  # The orbiting camera: a 60 degree vertical field of view centred on the image.
+  focal = (height / 2) / np.tan(np.radians(frustum_fov_y) / 2)
+  K_viz = torch.tensor(
+    [[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]], dtype=torch.float32, device=device
+  )
+
   if tracks_3d is not None:
-    n_total_tracks = tracks_3d.shape[1]
-    if n_total_tracks > max_render_tracks:
-      idx = np.random.permutation(n_total_tracks)[:max_render_tracks]
+    if tracks_3d.shape[1] > max_render_tracks:
+      idx = np.random.permutation(tracks_3d.shape[1])[:max_render_tracks]
       tracks_3d = tracks_3d[:, idx]
       if track_colors is not None:
         track_colors = track_colors[idx]
@@ -527,6 +560,13 @@ def render_4d_orbit_with_tracks(
       norm = plt.Normalize(y0.min(), y0.max())
       track_colors = (plt.cm.hsv(norm(y0))[:, :3] * 255).astype(np.uint8)
     n_tracks = tracks_3d.shape[1]
+    # A track marker is its centre plus one point along each axis: at this scale a
+    # sphere mesh would cover the same two pixels.
+    dot_offsets = track_sphere_radius * torch.tensor(
+      [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
+      dtype=torch.float32,
+      device=device,
+    )
 
   half_h = frustum_depth * np.tan(np.radians(frustum_fov_y / 2))
   half_w = half_h * frustum_aspect
@@ -540,46 +580,75 @@ def render_4d_orbit_with_tracks(
     ]
   )
   frustum_edges = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (2, 3), (3, 4), (4, 1)]
-  cam_colors_rgb = np.array(
-    [[1.0, 0.4, 0.2, 1.0], [0.2, 0.8, 0.2, 1.0], [0.2, 0.4, 1.0, 1.0], [1.0, 1.0, 0.2, 1.0]],
-    dtype=np.float32,
+  cam_colors = np.array(
+    [[255, 102, 51], [51, 204, 51], [51, 102, 255], [255, 255, 51]], dtype=np.uint8
   )
 
-  if tracks_3d is not None:
-    sphere_template = trimesh.creation.icosphere(subdivisions=1, radius=track_sphere_radius)
-    tpl_v = sphere_template.vertices
-    tpl_f = sphere_template.faces
-    n_v, n_f = len(tpl_v), len(tpl_f)
+  def as_pts(arr):
+    return torch.as_tensor(np.ascontiguousarray(arr), dtype=torch.float32, device=device)
 
-  scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 1.0])
-  cam_node = scene.add(
-    pyrender.PerspectiveCamera(yfov=np.pi / 3.0, aspectRatio=width / height), pose=np.eye(4)
-  )
-  light_node = scene.add(
-    pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=4.0), pose=np.eye(4)
-  )
-  renderer = pyrender.OffscreenRenderer(width, height)
+  def as_cols(arr):
+    return torch.as_tensor(np.ascontiguousarray(arr), dtype=torch.uint8, device=device)
 
   video_frames = []
-  for frame_idx in tqdm(range(n_frames), desc="Rendering 4D orbit + tracks"):
-    nodes_to_remove = []
-
+  for frame_idx in tqdm(range(n_frames), desc="Rendering 4D orbit"):
     points, colors = [], []
+
     for cam_id in camera_ids:
       cam_data = scene_constants['camera'][cam_id]
-      cam_state = scene_state[cam_id]
-      pts_3d, cols_rgb = core.geometry.unproject_to_3d(
+      pts_3d, cols_rgb = core.geometry.unproject_to_3d_torch(
         cam_data['raw_depth'][frame_idx],
         cam_data['video_rgb'][frame_idx],
         cam_data['K_mat'],
-        T_cam2world=cam_state['extrinsics'][frame_idx],
+        scene_state[cam_id]['extrinsics'][frame_idx],
+        device,
       )
       points.append(pts_3d)
       colors.append(cols_rgb)
-    points = np.vstack(points)
-    colors = np.vstack(colors)
-    sample_idx = np.random.permutation(len(points))[:max_render_points]
-    points, colors = points[sample_idx], colors[sample_idx]
+    cloud, cloud_cols = torch.cat(points), torch.cat(colors)
+    if len(cloud) > max_render_points:
+      keep = torch.randperm(len(cloud), device=device)[:max_render_points]
+      cloud, cloud_cols = cloud[keep], cloud_cols[keep]
+    points, colors = [cloud], [cloud_cols]
+
+    if tracks_3d is not None:
+      vis = track_vis[frame_idx] if track_vis is not None else np.ones(n_tracks, dtype=bool)
+      if vis.any():
+        dots = as_pts(tracks_3d[frame_idx][vis])[:, None, :] + dot_offsets
+        points.append(dots.reshape(-1, 3))
+        colors.append(as_cols(track_colors[vis]).repeat_interleave(len(dot_offsets), 0))
+
+      starts, ends, trail_cols = [], [], []
+      for j in range(max(0, frame_idx - track_history), frame_idx):
+        mask = np.linalg.norm(tracks_3d[j + 1] - tracks_3d[j], axis=1) > 1e-6
+        if track_vis is not None:
+          mask &= track_vis[j] & track_vis[j + 1]
+        if mask.any():
+          starts.append(tracks_3d[j][mask])
+          ends.append(tracks_3d[j + 1][mask])
+          trail_cols.append(track_colors[mask])
+      if starts:
+        seg_pts, seg_cols = sample_segments(
+          as_pts(np.concatenate(starts)),
+          as_pts(np.concatenate(ends)),
+          as_cols(np.concatenate(trail_cols)),
+        )
+        points.append(seg_pts)
+        colors.append(seg_cols)
+
+    starts, ends, frust_cols = [], [], []
+    for ci, cam_id in enumerate(camera_ids):
+      ext_c2w = scene_state[cam_id]['extrinsics'][frame_idx]
+      corners_w = (ext_c2w[:3, :3] @ corners_cam.T).T + ext_c2w[:3, 3]
+      for ei, ej in frustum_edges:
+        starts.append(corners_w[ei])
+        ends.append(corners_w[ej])
+        frust_cols.append(cam_colors[ci % len(cam_colors)])
+    seg_pts, seg_cols = sample_segments(
+      as_pts(np.array(starts)), as_pts(np.array(ends)), as_cols(np.array(frust_cols))
+    )
+    points.append(seg_pts)
+    colors.append(seg_cols)
 
     angle = angle_start + (frame_idx * np.pi / n_frames)
     eye_pos = [
@@ -587,81 +656,11 @@ def render_4d_orbit_with_tracks(
       orbit_center[1] + orbit_radius * np.sin(angle),
       camera_height,
     ]
-    viz_pose = get_look_at_matrix(eye_pos, orbit_center)
-    scene.set_pose(cam_node, pose=viz_pose)
-    scene.set_pose(light_node, pose=viz_pose)
+    viz_pose = as_pts(get_look_at_matrix(eye_pos, orbit_center))
 
-    pcl_node = scene.add(pyrender.Mesh.from_points(points, colors=colors))
-    nodes_to_remove.append(pcl_node)
-
-    if tracks_3d is not None:
-      vis = track_vis[frame_idx] if track_vis is not None else np.ones(n_tracks, dtype=bool)
-      vis_pts = tracks_3d[frame_idx][vis]
-      vis_cols = track_colors[vis]
-
-      if len(vis_pts) > 0:
-        N = len(vis_pts)
-        all_verts = np.tile(tpl_v, (N, 1, 1))
-        all_verts += vis_pts[:, np.newaxis, :]
-        all_verts = all_verts.reshape(-1, 3)
-
-        offsets = np.arange(N) * n_v
-        all_faces = np.tile(tpl_f, (N, 1))
-        all_faces += np.repeat(offsets, n_f)[:, np.newaxis]
-
-        face_rgba = np.column_stack(
-          [np.repeat(vis_cols, n_f, axis=0), np.full(N * n_f, 255)]
-        ).astype(np.uint8)
-        mesh = trimesh.Trimesh(vertices=all_verts, faces=all_faces)
-        mesh.visual.face_colors = face_rgba
-        tk_node = scene.add(pyrender.Mesh.from_trimesh(mesh, smooth=False))
-        nodes_to_remove.append(tk_node)
-
-      trail_pos, trail_col = [], []
-      for j in range(max(0, frame_idx - track_history), frame_idx):
-        starts = tracks_3d[j]
-        ends = tracks_3d[j + 1]
-        mask = np.ones(n_tracks, dtype=bool)
-        if track_vis is not None:
-          mask &= track_vis[j] & track_vis[j + 1]
-        lengths = np.linalg.norm(ends - starts, axis=1)
-        mask &= lengths > 1e-6
-        if mask.any():
-          pairs = np.stack([starts[mask], ends[mask]], axis=1)
-          trail_pos.append(pairs.reshape(-1, 3))
-          tc = track_colors[mask].astype(np.float32) / 255.0
-          trail_col.append(np.repeat(tc, 2, axis=0))
-
-      if trail_pos:
-        line_pos = np.concatenate(trail_pos).astype(np.float32)
-        line_col = np.concatenate(trail_col).astype(np.float32)
-        line_rgba = np.column_stack([line_col, np.ones(len(line_col))]).astype(np.float32)
-        trail_prim = pyrender.Primitive(positions=line_pos, color_0=line_rgba, mode=1)
-        trail_node = scene.add(pyrender.Mesh(primitives=[trail_prim]))
-        nodes_to_remove.append(trail_node)
-
-    frust_pos, frust_col = [], []
-    for ci, cam_id in enumerate(camera_ids):
-      ext_c2w = scene_state[cam_id]['extrinsics'][frame_idx]
-      R, t = ext_c2w[:3, :3], ext_c2w[:3, 3]
-      corners_w = (R @ corners_cam.T).T + t
-      color = cam_colors_rgb[ci % len(cam_colors_rgb)]
-      for ei, ej in frustum_edges:
-        frust_pos.extend([corners_w[ei], corners_w[ej]])
-        frust_col.extend([color, color])
-
-    if frust_pos:
-      frust_pos = np.array(frust_pos, dtype=np.float32)
-      frust_col = np.array(frust_col, dtype=np.float32)
-      frust_prim = pyrender.Primitive(positions=frust_pos, color_0=frust_col, mode=1)
-      frust_node = scene.add(pyrender.Mesh(primitives=[frust_prim]))
-      nodes_to_remove.append(frust_node)
-
-    color_img, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
-    for node in nodes_to_remove:
-      scene.remove_node(node)
-
-    img_rgb = color_img[:, :, :3].copy()
+    img_rgb = splat(
+      torch.cat(points), torch.cat(colors), K_viz, viz_pose, height, width
+    ).cpu().numpy()
     cv2.putText(
       img_rgb,
       f"Frame: {frame_idx:03d}",
@@ -673,5 +672,4 @@ def render_4d_orbit_with_tracks(
     )
     video_frames.append(img_rgb)
 
-  renderer.delete()
   return video_frames

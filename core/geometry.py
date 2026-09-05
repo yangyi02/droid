@@ -41,6 +41,18 @@ def unproject_to_3d(depth, color_img, K_mat, T_cam2world=None, min_depth=0.0, ma
   return pts_world, color_img[mask]
 
 
+def unproject_to_3d_torch(depth, color_img, K_mat, T_cam2world, device, max_depth=1.5):
+  """unproject_to_3d without ever leaving the GPU, for the point-cloud renderer."""
+  depth = torch.as_tensor(depth, device=device)
+  v, u = torch.nonzero((depth > 0) & (depth < max_depth), as_tuple=True)
+  z = depth[v, u]
+  K = torch.as_tensor(K_mat, dtype=torch.float32, device=device)
+  pts_cam = torch.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z], dim=1)
+  T = torch.as_tensor(T_cam2world, dtype=torch.float32, device=device)
+  pts_world = pts_cam @ T[:3, :3].T + T[:3, 3]
+  return pts_world, torch.as_tensor(color_img, device=device)[v, u]
+
+
 def make_4x4(vec_6d):
   transform = np.eye(4)
   transform[:3, :3] = R.from_euler('xyz', vec_6d[3:]).as_matrix()

@@ -7,9 +7,7 @@ import numpy as np
 import torch
 
 
-def get_accelerator(force_egl=True):
-  if force_egl:
-    os.environ["PYOPENGL_PLATFORM"] = "egl"
+def get_accelerator():
   return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 

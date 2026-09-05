@@ -5,8 +5,6 @@ opencv-python
 scipy
 matplotlib
 ml-collections
-trimesh
 tqdm
 mediapy
 plotly
-pyrender
