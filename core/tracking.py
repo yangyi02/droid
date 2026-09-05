@@ -44,7 +44,7 @@ class URDFKinematicsTracker:
     )
 
     obj_ids, link_ids, urdf_depth = self.pb.render_segmentation(extrinsics[0], K_mat, w_img, h_img)
-    is_robot = (obj_ids == self.pb.robot_id) | (obj_ids == self.pb.ghost_id)
+    is_robot = obj_ids == self.pb.robot_id
 
     kernel = np.ones((safe_margin, safe_margin), np.uint8)
     is_robot_safe = cv2.erode(is_robot.astype(np.uint8), kernel, iterations=1) > 0
