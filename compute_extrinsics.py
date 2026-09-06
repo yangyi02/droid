@@ -1,5 +1,6 @@
 import copy
 import gc
+import itertools
 import json
 import os
 
@@ -14,6 +15,12 @@ import core.geometry
 import core.io
 import core.physics
 import core.runner
+
+
+def world_extrinsics(base, ee_poses, is_wrist):
+  if is_wrist:
+    return ee_poses @ base
+  return np.tile(base, (len(ee_poses), 1, 1))
 
 
 def init_camera_states(scene_constants, extrinsics_db):
@@ -152,9 +159,7 @@ def per_camera_alignment(
       )
 
       scene_state[cam]['base_extrinsic'] = T_final
-      scene_state[cam]['extrinsics'] = (
-        T_ee_base_all @ T_final if is_wrist else np.tile(T_final, (n_frames, 1, 1))
-      )
+      scene_state[cam]['extrinsics'] = world_extrinsics(T_final, T_ee_base_all, is_wrist)
 
   return scene_state
 
@@ -207,152 +212,97 @@ def global_joint_alignment(
 ):
   print(f"\nGlobal joint optimization (Chamfer + Robot + Wrist, lr={lr})...")
   wrist_cam = scene_constants['meta']['wrist_serial']
-  ext_cams = [c for c in scene_constants['camera'].keys() if c != wrist_cam]
-  cam1, cam2 = ext_cams[0], ext_cams[1]
+  ext_cams = [c for c in scene_constants['camera'] if c != wrist_cam]
+  cams = ext_cams + [wrist_cam]
+  pairs = list(itertools.combinations(cams, 2))
+  label = {c: str(i + 1) for i, c in enumerate(ext_cams)} | {wrist_cam: "W"}
   n_frames = len(scene_constants['robot']['joint_positions'])
   T_ee_all = scene_constants['robot']['T_ee_base_all']
 
   print("  Rendering robot physical point clouds...")
-  batch_X1, batch_obs1 = extract_robot_clouds(
-    cam1,
-    scene_constants,
-    pb_renderer,
-    prev_scene_state[cam1]['base_extrinsic'],
-    device,
-    observed_depth(scene_constants['camera'][cam1], device),
-  )
-  batch_X2, batch_obs2 = extract_robot_clouds(
-    cam2,
-    scene_constants,
-    pb_renderer,
-    prev_scene_state[cam2]['base_extrinsic'],
-    device,
-    observed_depth(scene_constants['camera'][cam2], device),
-  )
-  batch_P_ee, batch_obs_w = extract_robot_clouds(
-    wrist_cam,
-    scene_constants,
-    pb_renderer,
-    prev_scene_state[wrist_cam]['base_extrinsic'],
-    device,
-    observed_depth(scene_constants['camera'][wrist_cam], device),
-  )
+  robot_pts, obs, K, base, delta = {}, {}, {}, {}, {}
+  for cam in cams:
+    cam_data = scene_constants['camera'][cam]
+    robot_pts[cam], obs[cam] = extract_robot_clouds(
+      cam,
+      scene_constants,
+      pb_renderer,
+      prev_scene_state[cam]['base_extrinsic'],
+      device,
+      observed_depth(cam_data, device),
+    )
+    K[cam] = torch.tensor(cam_data['K_mat'], dtype=torch.float32, device=device)
+    base[cam] = torch.tensor(
+      prev_scene_state[cam]['base_extrinsic'], dtype=torch.float32, device=device
+    )
+    delta[cam] = torch.zeros(6, requires_grad=True, device=device)
 
   print("  Extracting Chamfer environment point clouds...")
-  cache_Pc1, cache_Pc2, cache_Pcw, cache_Tee = [], [], [], []
-
+  cache = {cam: [] for cam in cams}
+  cache_ee = []
   for t in range(n_frames):
-    pc1 = camera_frame_points(
-      t, scene_constants['camera'][cam1], device, n_points=chamfer_n_points
-    )
-    pc2 = camera_frame_points(
-      t, scene_constants['camera'][cam2], device, n_points=chamfer_n_points
-    )
-    pcw = camera_frame_points(
-      t, scene_constants['camera'][wrist_cam], device, n_points=chamfer_n_points
-    )
+    frame = {}
+    for cam in cams:
+      frame[cam] = camera_frame_points(
+        t, scene_constants['camera'][cam], device, n_points=chamfer_n_points
+      )
+    if all(pts is not None for pts in frame.values()):
+      for cam in cams:
+        cache[cam].append(frame[cam])
+      cache_ee.append(torch.tensor(T_ee_all[t], dtype=torch.float32, device=device))
 
-    if pc1 is not None and pc2 is not None and pcw is not None:
-      cache_Pc1.append(pc1)
-      cache_Pc2.append(pc2)
-      cache_Pcw.append(pcw)
-      cache_Tee.append(torch.tensor(T_ee_all[t], dtype=torch.float32, device=device))
-
-  batch_Pc1, batch_Pc2, batch_Pcw = (
-    torch.stack(cache_Pc1),
-    torch.stack(cache_Pc2),
-    torch.stack(cache_Pcw),
-  )
-  batch_Tee = torch.stack(cache_Tee)
-
-  K1 = torch.tensor(scene_constants['camera'][cam1]['K_mat'], dtype=torch.float32, device=device)
-  K2 = torch.tensor(scene_constants['camera'][cam2]['K_mat'], dtype=torch.float32, device=device)
-  K_w = torch.tensor(
-    scene_constants['camera'][wrist_cam]['K_mat'], dtype=torch.float32, device=device
-  )
-
-  d1 = torch.zeros(6, requires_grad=True, device=device)
-  d2 = torch.zeros(6, requires_grad=True, device=device)
-  dhe = torch.zeros(6, requires_grad=True, device=device)
-  optimizer = optim.Adam([d1, d2, dhe], lr=lr)
-
-  T1_init = torch.tensor(
-    prev_scene_state[cam1]['base_extrinsic'], dtype=torch.float32, device=device
-  )
-  T2_init = torch.tensor(
-    prev_scene_state[cam2]['base_extrinsic'], dtype=torch.float32, device=device
-  )
-  Tee_init = torch.tensor(
-    prev_scene_state[wrist_cam]['base_extrinsic'], dtype=torch.float32, device=device
-  )
+  env = {cam: torch.stack(cache[cam]) for cam in cams}
+  ee_poses = torch.stack(cache_ee)
+  optimizer = optim.Adam(list(delta.values()), lr=lr)
 
   print(f"  Data ready! Launching GPU joint optimization engine ({n_steps} steps)...")
   for step in range(n_steps):
     optimizer.zero_grad()
 
-    T1_opt = T1_init @ core.geometry.pose_from_axis_angle(d1, device)
-    T2_opt = T2_init @ core.geometry.pose_from_axis_angle(d2, device)
-    Tee_opt = Tee_init @ core.geometry.pose_from_axis_angle(dhe, device)
+    pose, world = {}, {}
+    for cam in cams:
+      pose[cam] = base[cam] @ core.geometry.pose_from_axis_angle(delta[cam], device)
+      to_world = ee_poses @ pose[cam] if cam == wrist_cam else pose[cam]
+      world[cam] = (to_world @ env[cam])[:, :3, :].transpose(1, 2)
 
-    bc1 = (T1_opt @ batch_Pc1)[:, :3, :].transpose(1, 2)
-    bc2 = (T2_opt @ batch_Pc2)[:, :3, :].transpose(1, 2)
-    T_wrist_c2w = batch_Tee @ Tee_opt
-    bcw = torch.bmm(T_wrist_c2w, batch_Pcw)[:, :3, :].transpose(1, 2)
+    chamfer, overlap = {}, {}
+    for a, b in pairs:
+      chamfer[a, b], overlap[a, b] = batched_chamfer_distance(world[a], world[b])
 
-    l12, o12 = batched_chamfer_distance(bc1, bc2)
-    l1w, o1w = batched_chamfer_distance(bc1, bcw)
-    l2w, o2w = batched_chamfer_distance(bc2, bcw)
+    robot = {}
+    for cam in cams:
+      robot[cam] = core.physics.depth_loss_batched(robot_pts[cam], pose[cam], K[cam], obs[cam])
 
-    l_rob1 = core.physics.depth_loss_batched(batch_X1, T1_opt, K1, batch_obs1)
-    l_rob2 = core.physics.depth_loss_batched(batch_X2, T2_opt, K2, batch_obs2)
-    l_wrist = core.physics.depth_loss_batched(batch_P_ee, Tee_opt, K_w, batch_obs_w)
-
-    loss_total = chamfer_weight * (l12 + l1w + l2w) + robot_weight * (l_rob1 + l_rob2 + l_wrist)
-
+    loss_total = chamfer_weight * sum(chamfer.values()) + robot_weight * sum(robot.values())
     loss_total.backward()
     optimizer.step()
 
     if step % 100 == 0 or step == n_steps - 1:
-      overlap = (o12 + o1w + o2w).item() / 3.0 * 100
-      shift_c1 = torch.norm(d1[:3]).item() * 1000
-      shift_c2 = torch.norm(d2[:3]).item() * 1000
-      shift_w = torch.norm(dhe[:3]).item() * 1000
-      log_parts = [
-        f"Step {step:03d}",
-        f"Ch12: {l12.item():.4f}",
-        f"Ch1w: {l1w.item():.4f}",
-        f"Ch2w: {l2w.item():.4f}",
-        f"Rob1: {l_rob1.item():.4f}",
-        f"Rob2: {l_rob2.item():.4f}",
-        f"Wrst: {l_wrist.item():.4f}",
-      ]
-      log_parts.extend(
-        [
-          f"Overlap: {overlap:.1f}%",
-          f"Shift: C1: {shift_c1:.2f}mm, C2: {shift_c2:.2f}mm, W: {shift_w:.2f}mm",
-        ]
+      parts = [f"Step {step:03d}"]
+      parts += [f"Ch{label[a]}{label[b]}: {chamfer[a, b].item():.4f}" for a, b in pairs]
+      parts += [f"Rob{label[cam]}: {robot[cam].item():.4f}" for cam in cams]
+      parts.append(f"Overlap: {sum(overlap.values()).item() / len(pairs) * 100:.1f}%")
+      shifts = ", ".join(
+        f"{label[cam]}: {torch.norm(delta[cam][:3]).item() * 1000:.2f}mm" for cam in cams
       )
-      print(f"    {' | '.join(log_parts)}")
+      parts.append(f"Shift: {shifts}")
+      print(f"    {' | '.join(parts)}")
 
   with torch.no_grad():
-    final_p1 = (T1_init @ core.geometry.pose_from_axis_angle(d1, device)).cpu().numpy()
-    final_p2 = (T2_init @ core.geometry.pose_from_axis_angle(d2, device)).cpu().numpy()
-    final_cam_ee = (Tee_init @ core.geometry.pose_from_axis_angle(dhe, device)).cpu().numpy()
+    final = {}
+    for cam in cams:
+      opt = base[cam] @ core.geometry.pose_from_axis_angle(delta[cam], device)
+      final[cam] = opt.cpu().numpy()
 
   print("\nGlobal joint optimization complete!")
 
-  ultimate_scene_state = {c: {} for c in scene_constants['camera'].keys()}
-  ultimate_scene_state[cam1].update(
-    {"base_extrinsic": final_p1, "extrinsics": np.tile(final_p1, (n_frames, 1, 1))}
-  )
-  ultimate_scene_state[cam2].update(
-    {"base_extrinsic": final_p2, "extrinsics": np.tile(final_p2, (n_frames, 1, 1))}
-  )
-  ultimate_scene_state[wrist_cam].update(
-    {"base_extrinsic": final_cam_ee, "extrinsics": T_ee_all @ final_cam_ee}
-  )
-
-  return ultimate_scene_state
+  return {
+    cam: {
+      "base_extrinsic": final[cam],
+      "extrinsics": world_extrinsics(final[cam], T_ee_all, cam == wrist_cam),
+    }
+    for cam in scene_constants['camera']
+  }
 
 
 def export_extrinsics(scene_constants, scene_state, export_root):
