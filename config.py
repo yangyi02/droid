@@ -23,8 +23,6 @@ def get_config():
   config.paths.tapvidmv = os.path.join(output, "tapvidmv")
 
   config.urls = ml_collections.ConfigDict()
-  config.urls.gcs_input = "gs://gresearch/robotics/droid_raw"
-  config.urls.gcs_output = "gs://dm-tapnet/tmp/droid"
   config.urls.meta = "https://huggingface.co/KarlP/droid/resolve/main"
 
   config.runner = ml_collections.ConfigDict()
