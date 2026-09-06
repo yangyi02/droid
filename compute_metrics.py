@@ -70,10 +70,7 @@ def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=None):
         scene_state[cam_id]["base_extrinsic"], dtype=torch.float32, device=device
       )
 
-      if is_wrist:
-        loss = core.physics.compute_wrist_loss_batched(batch_X, T_opt, K_t, batch_obs)
-      else:
-        loss = core.physics.compute_robot_loss_batched(batch_X, T_opt, K_t, batch_obs)
+      loss = core.physics.depth_loss_batched(batch_X, T_opt, K_t, batch_obs)
       metrics[f"robot_loss_{key_prefix}"] = loss.item()
 
   T1 = torch.tensor(scene_state[cam1]["base_extrinsic"], dtype=torch.float32, device=device)

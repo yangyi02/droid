@@ -182,10 +182,10 @@ def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer, device
   return P_cam_r[:, idx]
 
 
-def compute_robot_loss_batched(batch_X, T_opt, K, batch_obs):
-  B, _, h_img, w_img = batch_obs.shape
+def depth_loss_batched(points, T_cam_to_frame, K, batch_obs):
+  _, _, h_img, w_img = batch_obs.shape
 
-  P_c = (batch_X - T_opt[:3, 3]) @ T_opt[:3, :3]
+  P_c = (points - T_cam_to_frame[:3, 3]) @ T_cam_to_frame[:3, :3]
   Z_pred = P_c[..., 2]
 
   u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
@@ -193,55 +193,21 @@ def compute_robot_loss_batched(batch_X, T_opt, K, batch_obs):
 
   grid = torch.stack([(u / (w_img - 1)) * 2 - 1, (v / (h_img - 1)) * 2 - 1], dim=-1).unsqueeze(1)
 
-  Z_obs_raw = (
+  Z_obs = (
     F.grid_sample(batch_obs, grid, mode='bilinear', padding_mode='border', align_corners=True)
     .squeeze(1)
     .squeeze(1)
   )
 
-  valid_mask = (
+  valid = (
     (Z_pred > 0.0)
     & (Z_pred < 1.5)
-    & (Z_obs_raw > 0.0)
-    & (Z_obs_raw < 1.5)
+    & (Z_obs > 0.0)
+    & (Z_obs < 1.5)
     & (u >= 0)
     & (u < w_img - 1)
     & (v >= 0)
     & (v < h_img - 1)
   )
 
-  diff = torch.abs(Z_obs_raw[valid_mask] - Z_pred[valid_mask])
-  return torch.nan_to_num(diff.mean(), nan=0.0)
-
-
-def compute_wrist_loss_batched(batch_P_ee, T_cam_ee_opt, K, batch_obs):
-  B, _, h_img, w_img = batch_obs.shape
-
-  T_ee_cam = torch.linalg.inv(T_cam_ee_opt)
-  P_c = batch_P_ee @ T_ee_cam[:3, :3].T + T_ee_cam[:3, 3]
-  Z_pred = P_c[..., 2]
-
-  u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
-  v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
-
-  grid = torch.stack([(u / (w_img - 1)) * 2 - 1, (v / (h_img - 1)) * 2 - 1], dim=-1).unsqueeze(1)
-
-  Z_obs_raw = (
-    F.grid_sample(batch_obs, grid, mode='bilinear', padding_mode='border', align_corners=True)
-    .squeeze(1)
-    .squeeze(1)
-  )
-
-  valid_mask = (
-    (Z_pred > 0.0)
-    & (Z_pred < 1.5)
-    & (Z_obs_raw > 0.0)
-    & (Z_obs_raw < 1.5)
-    & (u >= 0)
-    & (u < w_img - 1)
-    & (v >= 0)
-    & (v < h_img - 1)
-  )
-
-  diff = torch.abs(Z_obs_raw[valid_mask] - Z_pred[valid_mask])
-  return torch.nan_to_num(diff.mean(), nan=0.0)
+  return torch.nan_to_num(torch.abs(Z_obs[valid] - Z_pred[valid]).mean(), nan=0.0)

@@ -92,12 +92,6 @@ def extract_robot_clouds(cam_id, scene_constants, pb_renderer, base_extrinsic, d
   return torch.stack(cache_X), obs
 
 
-def robot_depth_loss(batch_X, T_opt, K, batch_obs, is_wrist):
-  if is_wrist:
-    return core.physics.compute_wrist_loss_batched(batch_X, T_opt, K, batch_obs)
-  return core.physics.compute_robot_loss_batched(batch_X, T_opt, K, batch_obs)
-
-
 def per_camera_alignment(
   scene_constants, pb_renderer, prev_scene_state, device, outer_steps=5, inner_steps=100
 ):
@@ -130,8 +124,8 @@ def per_camera_alignment(
       )
       for _ in range(inner_steps):
         optimizer.zero_grad()
-        loss_rob = robot_depth_loss(
-          batch_X, T_init_t @ core.geometry.make_T(d_ext, device), K_t, batch_obs, is_wrist
+        loss_rob = core.physics.depth_loss_batched(
+          batch_X, T_init_t @ core.geometry.make_T(d_ext, device), K_t, batch_obs
         )
         loss_rob.backward()
         optimizer.step()
@@ -309,9 +303,9 @@ def global_joint_alignment(
     l1w, o1w = batched_chamfer_distance(bc1, bcw)
     l2w, o2w = batched_chamfer_distance(bc2, bcw)
 
-    l_rob1 = robot_depth_loss(batch_X1, T1_opt, K_t1, batch_obs1, is_wrist=False)
-    l_rob2 = robot_depth_loss(batch_X2, T2_opt, K_t2, batch_obs2, is_wrist=False)
-    l_wrist = robot_depth_loss(batch_P_ee, Tee_opt, K_t_w, batch_obs_w, is_wrist=True)
+    l_rob1 = core.physics.depth_loss_batched(batch_X1, T1_opt, K_t1, batch_obs1)
+    l_rob2 = core.physics.depth_loss_batched(batch_X2, T2_opt, K_t2, batch_obs2)
+    l_wrist = core.physics.depth_loss_batched(batch_P_ee, Tee_opt, K_t_w, batch_obs_w)
 
     loss_total = chamfer_weight * (l12 + l1w + l2w) + robot_weight * (l_rob1 + l_rob2 + l_wrist)
 
