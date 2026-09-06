@@ -68,14 +68,7 @@ def show_plotly_point_cloud(
 
 
 def render_fused_point_cloud(
-  scene_constants,
-  scene_state,
-  frame_idx=0,
-  max_render_points=150000,
-  eye_pos=(-1.2, -1.2, 0.8),
-  use_tint=False,
-  height=600,
-  width=1000,
+  scene_constants, scene_state, frame_idx=0, use_tint=False, height=600, width=1000
 ):
   camera_ids = sorted(scene_constants['camera'].keys())
   tint_colors = np.array([[0, 50, 0], [50, 0, 0], [0, 0, 50]])
@@ -98,15 +91,12 @@ def render_fused_point_cloud(
     fused_points.append(points_3d)
     fused_colors.append(colors_rgb)
 
-  title = f"Fused Point Cloud (Frame {frame_idx})"
-  if use_tint:
-    title += " [Tinted Debug Mode]"
   show_plotly_point_cloud(
     pts=np.vstack(fused_points),
     cols=np.vstack(fused_colors),
-    title=title,
-    max_points=max_render_points,
-    eye_pos=eye_pos,
+    title=f"Fused Point Cloud (Frame {frame_idx})" + (" [Tinted]" if use_tint else ""),
+    max_points=150000,
+    eye_pos=(-1.2, -1.2, 0.8),
     height=height,
     width=width,
   )
@@ -223,9 +213,8 @@ def visualize_disparity_video(disp_array, vmax=100.0):
   )
 
 
-def render_multicam_disparity_video(
-  scene_constants, tgt_size=(128, 228), disp_vmax=100.0, max_frames=None
-):
+def render_multicam_disparity_video(scene_constants, max_frames=None):
+  tgt_size = (128, 228)
   camera_rows = []
   for cam_data in scene_constants['camera'].values():
     video_rgb = cam_data['video_rgb']
@@ -242,7 +231,7 @@ def render_multicam_disparity_video(
     raw_disp = np.zeros_like(raw_depth)
     valid_mask = raw_depth > 0
     raw_disp[valid_mask] = (fx * baseline) / raw_depth[valid_mask]
-    disp_video = visualize_disparity_video(media.resize_video(raw_disp, tgt_size), vmax=disp_vmax)
+    disp_video = visualize_disparity_video(media.resize_video(raw_disp, tgt_size))
     camera_rows.append(np.concatenate([left_video, right_video, disp_video], axis=2))
   return np.concatenate(camera_rows, axis=1)
 
@@ -367,9 +356,8 @@ def render_segmentation_video(
   return video_frames
 
 
-def render_cross_camera_axes(
-  scene_constants, scene_state, axis_len=0.15, tgt_w=1200, max_frames=None
-):
+def render_cross_camera_axes(scene_constants, scene_state, max_frames=None):
+  axis_len, tgt_w = 0.15, 1200
   cams = list(scene_constants['camera'].keys())
   n_frames = len(scene_state[cams[0]]['extrinsics'])
   if max_frames is not None:
@@ -436,13 +424,9 @@ def render_cross_camera_axes(
   return video_frames
 
 
-GL_TO_PINHOLE = torch.tensor([1.0, -1.0, -1.0])
-
-
 def splat(pts, cols, K, T_cam2world, height, width):
   T_world2cam = torch.linalg.inv(T_cam2world)
   cam = pts @ T_world2cam[:3, :3].T + T_world2cam[:3, 3]
-  cam = cam * GL_TO_PINHOLE.to(pts.device)
   z = cam[:, 2]
   uv = (cam @ K.T)[:, :2] / z[:, None].clamp(min=1e-6)
   u, v = uv.round().long().unbind(-1)
@@ -466,48 +450,32 @@ def sample_segments(starts, ends, cols, n=64):
 
 
 def get_look_at_matrix(eye, target, up=(0, 0, 1)):
-  z_axis = np.array(eye, dtype=float) - np.array(target, dtype=float)
-  z_axis /= np.linalg.norm(z_axis) + 1e-6
-  x_axis = np.cross(up, z_axis)
-  x_axis /= np.linalg.norm(x_axis) + 1e-6
-  y_axis = np.cross(z_axis, x_axis)
+  forward = np.array(target, dtype=float) - np.array(eye, dtype=float)
+  forward /= np.linalg.norm(forward) + 1e-6
+  right = np.cross(forward, up)
+  right /= np.linalg.norm(right) + 1e-6
+  down = np.cross(forward, right)
   view_matrix = np.eye(4)
-  view_matrix[:3, :4] = np.column_stack((x_axis, y_axis, z_axis, eye))
+  view_matrix[:3, :4] = np.column_stack((right, down, forward, eye))
   return view_matrix
 
 
-def render_4d_orbit_with_tracks(
-  scene_constants,
-  scene_state,
-  tracks_3d=None,
-  track_colors=None,
-  track_vis=None,
-  track_history=5,
-  track_sphere_radius=0.008,
-  frustum_depth=0.15,
-  frustum_fov_y=60.0,
-  frustum_aspect=4.0 / 3.0,
-  max_render_points=400000,
-  max_render_tracks=500,
-  width=640,
-  height=360,
-  orbit_center=(0.4, 0.0, 0.0),
-  orbit_radius=1.2,
-  camera_height=0.5,
-  angle_start=None,
-  max_frames=None,
-  device=None,
-):
-  device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-  if angle_start is None:
-    angle_start = np.pi / 2
+def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, max_frames=None):
+  device = "cuda" if torch.cuda.is_available() else "cpu"
+  width, height = 640, 360
+  fov_y = 60.0
+  orbit_center, orbit_radius, camera_height = (0.4, 0.0, 0.0), 1.2, 0.5
+  angle_start = np.pi / 2
+  max_render_points, max_render_tracks = 400000, 500
+  track_history, track_radius = 5, 0.008
+  frustum_depth, frustum_aspect = 0.15, 4.0 / 3.0
 
   camera_ids = sorted(scene_constants['camera'].keys())
   n_frames = len(scene_state[camera_ids[0]]['extrinsics'])
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
 
-  focal = (height / 2) / np.tan(np.radians(frustum_fov_y) / 2)
+  focal = (height / 2) / np.tan(np.radians(fov_y) / 2)
   K_viz = torch.tensor(
     [[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]], dtype=torch.float32, device=device
   )
@@ -516,22 +484,16 @@ def render_4d_orbit_with_tracks(
     if tracks_3d.shape[1] > max_render_tracks:
       idx = np.random.permutation(tracks_3d.shape[1])[:max_render_tracks]
       tracks_3d = tracks_3d[:, idx]
-      if track_colors is not None:
-        track_colors = track_colors[idx]
-      if track_vis is not None:
-        track_vis = track_vis[:, idx]
-    if track_colors is None:
-      y0 = tracks_3d[0, :, 1]
-      norm = plt.Normalize(y0.min(), y0.max())
-      track_colors = (plt.cm.hsv(norm(y0))[:, :3] * 255).astype(np.uint8)
-    n_tracks = tracks_3d.shape[1]
-    dot_offsets = track_sphere_radius * torch.tensor(
+    y0 = tracks_3d[0, :, 1]
+    norm = plt.Normalize(y0.min(), y0.max())
+    track_colors = (plt.cm.hsv(norm(y0))[:, :3] * 255).astype(np.uint8)
+    dot_offsets = track_radius * torch.tensor(
       [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
       dtype=torch.float32,
       device=device,
     )
 
-  half_h = frustum_depth * np.tan(np.radians(frustum_fov_y / 2))
+  half_h = frustum_depth * np.tan(np.radians(fov_y / 2))
   half_w = half_h * frustum_aspect
   corners_cam = np.array(
     [
@@ -575,17 +537,13 @@ def render_4d_orbit_with_tracks(
     points, colors = [cloud], [cloud_cols]
 
     if tracks_3d is not None:
-      vis = track_vis[frame_idx] if track_vis is not None else np.ones(n_tracks, dtype=bool)
-      if vis.any():
-        dots = as_pts(tracks_3d[frame_idx][vis])[:, None, :] + dot_offsets
-        points.append(dots.reshape(-1, 3))
-        colors.append(as_cols(track_colors[vis]).repeat_interleave(len(dot_offsets), 0))
+      dots = as_pts(tracks_3d[frame_idx])[:, None, :] + dot_offsets
+      points.append(dots.reshape(-1, 3))
+      colors.append(as_cols(track_colors).repeat_interleave(len(dot_offsets), 0))
 
       starts, ends, trail_cols = [], [], []
       for j in range(max(0, frame_idx - track_history), frame_idx):
         mask = np.linalg.norm(tracks_3d[j + 1] - tracks_3d[j], axis=1) > 1e-6
-        if track_vis is not None:
-          mask &= track_vis[j] & track_vis[j + 1]
         if mask.any():
           starts.append(tracks_3d[j][mask])
           ends.append(tracks_3d[j + 1][mask])
