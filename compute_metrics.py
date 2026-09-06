@@ -82,13 +82,13 @@ def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=None):
   n_valid = 0
 
   for t in range(n_frames):
-    pc1 = compute_extrinsics.get_cam_points_local_t(
+    pc1 = compute_extrinsics.camera_frame_points(
       t, scene_constants["camera"][cam1], device, n_points=5000
     )
-    pc2 = compute_extrinsics.get_cam_points_local_t(
+    pc2 = compute_extrinsics.camera_frame_points(
       t, scene_constants["camera"][cam2], device, n_points=5000
     )
-    pcw = compute_extrinsics.get_cam_points_local_t(
+    pcw = compute_extrinsics.camera_frame_points(
       t, scene_constants["camera"][wrist_cam], device, n_points=5000
     )
     if pc1 is None or pc2 is None or pcw is None:

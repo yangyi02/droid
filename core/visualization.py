@@ -67,7 +67,7 @@ def show_plotly_point_cloud(
     fig.show()
 
 
-def render_fused_point_cloud(
+def show_fused_point_cloud(
   scene_constants, scene_state, frame_idx=0, use_tint=False, height=600, width=1000
 ):
   camera_ids = sorted(scene_constants['camera'].keys())
@@ -78,7 +78,7 @@ def render_fused_point_cloud(
     cam_data = scene_constants['camera'][cam_id]
     cam_state = scene_state[cam_id]
     raw_depth = cam_data['raw_depth'][frame_idx].astype(np.float32)
-    points_3d, colors_rgb = core.geometry.unproject_to_3d(
+    points_3d, colors_rgb = core.geometry.unproject_depth(
       raw_depth,
       cam_data['video_rgb'][frame_idx],
       cam_data['K_mat'],
@@ -102,7 +102,7 @@ def render_fused_point_cloud(
   )
 
 
-def render_distilled_gripper_3d(median_depth, K_mat, rgb_img):
+def show_distilled_gripper_3d(median_depth, K_mat, rgb_img):
   v, u = np.where(median_depth > 0)
   z = median_depth[v, u]
   x = (u - K_mat[0, 2]) * z / K_mat[0, 0]
@@ -133,7 +133,7 @@ def render_distilled_gripper_3d(median_depth, K_mat, rgb_img):
   fig.show()
 
 
-def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
+def show_gripper_refinement(scene_constants, frame_idx=0):
   wrist_serial = scene_constants['meta'].get('wrist_serial')
   cam_data = scene_constants['camera'][wrist_serial]
   rgb = cam_data['video_rgb'][frame_idx]
@@ -203,7 +203,7 @@ def render_gripper_refinement_inspection(scene_constants, frame_idx=0):
   plt.show()
 
 
-def visualize_disparity_video(disp_array, vmax=100.0):
+def colorize_disparity(disp_array, vmax=100.0):
   disp_norm = (np.clip(disp_array, 0, vmax) / vmax * 255).astype(np.uint8)
   return np.stack(
     [
@@ -231,7 +231,7 @@ def render_multicam_disparity_video(scene_constants, max_frames=None):
     raw_disp = np.zeros_like(raw_depth)
     valid_mask = raw_depth > 0
     raw_disp[valid_mask] = (fx * baseline) / raw_depth[valid_mask]
-    disp_video = visualize_disparity_video(media.resize_video(raw_disp, tgt_size))
+    disp_video = colorize_disparity(media.resize_video(raw_disp, tgt_size))
     camera_rows.append(np.concatenate([left_video, right_video, disp_video], axis=2))
   return np.concatenate(camera_rows, axis=1)
 
@@ -521,7 +521,7 @@ def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, ma
 
     for cam_id in camera_ids:
       cam_data = scene_constants['camera'][cam_id]
-      pts_3d, cols_rgb = core.geometry.unproject_to_3d_torch(
+      pts_3d, cols_rgb = core.geometry.unproject_depth_torch(
         cam_data['raw_depth'][frame_idx],
         cam_data['video_rgb'][frame_idx],
         cam_data['K_mat'],

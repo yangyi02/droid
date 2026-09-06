@@ -64,7 +64,7 @@ class URDFKinematicsTracker:
     robot_links = link_ids[v0[robot_indices], u0[robot_indices]]
     z0 = urdf_depth[v0[robot_indices], u0[robot_indices]]
 
-    pts_world_t0 = core.geometry.unproject_points(
+    pts_world_t0 = core.geometry.unproject_pixels(
       seed_pts_2d[robot_indices, 0], seed_pts_2d[robot_indices, 1], z0, K_mat, extrinsics[0]
     )
 

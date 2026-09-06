@@ -34,7 +34,7 @@ def init_camera_states(scene_constants, extrinsics_db):
     elif cam_id in episode_extrinsics:
       ext_data = episode_extrinsics[cam_id]
       ext_vec = ext_data.get("extrinsics", ext_data) if isinstance(ext_data, dict) else ext_data
-      base_ext = core.geometry.make_4x4(ext_vec)
+      base_ext = core.geometry.pose_from_euler(ext_vec)
       cam_trajectory = np.tile(base_ext, (n_frames, 1, 1))
       print(f"    Loaded pre-calibrated extrinsics for camera [{cam_id}] from metadata.")
     else:
@@ -118,14 +118,14 @@ def per_camera_alignment(
     print(f"      {outer_steps} x {inner_steps} steps, re-rendering the cloud between them...")
     for outer in range(outer_steps):
       with torch.no_grad():
-        T_cur = (T_init_t @ core.geometry.make_T(d_ext, device)).cpu().numpy()
+        T_cur = (T_init_t @ core.geometry.pose_from_axis_angle(d_ext, device)).cpu().numpy()
       batch_X, batch_obs = extract_robot_clouds(
         cam, scene_constants, pb_renderer, T_cur, device, obs
       )
       for _ in range(inner_steps):
         optimizer.zero_grad()
         loss_rob = core.physics.depth_loss_batched(
-          batch_X, T_init_t @ core.geometry.make_T(d_ext, device), K_t, batch_obs
+          batch_X, T_init_t @ core.geometry.pose_from_axis_angle(d_ext, device), K_t, batch_obs
         )
         loss_rob.backward()
         optimizer.step()
@@ -143,7 +143,7 @@ def per_camera_alignment(
       continue
 
     with torch.no_grad():
-      T_final_np = (T_init_t @ core.geometry.make_T(d_ext, device)).cpu().numpy()
+      T_final_np = (T_init_t @ core.geometry.pose_from_axis_angle(d_ext, device)).cpu().numpy()
       shift_mm = torch.norm(d_ext[:3]).item() * 1000.0
       rot_deg = torch.norm(d_ext[3:]).item() * (180.0 / np.pi)
       print(
@@ -173,7 +173,7 @@ def batched_chamfer_distance(p1, p2):
   return loss, overlap
 
 
-def get_cam_points_local_t(t, cam_data, device, n_points=2000):
+def camera_frame_points(t, cam_data, device, n_points=2000):
   depth = cam_data["raw_depth"][t].astype(np.float32)
   K_mat_np = cam_data["K_mat"]
 
@@ -242,13 +242,13 @@ def global_joint_alignment(
   cache_Pc1, cache_Pc2, cache_Pcw, cache_Tee = [], [], [], []
 
   for t in range(n_frames):
-    pc1 = get_cam_points_local_t(
+    pc1 = camera_frame_points(
       t, scene_constants['camera'][cam1], device, n_points=chamfer_n_points
     )
-    pc2 = get_cam_points_local_t(
+    pc2 = camera_frame_points(
       t, scene_constants['camera'][cam2], device, n_points=chamfer_n_points
     )
-    pcw = get_cam_points_local_t(
+    pcw = camera_frame_points(
       t, scene_constants['camera'][wrist_cam], device, n_points=chamfer_n_points
     )
 
@@ -290,9 +290,9 @@ def global_joint_alignment(
   for step in range(n_steps):
     optimizer.zero_grad()
 
-    T1_opt = T1_init_t @ core.geometry.make_T(d1, device)
-    T2_opt = T2_init_t @ core.geometry.make_T(d2, device)
-    Tee_opt = Tee_init_t @ core.geometry.make_T(dhe, device)
+    T1_opt = T1_init_t @ core.geometry.pose_from_axis_angle(d1, device)
+    T2_opt = T2_init_t @ core.geometry.pose_from_axis_angle(d2, device)
+    Tee_opt = Tee_init_t @ core.geometry.pose_from_axis_angle(dhe, device)
 
     bc1 = (T1_opt @ batch_Pc1)[:, :3, :].transpose(1, 2)
     bc2 = (T2_opt @ batch_Pc2)[:, :3, :].transpose(1, 2)
@@ -335,9 +335,9 @@ def global_joint_alignment(
       print(f"    {' | '.join(log_parts)}")
 
   with torch.no_grad():
-    final_p1 = (T1_init_t @ core.geometry.make_T(d1, device)).cpu().numpy()
-    final_p2 = (T2_init_t @ core.geometry.make_T(d2, device)).cpu().numpy()
-    final_cam_ee = (Tee_init_t @ core.geometry.make_T(dhe, device)).cpu().numpy()
+    final_p1 = (T1_init_t @ core.geometry.pose_from_axis_angle(d1, device)).cpu().numpy()
+    final_p2 = (T2_init_t @ core.geometry.pose_from_axis_angle(d2, device)).cpu().numpy()
+    final_cam_ee = (Tee_init_t @ core.geometry.pose_from_axis_angle(dhe, device)).cpu().numpy()
 
   print("\nGlobal joint optimization complete!")
 

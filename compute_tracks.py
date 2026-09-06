@@ -72,7 +72,7 @@ def find_static_candidates(
     u_f = us.astype(np.float32)
     v_f = vs.astype(np.float32)
 
-    pts_3d = core.geometry.unproject_points(u_f, v_f, z, K, ext)
+    pts_3d = core.geometry.unproject_pixels(u_f, v_f, z, K, ext)
 
     rgb = cam_data["video_rgb"][0][vs, us]
 

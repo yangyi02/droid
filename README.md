@@ -124,7 +124,7 @@ droid/
 ├── setup.sh                   # One-shot dependency + weights setup (--no-depth skips Stage 1)
 ├── mount_gcs.sh               # GCS bucket mount helper
 ├── core/                      # Shared algorithmic modules
-│   ├── geometry.py            #   3D math: unproject, project, make_4x4, rodrigues
+│   ├── geometry.py            #   3D math: unproject, project, pose_from_euler, rodrigues
 │   ├── io.py                  #   Data loading: get_accelerator, load_depth/extrinsics
 │   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
 │   ├── physics.py             #   PyBulletRenderer + robot point clouds and depth losses

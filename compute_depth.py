@@ -212,7 +212,7 @@ def parse_robot_kinematics(scene_constants):
     "joint_positions": joint_poses,
     "gripper_positions": gripper_poses,
     "T_cam_ee_init": (
-      np.linalg.inv(core.geometry.make_4x4(ee_poses[0])) @ core.geometry.make_4x4(wrist_ext)
+      np.linalg.inv(core.geometry.pose_from_euler(ee_poses[0])) @ core.geometry.pose_from_euler(wrist_ext)
     ),
     "T_ee_base_all": T_ee_all,
     "timestamps": timestamps,

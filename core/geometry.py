@@ -10,7 +10,7 @@ def decode_disparity(disp, fx, baseline):
   return z
 
 
-def unproject_points(u, v, z, K, T_cam2world=None):
+def unproject_pixels(u, v, z, K, T_cam2world=None):
   x_cam = (u - K[0, 2]) * z / K[0, 0]
   y_cam = (v - K[1, 2]) * z / K[1, 1]
   pts_cam = np.stack([x_cam, y_cam, z, np.ones_like(z)], axis=0)
@@ -32,16 +32,16 @@ def project_points(pts_world, K, T_cam2world):
   return u, v, z_cam
 
 
-def unproject_to_3d(depth, color_img, K_mat, T_cam2world=None, min_depth=0.0, max_depth=1.5):
+def unproject_depth(depth, color_img, K_mat, T_cam2world=None, min_depth=0.0, max_depth=1.5):
   mask = (depth > min_depth) & (depth < max_depth)
   v, u = np.where(mask)
   if T_cam2world is None:
     T_cam2world = np.eye(4)
-  pts_world = unproject_points(u, v, depth[mask], K_mat, T_cam2world)
+  pts_world = unproject_pixels(u, v, depth[mask], K_mat, T_cam2world)
   return pts_world, color_img[mask]
 
 
-def unproject_to_3d_torch(depth, color_img, K_mat, T_cam2world, device, max_depth=1.5):
+def unproject_depth_torch(depth, color_img, K_mat, T_cam2world, device, max_depth=1.5):
   depth = torch.as_tensor(depth, device=device)
   v, u = torch.nonzero((depth > 0) & (depth < max_depth), as_tuple=True)
   z = depth[v, u]
@@ -52,7 +52,7 @@ def unproject_to_3d_torch(depth, color_img, K_mat, T_cam2world, device, max_dept
   return pts_world, torch.as_tensor(color_img, device=device)[v, u]
 
 
-def make_4x4(vec_6d):
+def pose_from_euler(vec_6d):
   transform = np.eye(4)
   transform[:3, :3] = R.from_euler('xyz', vec_6d[3:]).as_matrix()
   transform[:3, 3] = vec_6d[:3]
@@ -77,7 +77,7 @@ def axis_angle_to_matrix(v):
   return torch.where(theta2 < 1e-8, torch.eye(3, device=v.device) + Ka, R_exact)
 
 
-def make_T(delta, device):
+def pose_from_axis_angle(delta, device):
   rot = axis_angle_to_matrix(delta[3:])
   t = delta[:3].unsqueeze(1)
   T_top = torch.cat([rot, t], dim=1)
