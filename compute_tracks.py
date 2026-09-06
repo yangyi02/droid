@@ -14,8 +14,6 @@ import core.tracking
 
 
 def render_robot_masks(scene_constants, scene_state, pb_renderer, safe_margin=15):
-  """Dilated robot silhouette per frame per camera — the only thing the static
-  passes need from PyBullet, and the slowest part of Stage 3, so render it once."""
   camera_ids = list(scene_constants["camera"].keys())
   kernel = np.ones((safe_margin, safe_margin), np.uint8)
   masks = {cam: [] for cam in camera_ids}
@@ -159,8 +157,6 @@ def _voxel_dedup(pts, rgb, voxel_size=0.01):
   voxels = np.floor(pts / voxel_size).astype(np.int64)
   _, inverse = np.unique(voxels, axis=0, return_inverse=True)
 
-  # Sorting once makes each voxel a contiguous run, so a voxel costs its own
-  # points rather than a scan of the whole cloud.
   order = np.argsort(inverse, kind="stable")
   cuts = np.cumsum(np.bincount(inverse))[:-1]
   out_pts = [np.median(v, axis=0) for v in np.split(pts[order], cuts)]
@@ -180,7 +176,6 @@ def _measure_depth_gaps(
   run = np.zeros((S, N), dtype=np.int32)
   onquery = np.zeros((S, N), dtype=bool)
   flips = np.zeros((S, N), dtype=np.int32)
-  seen = np.zeros((S, N), dtype=np.int32)
   prev_vis = np.zeros((S, N), dtype=bool)
 
   rad = patch // 2
@@ -222,9 +217,8 @@ def _measure_depth_gaps(
       else:
         flips[s] += vis != prev_vis[s]
       prev_vis[s] = vis
-      seen[s] += measurable
 
-  return dict(streak=streak, onquery=onquery, flips=flips, seen=seen, n_frames=T_frames)
+  return dict(streak=streak, onquery=onquery, flips=flips, n_frames=T_frames)
 
 
 def _filter_support_left(stats, min_run_frames=30):

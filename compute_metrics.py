@@ -127,24 +127,35 @@ def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=None):
   return metrics
 
 
-def print_metrics(metrics, stage_name=""):
-  chamfer = metrics.get("chamfer_mean", float("nan"))
-  rob1 = metrics.get("robot_loss_cam1", float("nan"))
-  rob2 = metrics.get("robot_loss_cam2", float("nan"))
-  robw = metrics.get("robot_loss_wrist", float("nan"))
-  overlap = metrics.get("overlap_mean", float("nan"))
+def print_metrics(metrics):
+  sections = {
+    "Scene": ["site", "robot_id", "n_cameras", "image_resolution", "n_frames"],
+    "Motion": ["ee_travel_m", "joint_range_mean_rad", "joint_range_max_rad", "gripper_range"],
+    "Extrinsics": [
+      "chamfer_12",
+      "chamfer_1w",
+      "chamfer_2w",
+      "chamfer_mean",
+      "overlap_12",
+      "overlap_1w",
+      "overlap_2w",
+      "overlap_mean",
+      "robot_loss_cam1",
+      "robot_loss_cam2",
+      "robot_loss_wrist",
+    ],
+    "Track Depth Consistency": sorted(k for k in metrics if k.startswith("depth_residual")),
+    "Track Visibility": sorted(k for k in metrics if k.startswith("vis_")),
+  }
 
-  header = f"Metrics after {stage_name}" if stage_name else "Metrics"
-  print(f"\n{header}")
-  print(f"  Chamfer mean:  {chamfer:.4f}")
-  print(f"  Robot depth:   cam1={rob1:.4f}  cam2={rob2:.4f}  wrist={robw:.4f}")
-  print(f"  Cloud overlap: {overlap:.1f}%")
-
-  shift_keys = [k for k in sorted(metrics.keys()) if k.startswith("shift_mm_")]
-  if shift_keys:
-    shifts = [f"{k.replace('shift_mm_', '')}={metrics[k]:.1f}mm" for k in shift_keys]
-    print(f"  Shift from 0:  {', '.join(shifts)}")
-  print()
+  print(f"Episode: {metrics['episode_id']}")
+  print("=" * 60)
+  for section, keys in sections.items():
+    print(f"\n  {section}:")
+    for key in keys:
+      value = metrics.get(key, "\u2014")
+      fmt = f"{value:.4f}" if isinstance(value, float) else value
+      print(f"    {key:45s} = {fmt}")
 
 
 def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):

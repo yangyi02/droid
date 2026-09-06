@@ -34,9 +34,6 @@ class PyBulletRenderer:
       raise RuntimeError("EGL requested but the plugin did not load. --config.render.gpu=False")
     self.renderer = pybullet.ER_BULLET_HARDWARE_OPENGL if self.gpu else pybullet.ER_TINY_RENDERER
 
-    # pybullet rasterises a link's collision geometry when the link has no visual
-    # of its own, which would put the panda_link*_sc self-collision capsules on
-    # screen. Ignoring collision shapes leaves exactly the visual meshes.
     self.robot_id = pybullet.loadURDF(
       urdf, useFixedBase=True, flags=pybullet.URDF_IGNORE_COLLISION_SHAPES
     )

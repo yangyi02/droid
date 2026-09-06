@@ -328,41 +328,6 @@ def render_2d_tracking_video(
   return video_frames
 
 
-def render_multiview_mask_inspection(scene_constants, scene_state, pb_renderer, frame_idx=0):
-  camera_ids = list(scene_constants['camera'].keys())
-  wrist_cam = scene_constants['meta']['wrist_serial']
-
-  joint_angles = scene_constants['robot']['joint_positions'][frame_idx]
-  gripper_state = scene_constants['robot']['gripper_positions'][frame_idx]
-  pb_renderer.update_robot_pose(joint_angles, gripper_state=gripper_state)
-
-  fig, axes = plt.subplots(1, len(camera_ids), figsize=(12, 3))
-  if len(camera_ids) == 1:
-    axes = [axes]
-  fig.suptitle(
-    f"Multi-View Segmentation Mask Inspection (Frame {frame_idx})",
-    fontsize=20,
-    fontweight='bold',
-    y=1.05,
-  )
-
-  for i, cam_id in enumerate(camera_ids):
-    extrinsics = scene_state[cam_id]['extrinsics'][frame_idx]
-    intrinsics = scene_constants['camera'][cam_id]['K_mat']
-    img_rgb = scene_constants['camera'][cam_id]['video_rgb'][frame_idx].copy()
-    h_img, w_img = img_rgb.shape[:2]
-    robot_mask = pb_renderer.render_mask(extrinsics, intrinsics, w_img, h_img) > 0
-    overlay = img_rgb.copy()
-    overlay[robot_mask] = [50, 255, 50]
-    blended_img = cv2.addWeighted(img_rgb, 0.6, overlay, 0.4, 0)
-    cam_type = "Wrist Camera" if cam_id == wrist_cam else "External Camera"
-    axes[i].imshow(blended_img)
-    axes[i].set_title(f"[{cam_type}]\nCam ID: {cam_id}", fontsize=15)
-    axes[i].axis('off')
-  plt.tight_layout()
-  plt.show()
-
-
 def render_segmentation_video(
   scene_constants, scene_state, pb_renderer, tgt_width=1200, max_frames=None
 ):
@@ -471,11 +436,13 @@ def render_cross_camera_axes(
   return video_frames
 
 
+GL_TO_PINHOLE = torch.tensor([1.0, -1.0, -1.0])
+
+
 def splat(pts, cols, K, T_cam2world, height, width):
-  """Paint coloured 3D points into an image; the nearest point owns its pixel."""
   T_world2cam = torch.linalg.inv(T_cam2world)
   cam = pts @ T_world2cam[:3, :3].T + T_world2cam[:3, 3]
-  cam = cam * torch.tensor([1.0, -1.0, -1.0], device=pts.device)  # GL looks down -Z
+  cam = cam * GL_TO_PINHOLE.to(pts.device)
   z = cam[:, 2]
   uv = (cam @ K.T)[:, :2] / z[:, None].clamp(min=1e-6)
   u, v = uv.round().long().unbind(-1)
@@ -493,7 +460,6 @@ def splat(pts, cols, K, T_cam2world, height, width):
 
 
 def sample_segments(starts, ends, cols, n=64):
-  """Turn line segments into points so splat can draw them like everything else."""
   t = torch.linspace(0, 1, n, device=starts.device)[None, :, None]
   pts = starts[:, None] + (ends - starts)[:, None] * t
   return pts.reshape(-1, 3), cols.repeat_interleave(n, 0)
@@ -541,7 +507,6 @@ def render_4d_orbit_with_tracks(
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
 
-  # The orbiting camera: a 60 degree vertical field of view centred on the image.
   focal = (height / 2) / np.tan(np.radians(frustum_fov_y) / 2)
   K_viz = torch.tensor(
     [[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]], dtype=torch.float32, device=device
@@ -560,8 +525,6 @@ def render_4d_orbit_with_tracks(
       norm = plt.Normalize(y0.min(), y0.max())
       track_colors = (plt.cm.hsv(norm(y0))[:, :3] * 255).astype(np.uint8)
     n_tracks = tracks_3d.shape[1]
-    # A track marker is its centre plus one point along each axis: at this scale a
-    # sphere mesh would cover the same two pixels.
     dot_offsets = track_sphere_radius * torch.tensor(
       [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
       dtype=torch.float32,

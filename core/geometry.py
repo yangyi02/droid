@@ -42,7 +42,6 @@ def unproject_to_3d(depth, color_img, K_mat, T_cam2world=None, min_depth=0.0, ma
 
 
 def unproject_to_3d_torch(depth, color_img, K_mat, T_cam2world, device, max_depth=1.5):
-  """unproject_to_3d without ever leaving the GPU, for the point-cloud renderer."""
   depth = torch.as_tensor(depth, device=device)
   v, u = torch.nonzero((depth > 0) & (depth < max_depth), as_tuple=True)
   z = depth[v, u]
@@ -79,8 +78,8 @@ def axis_angle_to_matrix(v):
 
 
 def make_T(delta, device):
-  rot = axis_angle_to_matrix(delta[:3])
-  t = delta[3:].unsqueeze(1)
+  rot = axis_angle_to_matrix(delta[3:])
+  t = delta[:3].unsqueeze(1)
   T_top = torch.cat([rot, t], dim=1)
   T_bottom = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=device, dtype=torch.float32)
   return torch.cat([T_top, T_bottom], dim=0)

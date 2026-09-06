@@ -126,8 +126,8 @@ def per_camera_alignment(
         optimizer.step()
 
       with torch.no_grad():
-        rot_deg = torch.norm(d_ext[:3]).item() * (180.0 / np.pi)
-        shift_mm = torch.norm(d_ext[3:]).item() * 1000.0
+        rot_deg = torch.norm(d_ext[3:]).item() * (180.0 / np.pi)
+        shift_mm = torch.norm(d_ext[:3]).item() * 1000.0
       print(
         f"        Outer {outer + 1}/{outer_steps} | frames "
         f"{len(batch_X)} | Loss: {loss_rob.item():.4f} | "
@@ -139,8 +139,8 @@ def per_camera_alignment(
 
     with torch.no_grad():
       T_final_np = (T_init_t @ core.geometry.make_T(d_ext, device)).cpu().numpy()
-      shift_mm = torch.norm(d_ext[3:]).item() * 1000.0
-      rot_deg = torch.norm(d_ext[:3]).item() * (180.0 / np.pi)
+      shift_mm = torch.norm(d_ext[:3]).item() * 1000.0
+      rot_deg = torch.norm(d_ext[3:]).item() * (180.0 / np.pi)
       print(
         f"  [{cam}] Alignment done! Loss: {loss_rob.item():.4f} "
         f"(shift: {shift_mm:.2f}mm, rot: {rot_deg:.2f}°)"
@@ -154,24 +154,18 @@ def per_camera_alignment(
   return scene_state
 
 
-def batched_chamfer_distance(p1, p2, device):
-  dist_matrix = torch.cdist(p1, p2)
-  min_dist_12 = torch.min(dist_matrix, dim=2)[0]
-  min_dist_21 = torch.min(dist_matrix, dim=1)[0]
+def batched_chamfer_distance(p1, p2):
+  dist = torch.cdist(p1, p2)
+  near_12 = dist.min(dim=2)[0]
+  near_21 = dist.min(dim=1)[0]
 
-  valid_12 = min_dist_12 < 0.05
-  valid_21 = min_dist_21 < 0.05
+  valid_12 = near_12 < 0.05
+  valid_21 = near_21 < 0.05
+  loss = (near_12 * valid_12).sum() / valid_12.sum().clamp(min=1)
+  loss = loss + (near_21 * valid_21).sum() / valid_21.sum().clamp(min=1)
 
-  loss = torch.tensor(0.0, device=device)
-  if valid_12.any():
-    loss += min_dist_12[valid_12].mean()
-  if valid_21.any():
-    loss += min_dist_21[valid_21].mean()
-
-  overlap_ratio = (valid_12.sum() + valid_21.sum()) / (
-    p1.shape[0] * (p1.shape[1] + p2.shape[1]) + 1e-6
-  )
-  return loss, overlap_ratio.item()
+  overlap = (valid_12.sum() + valid_21.sum()) / (p1.shape[0] * (p1.shape[1] + p2.shape[1]))
+  return loss, overlap
 
 
 def get_cam_points_local_t(t, cam_data, device, n_points=2000):
@@ -285,9 +279,9 @@ def global_joint_alignment(
     T_wrist_c2w = batch_Tee @ Tee_opt
     bcw = torch.bmm(T_wrist_c2w, batch_Pcw)[:, :3, :].transpose(1, 2)
 
-    l12, o12 = batched_chamfer_distance(bc1, bc2, device)
-    l1w, o1w = batched_chamfer_distance(bc1, bcw, device)
-    l2w, o2w = batched_chamfer_distance(bc2, bcw, device)
+    l12, o12 = batched_chamfer_distance(bc1, bc2)
+    l1w, o1w = batched_chamfer_distance(bc1, bcw)
+    l2w, o2w = batched_chamfer_distance(bc2, bcw)
 
     l_rob1 = robot_depth_loss(batch_X1, T1_opt, K_t1, batch_obs1, is_wrist=False)
     l_rob2 = robot_depth_loss(batch_X2, T2_opt, K_t2, batch_obs2, is_wrist=False)
@@ -299,10 +293,10 @@ def global_joint_alignment(
     optimizer.step()
 
     if step % 100 == 0 or step == n_steps - 1:
-      overlap = (o12 + o1w + o2w) / 3.0 * 100
-      shift_c1 = torch.norm(d1[3:]).item() * 1000
-      shift_c2 = torch.norm(d2[3:]).item() * 1000
-      shift_w = torch.norm(dhe[3:]).item() * 1000
+      overlap = (o12 + o1w + o2w).item() / 3.0 * 100
+      shift_c1 = torch.norm(d1[:3]).item() * 1000
+      shift_c2 = torch.norm(d2[:3]).item() * 1000
+      shift_w = torch.norm(dhe[:3]).item() * 1000
       log_parts = [
         f"Step {step:03d}",
         f"Ch12: {l12.item():.4f}",
