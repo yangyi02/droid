@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import csv
 import fcntl
+import itertools
 import os
 import time
 
@@ -20,106 +21,97 @@ import core.runner
 @torch.no_grad()
 def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=None):
   wrist_cam = scene_constants["meta"]["wrist_serial"]
-  ext_cams = [c for c in scene_constants["camera"].keys() if c != wrist_cam]
-  cam1, cam2 = ext_cams[0], ext_cams[1]
+  ext_cams = [c for c in scene_constants["camera"] if c != wrist_cam]
+  cams = ext_cams + [wrist_cam]
+  pairs = list(itertools.combinations(cams, 2))
+  label = {c: str(i + 1) for i, c in enumerate(ext_cams)} | {wrist_cam: "w"}
+  suffix = {c: f"cam{i + 1}" for i, c in enumerate(ext_cams)} | {wrist_cam: "wrist"}
   n_frames = len(scene_constants["robot"]["joint_positions"])
   T_ee_all = scene_constants["robot"]["T_ee_base_all"]
 
   metrics = {}
+  base = {}
+  for cam in cams:
+    base[cam] = torch.tensor(
+      scene_state[cam]["base_extrinsic"], dtype=torch.float32, device=device
+    )
 
   if pb_renderer is not None:
-    for cam_id, key_prefix in [(cam1, "cam1"), (cam2, "cam2"), (wrist_cam, "wrist")]:
-      is_wrist = cam_id == wrist_cam
-      K_np = scene_constants["camera"][cam_id]["K_mat"]
-      K_t = torch.tensor(K_np, dtype=torch.float32, device=device)
+    for cam in cams:
+      K_mat = scene_constants["camera"][cam]["K_mat"]
+      cache_pts, cache_obs = [], []
 
-      cache_X, cache_obs = [], []
       for t in range(n_frames):
-        joints = scene_constants["robot"]["joint_positions"][t]
-        gripper = scene_constants["robot"]["gripper_positions"][t]
-        pb_renderer.update_robot_pose(joints, gripper)
+        pb_renderer.update_robot_pose(
+          scene_constants["robot"]["joint_positions"][t],
+          scene_constants["robot"]["gripper_positions"][t],
+        )
+        d_obs = scene_constants["camera"][cam]["raw_depth"][t].astype(np.float32)
+        T_cam = scene_state[cam]["extrinsics"][t]
 
-        d_obs = scene_constants["camera"][cam_id]["raw_depth"][t].astype(np.float32)
-        T_cam_np = scene_state[cam_id]["extrinsics"][t]
-
-        if is_wrist:
+        if cam == wrist_cam:
           pts = core.physics.get_foreground_gripper_points(
-            T_cam_np, K_np, d_obs, pb_renderer, device
+            T_cam, K_mat, d_obs, pb_renderer, device
           )
           if pts is None:
             continue
           T_world_to_ee = np.linalg.inv(T_ee_all[t])
-          pts_world = (T_cam_np @ pts)[:3, :].T
-          pts_ee = (T_world_to_ee[:3, :3] @ pts_world.T + T_world_to_ee[:3, 3:4]).T
-          cache_X.append(torch.tensor(pts_ee, dtype=torch.float32, device=device))
+          pts_world = (T_cam @ pts)[:3, :].T
+          pts = torch.tensor(
+            (T_world_to_ee[:3, :3] @ pts_world.T + T_world_to_ee[:3, 3:4]).T,
+            dtype=torch.float32,
+            device=device,
+          )
         else:
-          pts = core.physics.get_foreground_robot_points(T_cam_np, K_np, d_obs, pb_renderer, device)
+          pts = core.physics.get_foreground_robot_points(
+            T_cam, K_mat, d_obs, pb_renderer, device
+          )
           if pts is None:
             continue
-          cache_X.append(pts)
 
+        cache_pts.append(pts)
         cache_obs.append(torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
 
-      if not cache_X:
-        metrics[f"robot_loss_{key_prefix}"] = float("nan")
+      if not cache_pts:
+        metrics[f"robot_loss_{suffix[cam]}"] = float("nan")
         continue
 
-      batch_X = torch.stack(cache_X)
-      batch_obs = torch.stack(cache_obs)
-      T_opt = torch.tensor(
-        scene_state[cam_id]["base_extrinsic"], dtype=torch.float32, device=device
+      K = torch.tensor(K_mat, dtype=torch.float32, device=device)
+      loss = core.physics.depth_loss_batched(
+        torch.stack(cache_pts), base[cam], K, torch.stack(cache_obs)
       )
+      metrics[f"robot_loss_{suffix[cam]}"] = loss.item()
 
-      loss = core.physics.depth_loss_batched(batch_X, T_opt, K_t, batch_obs)
-      metrics[f"robot_loss_{key_prefix}"] = loss.item()
-
-  T1 = torch.tensor(scene_state[cam1]["base_extrinsic"], dtype=torch.float32, device=device)
-  T2 = torch.tensor(scene_state[cam2]["base_extrinsic"], dtype=torch.float32, device=device)
-  Tw = torch.tensor(scene_state[wrist_cam]["base_extrinsic"], dtype=torch.float32, device=device)
-
-  sum_l12, sum_l1w, sum_l2w = 0.0, 0.0, 0.0
-  sum_o12, sum_o1w, sum_o2w = 0.0, 0.0, 0.0
+  chamfer_sum = {p: 0.0 for p in pairs}
+  overlap_sum = {p: 0.0 for p in pairs}
   n_valid = 0
 
   for t in range(n_frames):
-    pc1 = compute_extrinsics.camera_frame_points(
-      t, scene_constants["camera"][cam1], device, n_points=5000
-    )
-    pc2 = compute_extrinsics.camera_frame_points(
-      t, scene_constants["camera"][cam2], device, n_points=5000
-    )
-    pcw = compute_extrinsics.camera_frame_points(
-      t, scene_constants["camera"][wrist_cam], device, n_points=5000
-    )
-    if pc1 is None or pc2 is None or pcw is None:
+    env = {}
+    for cam in cams:
+      env[cam] = compute_extrinsics.camera_frame_points(
+        t, scene_constants["camera"][cam], device, n_points=5000
+      )
+    if any(pts is None for pts in env.values()):
       continue
 
-    T_ee_t = torch.tensor(T_ee_all[t], dtype=torch.float32, device=device)
+    ee_pose = torch.tensor(T_ee_all[t], dtype=torch.float32, device=device)
+    world = {}
+    for cam in cams:
+      to_world = ee_pose @ base[cam] if cam == wrist_cam else base[cam]
+      world[cam] = (to_world @ env[cam])[:3, :].T.unsqueeze(0)
 
-    w1 = (T1 @ pc1)[:3, :].T.unsqueeze(0)
-    w2 = (T2 @ pc2)[:3, :].T.unsqueeze(0)
-    ww = ((T_ee_t @ Tw) @ pcw)[:3, :].T.unsqueeze(0)
-
-    l12, o12 = compute_extrinsics.batched_chamfer_distance(w1, w2)
-    l1w, o1w = compute_extrinsics.batched_chamfer_distance(w1, ww)
-    l2w, o2w = compute_extrinsics.batched_chamfer_distance(w2, ww)
-
-    sum_l12 += l12.item()
-    sum_l1w += l1w.item()
-    sum_l2w += l2w.item()
-    sum_o12 += o12.item()
-    sum_o1w += o1w.item()
-    sum_o2w += o2w.item()
+    for a, b in pairs:
+      loss, overlap = compute_extrinsics.batched_chamfer_distance(world[a], world[b])
+      chamfer_sum[a, b] += loss.item()
+      overlap_sum[a, b] += overlap.item()
     n_valid += 1
 
-  metrics["chamfer_12"] = sum_l12 / n_valid
-  metrics["chamfer_1w"] = sum_l1w / n_valid
-  metrics["chamfer_2w"] = sum_l2w / n_valid
-  metrics["chamfer_mean"] = (sum_l12 + sum_l1w + sum_l2w) / (3.0 * n_valid)
-  metrics["overlap_12"] = sum_o12 / n_valid * 100
-  metrics["overlap_1w"] = sum_o1w / n_valid * 100
-  metrics["overlap_2w"] = sum_o2w / n_valid * 100
-  metrics["overlap_mean"] = (sum_o12 + sum_o1w + sum_o2w) / (3.0 * n_valid) * 100
+  for a, b in pairs:
+    metrics[f"chamfer_{label[a]}{label[b]}"] = chamfer_sum[a, b] / n_valid
+    metrics[f"overlap_{label[a]}{label[b]}"] = overlap_sum[a, b] / n_valid * 100
+  metrics["chamfer_mean"] = sum(chamfer_sum.values()) / (len(pairs) * n_valid)
+  metrics["overlap_mean"] = sum(overlap_sum.values()) / (len(pairs) * n_valid) * 100
 
   return metrics
 
