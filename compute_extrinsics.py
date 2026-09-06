@@ -46,13 +46,19 @@ def init_camera_states(scene_constants, extrinsics_db):
   return scene_state
 
 
-def extract_robot_clouds(cam_id, scene_constants, pb_renderer, base_extrinsic, device):
+def observed_depth(cam_data, device):
+  return torch.tensor(
+    np.asarray(cam_data['raw_depth'], dtype=np.float32), device=device
+  ).unsqueeze(1)
+
+
+def extract_robot_clouds(cam_id, scene_constants, pb_renderer, base_extrinsic, device, obs):
   is_wrist = cam_id == scene_constants['meta']['wrist_serial']
   T_ee_base_all = scene_constants['robot']['T_ee_base_all']
   cam_data = scene_constants['camera'][cam_id]
   K_mat = cam_data['K_mat']
 
-  cache_X, cache_obs = [], []
+  cache_X, kept = [], []
   n_frames = len(scene_constants['robot']['joint_positions'])
   for t in range(n_frames):
     pb_renderer.update_robot_pose(
@@ -77,11 +83,13 @@ def extract_robot_clouds(cam_id, scene_constants, pb_renderer, base_extrinsic, d
       if pts_world is None:
         continue
       cache_X.append(pts_world)
-    cache_obs.append(torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
+    kept.append(t)
 
   if not cache_X:
     return None, None
-  return torch.stack(cache_X), torch.stack(cache_obs)
+  if len(kept) < n_frames:
+    obs = obs[kept]
+  return torch.stack(cache_X), obs
 
 
 def robot_depth_loss(batch_X, T_opt, K, batch_obs, is_wrist):
@@ -108,6 +116,7 @@ def per_camera_alignment(
     T_init_t = torch.tensor(
       prev_scene_state[cam]['base_extrinsic'], dtype=torch.float32, device=device
     )
+    obs = observed_depth(scene_constants['camera'][cam], device)
     d_ext = torch.zeros(6, requires_grad=True, device=device)
     optimizer = optim.Adam([d_ext], lr=0.001)
     loss_rob = None
@@ -116,7 +125,9 @@ def per_camera_alignment(
     for outer in range(outer_steps):
       with torch.no_grad():
         T_cur = (T_init_t @ core.geometry.make_T(d_ext, device)).cpu().numpy()
-      batch_X, batch_obs = extract_robot_clouds(cam, scene_constants, pb_renderer, T_cur, device)
+      batch_X, batch_obs = extract_robot_clouds(
+        cam, scene_constants, pb_renderer, T_cur, device, obs
+      )
       for _ in range(inner_steps):
         optimizer.zero_grad()
         loss_rob = robot_depth_loss(
@@ -209,13 +220,28 @@ def global_joint_alignment(
 
   print("  Rendering robot physical point clouds...")
   batch_X1, batch_obs1 = extract_robot_clouds(
-    cam1, scene_constants, pb_renderer, prev_scene_state[cam1]['base_extrinsic'], device
+    cam1,
+    scene_constants,
+    pb_renderer,
+    prev_scene_state[cam1]['base_extrinsic'],
+    device,
+    observed_depth(scene_constants['camera'][cam1], device),
   )
   batch_X2, batch_obs2 = extract_robot_clouds(
-    cam2, scene_constants, pb_renderer, prev_scene_state[cam2]['base_extrinsic'], device
+    cam2,
+    scene_constants,
+    pb_renderer,
+    prev_scene_state[cam2]['base_extrinsic'],
+    device,
+    observed_depth(scene_constants['camera'][cam2], device),
   )
   batch_P_ee, batch_obs_w = extract_robot_clouds(
-    wrist_cam, scene_constants, pb_renderer, prev_scene_state[wrist_cam]['base_extrinsic'], device
+    wrist_cam,
+    scene_constants,
+    pb_renderer,
+    prev_scene_state[wrist_cam]['base_extrinsic'],
+    device,
+    observed_depth(scene_constants['camera'][wrist_cam], device),
   )
 
   print("  Extracting Chamfer environment point clouds...")
