@@ -100,16 +100,16 @@ def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=None):
     w2 = (T2 @ pc2)[:3, :].T.unsqueeze(0)
     ww = ((T_ee_t @ Tw) @ pcw)[:3, :].T.unsqueeze(0)
 
-    l12, o12 = compute_extrinsics.batched_chamfer_distance(w1, w2, device)
-    l1w, o1w = compute_extrinsics.batched_chamfer_distance(w1, ww, device)
-    l2w, o2w = compute_extrinsics.batched_chamfer_distance(w2, ww, device)
+    l12, o12 = compute_extrinsics.batched_chamfer_distance(w1, w2)
+    l1w, o1w = compute_extrinsics.batched_chamfer_distance(w1, ww)
+    l2w, o2w = compute_extrinsics.batched_chamfer_distance(w2, ww)
 
     sum_l12 += l12.item()
     sum_l1w += l1w.item()
     sum_l2w += l2w.item()
-    sum_o12 += o12
-    sum_o1w += o1w
-    sum_o2w += o2w
+    sum_o12 += o12.item()
+    sum_o1w += o1w.item()
+    sum_o2w += o2w.item()
     n_valid += 1
 
   metrics["chamfer_12"] = sum_l12 / n_valid
