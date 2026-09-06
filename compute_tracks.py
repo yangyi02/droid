@@ -120,23 +120,26 @@ def find_static_candidates(
   all_rgb = np.concatenate(all_verified_rgb, axis=0)
   print(f"  Total verified points (pre-dedup): {len(all_pts)}")
 
-  dedup_pts, dedup_rgb = _voxel_dedup(all_pts, all_rgb, voxel_size=match_radius * 2)
+  voxels = np.floor(all_pts / (match_radius * 2)).astype(np.int64)
+  _, inverse = np.unique(voxels, axis=0, return_inverse=True)
+  order = np.argsort(inverse, kind="stable")
+  cuts = np.cumsum(np.bincount(inverse))[:-1]
+  dedup_pts = np.array(
+    [np.median(v, axis=0) for v in np.split(all_pts[order], cuts)], dtype=np.float32
+  )
+  dedup_rgb = np.array(
+    [np.median(v, axis=0) for v in np.split(all_rgb[order].astype(np.float32), cuts)]
+  ).astype(np.uint8)
   print(f"  After dedup: {len(dedup_pts)}")
 
-  n_before = len(dedup_pts)
-  stats = _measure_depth_gaps(
-    dedup_pts,
-    scene_constants,
-    scene_state,
-    static_cams,
-    robot_masks,
-    tau=tau,
+  streak, onquery, flips, n_frames = _measure_depth_gaps(
+    dedup_pts, scene_constants, scene_state, static_cams, robot_masks, tau=tau
   )
-  gone = _filter_support_left(stats, min_run_frames=min_run_frames)
+  gone = ((streak >= min_run_frames) & onquery).any(axis=0)
   jitters = (
-    _filter_visibility_flicker(stats, flicker=flicker)
+    (flips / max(n_frames - 1, 1) > flicker).any(axis=0)
     if flicker is not None
-    else np.zeros(n_before, dtype=bool)
+    else np.zeros(len(dedup_pts), dtype=bool)
   )
   keep = ~(gone | jitters)
   dedup_pts, dedup_rgb = dedup_pts[keep], dedup_rgb[keep]
@@ -148,21 +151,6 @@ def find_static_candidates(
     dedup_rgb = dedup_rgb[idx]
 
   return dedup_pts, dedup_rgb
-
-
-def _voxel_dedup(pts, rgb, voxel_size=0.01):
-  if len(pts) == 0:
-    return pts, rgb
-
-  voxels = np.floor(pts / voxel_size).astype(np.int64)
-  _, inverse = np.unique(voxels, axis=0, return_inverse=True)
-
-  order = np.argsort(inverse, kind="stable")
-  cuts = np.cumsum(np.bincount(inverse))[:-1]
-  out_pts = [np.median(v, axis=0) for v in np.split(pts[order], cuts)]
-  out_rgb = [np.median(v, axis=0) for v in np.split(rgb[order].astype(np.float32), cuts)]
-
-  return np.array(out_pts, dtype=np.float32), np.array(out_rgb).astype(np.uint8)
 
 
 def _measure_depth_gaps(
@@ -218,15 +206,7 @@ def _measure_depth_gaps(
         flips[s] += vis != prev_vis[s]
       prev_vis[s] = vis
 
-  return dict(streak=streak, onquery=onquery, flips=flips, n_frames=T_frames)
-
-
-def _filter_support_left(stats, min_run_frames=30):
-  return ((stats["streak"] >= min_run_frames) & stats["onquery"]).any(axis=0)
-
-
-def _filter_visibility_flicker(stats, flicker=0.10):
-  return (stats["flips"] / max(stats["n_frames"] - 1, 1) > flicker).any(axis=0)
+  return streak, onquery, flips, T_frames
 
 
 def project_static_tracks(
