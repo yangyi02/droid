@@ -92,11 +92,7 @@ def extract_robot_clouds(cam_id, scene_constants, pb_renderer, base_extrinsic, d
       cache_X.append(pts_world)
     kept.append(t)
 
-  if not cache_X:
-    return None, None
-  if len(kept) < n_frames:
-    obs = obs[kept]
-  return torch.stack(cache_X), obs
+  return torch.stack(cache_X), obs[kept]
 
 
 def per_camera_alignment(
