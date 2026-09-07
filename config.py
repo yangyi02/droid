@@ -50,8 +50,8 @@ def get_config():
   config.extrinsics.chamfer_n_points = 2000
 
   config.tracks = ml_collections.ConfigDict()
-  config.tracks.num_static_points = 300
-  config.tracks.max_robot_pts_per_cam = 100
+  config.tracks.num_static_points_per_view = 100
+  config.tracks.num_robot_points_per_view = 100
   config.tracks.match_radius = 0.005
   config.tracks.safe_margin = 15
   config.tracks.robot_safe_margin = 7

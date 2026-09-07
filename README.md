@@ -33,7 +33,7 @@ scripts read it through `ml_collections.config_flags`, so any field can be
 overridden on the command line without editing the file:
 
 ```bash
-python compute_tracks.py --config.tracks.tau=0.02 --config.tracks.num_static_points=500
+python compute_tracks.py --config.tracks.tau=0.02 --config.tracks.num_static_points_per_view=200
 python compute_extrinsics.py --config.extrinsics.lr=0.005 --config.extrinsics.n_steps=800
 python compute_depth.py --config.depth.max_frames=400 --config.runner.limit=20
 python compute_tracks.py --config.render.gpu=False  # CPU rasteriser, for a box with no EGL
@@ -94,13 +94,18 @@ Multi-stage camera extrinsics calibration: the robot is rasterised from each cam
 ### Stage 3 — `compute_tracks.py`
 
 Dense multi-view 3D point tracking via static background prior + URDF forward kinematics (model-free).
+Every view's first frame is a query frame: the final sample takes up to a fixed quota of points from
+each view, drawn from what that view sees in frame 0.
 
 | Step | Description |
 |------|-------------|
-| `find_static_candidates` | Multi-view depth consensus to sample static background points |
+| `find_static_candidates` | Multi-view depth consensus over each view's first frame, deduplicated by voxel |
 | `project_static_tracks` | Project static points into every view; the sensor depth gap labels visibility |
-| `find_robot_candidates` | Sample robot CAD surface points, carried through time by URDF forward kinematics |
+| `filter_static_tracks` | Drop points that recede from the depth map or flicker |
+| `find_robot_candidates` | Every robot mask pixel in each view's first frame, carried through time by URDF forward kinematics |
 | `project_robot_tracks` | Project robot points into every view; URDF and sensor depth label visibility |
+| `filter_robot_tracks` | Drop points never visible in any view |
+| `sample_static_tracks`, `sample_robot_tracks` | Keep up to `num_*_points_per_view` points visible in each view's frame 0 |
 | `merge_tracks` | Merge static background & robot tracks with global visibility masks |
 
 **Output** (`data/output/droid/tracks/<episode_id>/`):
