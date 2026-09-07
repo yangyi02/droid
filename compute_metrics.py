@@ -287,7 +287,7 @@ def load_track_data(episode_id, tracks_root):
   }
 
 
-def evaluate_episode(episode_id, device, pb_renderer, csv_path, config):
+def process_episode(episode_id, device, pb_renderer, csv_path, config):
   t0 = time.time()
   scene_constants = core.io.load_depth_data(episode_id, config.paths.depth, load_video=None)
   scene_state = core.io.load_extrinsics(scene_constants, config.paths.extrinsics)
@@ -345,14 +345,14 @@ def main(_):
   device = core.io.get_accelerator()
   pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=config.render.gpu)
 
-  def evaluate(ep_id):
-    evaluate_episode(ep_id, device, pb_renderer, csv_path, config)
+  def run_one(episode_id):
+    process_episode(episode_id, device, pb_renderer, csv_path, config)
 
   core.runner.run_episodes(
     core.runner.shard_episodes(
       available, config.runner.rank, config.runner.world_size, config.runner.limit
     ),
-    evaluate,
+    run_one,
     rank=config.runner.rank,
     world_size=config.runner.world_size,
     done=_read_done(csv_path),
