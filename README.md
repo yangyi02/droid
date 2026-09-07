@@ -48,7 +48,7 @@ python compute_tracks.py --config.render.gpu=False  # CPU rasteriser, for a box 
 |-------|--------|--------------|-------------|
 | 1. Depth | `compute_depth.py` | `core.depth` | SVO decode → S2M2 stereo depth → SAM gripper mask → depth distillation |
 | 2. Extrinsics | `compute_extrinsics.py` | `core.physics` | Dataset extrinsics → rendered robot alignment → global joint optimization |
-| 3. Tracks | `compute_tracks.py` | `core.tracking` | Static background depth consensus + URDF FK robot tracks (model-free) |
+| 3. Tracks | `compute_tracks.py` | `core.geometry`, `core.physics` | Static background depth consensus + URDF FK robot tracks (model-free) |
 
 ### Stage 1 — `compute_depth.py`
 
@@ -98,8 +98,9 @@ Dense multi-view 3D point tracking via static background prior + URDF forward ki
 | Step | Description |
 |------|-------------|
 | `find_static_candidates` | Multi-view depth consensus to sample static background points |
-| `project_static_tracks` | Project static background 3D points into per-view 2D trajectories |
-| `compute_robot_tracks` | Sample robot CAD surface points + URDF FK forward propagation |
+| `project_static_tracks` | Project static points into every view; the sensor depth gap labels visibility |
+| `find_robot_candidates` | Sample robot CAD surface points, carried through time by URDF forward kinematics |
+| `project_robot_tracks` | Project robot points into every view; URDF and sensor depth label visibility |
 | `merge_tracks` | Merge static background & robot tracks with global visibility masks |
 
 **Output** (`data/output/droid/tracks/<episode_id>/`):
