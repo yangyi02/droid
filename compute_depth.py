@@ -221,27 +221,15 @@ def parse_robot_kinematics(scene_constants):
 
 
 def align_temporal_streams(scene_constants):
+  robot_streams = ["joint_positions", "gripper_positions", "T_ee_base_all", "timestamps"]
+  camera_streams = ["video_rgb", "video_right", "video_raw_rgb", "video_raw_right", "timestamps"]
 
-  lengths = [
-    len(scene_constants["robot"]["joint_positions"]),
-    len(scene_constants["robot"]["gripper_positions"]),
-    len(scene_constants["robot"]["T_ee_base_all"]),
-  ]
-  for cam_data in scene_constants["camera"].values():
-    lengths.append(len(cam_data["video_rgb"]))
-    lengths.append(len(cam_data["video_right"]))
+  streams = [(scene_constants["robot"], key) for key in robot_streams]
+  streams += [(cam, key) for cam in scene_constants["camera"].values() for key in camera_streams]
 
-  min_frames = min(lengths)
-  max_frames = max(lengths)
-
-  for key in ["joint_positions", "gripper_positions", "T_ee_base_all", "timestamps"]:
-    if key in scene_constants["robot"]:
-      scene_constants["robot"][key] = scene_constants["robot"][key][:min_frames]
-
-  for cam_data in scene_constants["camera"].values():
-    for key, value in cam_data.items():
-      if isinstance(value, (list, np.ndarray)) and len(value) == max_frames:
-        cam_data[key] = value[:min_frames]
+  n_frames = min(len(owner[key]) for owner, key in streams)
+  for owner, key in streams:
+    owner[key] = owner[key][:n_frames]
 
   return scene_constants
 
