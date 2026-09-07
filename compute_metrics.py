@@ -112,7 +112,7 @@ def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
   ui = np.clip(np.round(u_proj).astype(int), 0, w_img - 1)
   vi = np.clip(np.round(v_proj).astype(int), 0, h_img - 1)
   z_obs = raw_depth[vi, ui]
-  valid = (z_obs > 0.05) & (z_proj > 0)
+  valid = (z_obs > 0) & (z_proj > 0)
   return np.abs(z_proj[valid] - z_obs[valid]).astype(np.float32) * 1000.0
 
 
@@ -272,8 +272,6 @@ def load_track_data(episode_id, tracks_root):
   per_cam_tracks, per_cam_vis = {}, {}
   for cam_dir_name in sorted(os.listdir(ep_dir)):
     cam_dir = os.path.join(ep_dir, cam_dir_name)
-    if not os.path.isdir(cam_dir):
-      continue
     cam_data = np.load(os.path.join(cam_dir, "tracks_2d.npz"))
     per_cam_tracks[cam_dir_name] = cam_data["traj_2d"]
     per_cam_vis[cam_dir_name] = cam_data["vis_2d"]
