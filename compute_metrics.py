@@ -19,7 +19,7 @@ import core.runner
 
 
 @torch.no_grad()
-def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=None):
+def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer):
   wrist_cam = scene_constants["meta"]["wrist_serial"]
   ext_cams = [c for c in scene_constants["camera"] if c != wrist_cam]
   cams = ext_cams + [wrist_cam]
@@ -32,55 +32,48 @@ def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=None):
   metrics = {}
   base = {}
   for cam in cams:
-    base[cam] = torch.tensor(
-      scene_state[cam]["base_extrinsic"], dtype=torch.float32, device=device
-    )
+    base[cam] = torch.tensor(scene_state[cam]["base_extrinsic"], dtype=torch.float32, device=device)
 
-  if pb_renderer is not None:
-    for cam in cams:
-      K_mat = scene_constants["camera"][cam]["K_mat"]
-      cache_pts, cache_obs = [], []
+  for cam in cams:
+    K_mat = scene_constants["camera"][cam]["K_mat"]
+    cache_pts, cache_obs = [], []
 
-      for t in range(n_frames):
-        pb_renderer.update_robot_pose(
-          scene_constants["robot"]["joint_positions"][t],
-          scene_constants["robot"]["gripper_positions"][t],
-        )
-        d_obs = scene_constants["camera"][cam]["raw_depth"][t].astype(np.float32)
-        T_cam = scene_state[cam]["extrinsics"][t]
-
-        if cam == wrist_cam:
-          pts = core.physics.get_foreground_gripper_points(
-            T_cam, K_mat, d_obs, pb_renderer, device
-          )
-          if pts is None:
-            continue
-          T_world_to_ee = np.linalg.inv(T_ee_all[t])
-          pts_world = (T_cam @ pts)[:3, :].T
-          pts = torch.tensor(
-            (T_world_to_ee[:3, :3] @ pts_world.T + T_world_to_ee[:3, 3:4]).T,
-            dtype=torch.float32,
-            device=device,
-          )
-        else:
-          pts = core.physics.get_foreground_robot_points(
-            T_cam, K_mat, d_obs, pb_renderer, device
-          )
-          if pts is None:
-            continue
-
-        cache_pts.append(pts)
-        cache_obs.append(torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
-
-      if not cache_pts:
-        metrics[f"robot_loss_{suffix[cam]}"] = float("nan")
-        continue
-
-      K = torch.tensor(K_mat, dtype=torch.float32, device=device)
-      loss = core.physics.depth_loss_batched(
-        torch.stack(cache_pts), base[cam], K, torch.stack(cache_obs)
+    for t in range(n_frames):
+      pb_renderer.update_robot_pose(
+        scene_constants["robot"]["joint_positions"][t],
+        scene_constants["robot"]["gripper_positions"][t],
       )
-      metrics[f"robot_loss_{suffix[cam]}"] = loss.item()
+      d_obs = scene_constants["camera"][cam]["raw_depth"][t].astype(np.float32)
+      T_cam = scene_state[cam]["extrinsics"][t]
+
+      if cam == wrist_cam:
+        pts = core.physics.get_foreground_gripper_points(T_cam, K_mat, d_obs, pb_renderer, device)
+        if pts is None:
+          continue
+        T_world_to_ee = np.linalg.inv(T_ee_all[t])
+        pts_world = (T_cam @ pts)[:3, :].T
+        pts = torch.tensor(
+          (T_world_to_ee[:3, :3] @ pts_world.T + T_world_to_ee[:3, 3:4]).T,
+          dtype=torch.float32,
+          device=device,
+        )
+      else:
+        pts = core.physics.get_foreground_robot_points(T_cam, K_mat, d_obs, pb_renderer, device)
+        if pts is None:
+          continue
+
+      cache_pts.append(pts)
+      cache_obs.append(torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
+
+    if not cache_pts:
+      metrics[f"robot_loss_{suffix[cam]}"] = float("nan")
+      continue
+
+    K = torch.tensor(K_mat, dtype=torch.float32, device=device)
+    loss = core.physics.depth_loss_batched(
+      torch.stack(cache_pts), base[cam], K, torch.stack(cache_obs)
+    )
+    metrics[f"robot_loss_{suffix[cam]}"] = loss.item()
 
   chamfer_sum = {p: 0.0 for p in pairs}
   overlap_sum = {p: 0.0 for p in pairs}
@@ -110,27 +103,21 @@ def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=None):
   for a, b in pairs:
     metrics[f"chamfer_{label[a]}{label[b]}"] = chamfer_sum[a, b] / n_valid
     metrics[f"overlap_{label[a]}{label[b]}"] = overlap_sum[a, b] / n_valid * 100
-  metrics["chamfer_mean"] = sum(chamfer_sum.values()) / (len(pairs) * n_valid)
-  metrics["overlap_mean"] = sum(overlap_sum.values()) / (len(pairs) * n_valid) * 100
 
   return metrics
 
 
 def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
-  if len(pts_3d) == 0:
-    return np.array([], dtype=np.float32)
   u_proj, v_proj, z_proj = core.geometry.project_points(pts_3d, K, extrinsics)
   ui = np.clip(np.round(u_proj).astype(int), 0, w_img - 1)
   vi = np.clip(np.round(v_proj).astype(int), 0, h_img - 1)
   z_obs = raw_depth[vi, ui]
   valid = (z_obs > 0.05) & (z_proj > 0)
-  if not valid.any():
-    return np.array([], dtype=np.float32)
   return np.abs(z_proj[valid] - z_obs[valid]).astype(np.float32) * 1000.0
 
 
 def compute_depth_residual_per_camera(
-  scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static, n_robot
+  scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
 ):
   camera_ids = list(scene_constants["camera"].keys())
   T_frames = final_traj_3d.shape[0]
@@ -141,96 +128,57 @@ def compute_depth_residual_per_camera(
     K = cam_data["K_mat"]
     h_img, w_img = cam_data["raw_depth"][0].shape[:2]
 
-    cam_static, cam_robot, cam_all = [], [], []
+    cam_static, cam_robot = [], []
 
     for t in range(T_frames):
       raw_depth = cam_data["raw_depth"][t]
       ext = scene_state[cam_id]["extrinsics"][t]
       vis_t = final_per_cam_vis[cam_id][t]
 
-      if n_static > 0:
-        cam_static.append(
-          compute_depth_residual_mm(
-            final_traj_3d[t, :n_static][vis_t[:n_static]], K, ext, raw_depth, w_img, h_img
-          )
+      cam_static.append(
+        compute_depth_residual_mm(
+          final_traj_3d[t, :n_static][vis_t[:n_static]], K, ext, raw_depth, w_img, h_img
         )
-
-      if n_robot > 0:
-        cam_robot.append(
-          compute_depth_residual_mm(
-            final_traj_3d[t, n_static:][vis_t[n_static:]], K, ext, raw_depth, w_img, h_img
-          )
+      )
+      cam_robot.append(
+        compute_depth_residual_mm(
+          final_traj_3d[t, n_static:][vis_t[n_static:]], K, ext, raw_depth, w_img, h_img
         )
-
-      cam_all.append(
-        compute_depth_residual_mm(final_traj_3d[t, vis_t], K, ext, raw_depth, w_img, h_img)
       )
 
-    per_camera[cam_id] = {
-      "static": np.concatenate(cam_static) if cam_static else np.array([], dtype=np.float32),
-      "robot": np.concatenate(cam_robot) if cam_robot else np.array([], dtype=np.float32),
-      "all": np.concatenate(cam_all) if cam_all else np.array([], dtype=np.float32),
-    }
+    per_camera[cam_id] = {"static": np.concatenate(cam_static), "robot": np.concatenate(cam_robot)}
 
   return per_camera
 
 
 def compute_track_depth_consistency(
-  scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static, n_robot
+  scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
 ):
   per_camera = compute_depth_residual_per_camera(
-    scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static, n_robot
+    scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
   )
 
-  all_static = [v["static"] for v in per_camera.values()]
-  all_robot = [v["robot"] for v in per_camera.values()]
-  all_overall = [v["all"] for v in per_camera.values()]
-
   def _stats(arrs):
-    concat = np.concatenate(arrs) if arrs else np.array([])
+    concat = np.concatenate(arrs)
     if len(concat) == 0:
       return float("nan"), float("nan")
     return float(np.median(concat)), float(np.mean(concat))
 
-  s_med, s_mean = _stats(all_static)
-  r_med, r_mean = _stats(all_robot)
-  o_med, o_mean = _stats(all_overall)
+  s_med, s_mean = _stats([v["static"] for v in per_camera.values()])
+  r_med, r_mean = _stats([v["robot"] for v in per_camera.values()])
 
   return {
     "depth_residual_static_median_mm": s_med,
     "depth_residual_static_mean_mm": s_mean,
     "depth_residual_robot_median_mm": r_med,
     "depth_residual_robot_mean_mm": r_mean,
-    "depth_residual_overall_median_mm": o_med,
-    "depth_residual_overall_mean_mm": o_mean,
   }
 
 
-def compute_track_visibility_stats(final_per_cam_vis, n_static, n_robot):
-  stats = {}
-  all_static_vis, all_robot_vis, all_total_vis = [], [], []
-
-  for cam_id, vis in final_per_cam_vis.items():
-    vis_static = vis[:, :n_static] if n_static > 0 else np.zeros((vis.shape[0], 0), dtype=bool)
-    vis_robot = vis[:, n_static:] if n_robot > 0 else np.zeros((vis.shape[0], 0), dtype=bool)
-
-    s_pct = float(vis_static.mean() * 100) if vis_static.size > 0 else 0.0
-    r_pct = float(vis_robot.mean() * 100) if vis_robot.size > 0 else 0.0
-    t_pct = float(vis.mean() * 100)
-
-    stats[f"vis_static_pct_{cam_id[:8]}"] = s_pct
-    stats[f"vis_robot_pct_{cam_id[:8]}"] = r_pct
-    stats[f"vis_total_pct_{cam_id[:8]}"] = t_pct
-
-    all_static_vis.append(s_pct)
-    all_robot_vis.append(r_pct)
-    all_total_vis.append(t_pct)
-
-  stats["vis_static_pct_avg"] = float(np.mean(all_static_vis)) if all_static_vis else 0.0
-  stats["vis_robot_pct_avg"] = float(np.mean(all_robot_vis)) if all_robot_vis else 0.0
-  stats["vis_total_pct_avg"] = float(np.mean(all_total_vis)) if all_total_vis else 0.0
-
-  return stats
+def compute_track_visibility_stats(final_per_cam_vis):
+  return {
+    f"vis_pct_{cam_id[:8]}": float(vis.mean() * 100) for cam_id, vis in final_per_cam_vis.items()
+  }
 
 
 def compute_motion_stats(scene_constants):
@@ -257,67 +205,60 @@ def compute_motion_stats(scene_constants):
 
 
 def compute_scene_metadata(scene_constants):
-  ep_id = scene_constants["meta"]["episode_id"]
-  parts = ep_id.split("+")
-  site = parts[0] if parts else "UNKNOWN"
-  robot_id = parts[1] if len(parts) > 1 else "UNKNOWN"
-
-  camera_ids = list(scene_constants["camera"].keys())
-  first_cam = scene_constants["camera"][camera_ids[0]]
-
-  if "raw_depth" in first_cam:
-    h, w = first_cam["raw_depth"][0].shape[:2]
-  elif "video_rgb" in first_cam:
-    h, w = first_cam["video_rgb"][0].shape[:2]
-  elif "first_frame_rgb" in first_cam:
-    h, w = first_cam["first_frame_rgb"].shape[:2]
-  else:
-    h, w = 0, 0
+  site, robot_id, _ = scene_constants["meta"]["episode_id"].split("+")
 
   return {
     "site": site,
     "robot_id": robot_id,
-    "n_cameras": len(camera_ids),
-    "image_resolution": f"{h}x{w}",
-    "wrist_serial": scene_constants["meta"].get("wrist_serial", ""),
+    "n_cameras": len(scene_constants["camera"]),
+    "wrist_serial": scene_constants["meta"]["wrist_serial"],
   }
 
 
-def evaluate_episode(
+def compute_robot_coverage(scene_constants, scene_state, pb_renderer):
+  robot = scene_constants["robot"]
+  pb_renderer.update_robot_pose(
+    robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0]
+  )
+
+  coverage = {}
+  for cam_id, cam_data in scene_constants["camera"].items():
+    h_img, w_img = cam_data["raw_depth"][0].shape
+    mask = pb_renderer.render_mask(
+      scene_state[cam_id]["extrinsics"][0], cam_data["K_mat"], w_img, h_img
+    )
+    coverage[f"robot_pct_{cam_id[:8]}"] = float(mask.mean() * 100)
+
+  return coverage
+
+
+def compute_episode_metrics(
   scene_constants,
   scene_state,
   device,
-  final_traj_3d=None,
-  final_per_cam_vis=None,
-  n_static=0,
-  n_robot=0,
-  compute_extrinsics_metrics=True,
-  pb_renderer=None,
+  final_traj_3d,
+  final_per_cam_vis,
+  n_static,
+  n_robot,
+  pb_renderer,
 ):
-  ep_id = scene_constants["meta"]["episode_id"]
-  metrics = {"episode_id": ep_id}
-
+  metrics = {"episode_id": scene_constants["meta"]["episode_id"]}
   metrics.update(compute_scene_metadata(scene_constants))
-
+  metrics.update(compute_robot_coverage(scene_constants, scene_state, pb_renderer))
   metrics.update(compute_motion_stats(scene_constants))
+  metrics.update(evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer))
 
-  if compute_extrinsics_metrics:
-    ext_metrics = evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer=pb_renderer)
-    metrics.update(ext_metrics)
+  metrics["n_static"] = n_static
+  metrics["n_robot"] = n_robot
+  metrics["n_total_tracks"] = n_static + n_robot
+  metrics["n_track_frames"] = final_traj_3d.shape[0]
 
-  if final_traj_3d is not None and final_per_cam_vis is not None:
-    metrics["n_static"] = n_static
-    metrics["n_robot"] = n_robot
-    metrics["n_total_tracks"] = n_static + n_robot
-    metrics["n_track_frames"] = final_traj_3d.shape[0]
-
-    metrics.update(
-      compute_track_depth_consistency(
-        scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static, n_robot
-      )
+  metrics.update(
+    compute_track_depth_consistency(
+      scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
     )
-
-    metrics.update(compute_track_visibility_stats(final_per_cam_vis, n_static, n_robot))
+  )
+  metrics.update(compute_track_visibility_stats(final_per_cam_vis))
 
   return metrics
 
@@ -325,29 +266,20 @@ def evaluate_episode(
 def load_track_data(episode_id, tracks_root):
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(tracks_root, episode_id)))
 
-  tracks_path = os.path.join(ep_dir, "tracks_3d.npz")
-  meta_path = os.path.join(ep_dir, "track_metadata.npz")
-  if not os.path.exists(tracks_path) or not os.path.exists(meta_path):
-    return None
-
-  tracks_data = np.load(tracks_path)
-  meta_data = np.load(meta_path)
+  tracks_data = np.load(os.path.join(ep_dir, "tracks_3d.npz"))
+  meta_data = np.load(os.path.join(ep_dir, "track_metadata.npz"))
 
   per_cam_tracks, per_cam_vis = {}, {}
-  for cam_dir_name in os.listdir(ep_dir):
+  for cam_dir_name in sorted(os.listdir(ep_dir)):
     cam_dir = os.path.join(ep_dir, cam_dir_name)
-    vis_path = os.path.join(cam_dir, "tracks_2d.npz")
-    if os.path.isdir(cam_dir) and os.path.exists(vis_path):
-      cam_data = np.load(vis_path)
-      per_cam_tracks[cam_dir_name] = cam_data["traj_2d"]
-      per_cam_vis[cam_dir_name] = cam_data["vis_2d"]
-
-  if not per_cam_vis:
-    return None
+    if not os.path.isdir(cam_dir):
+      continue
+    cam_data = np.load(os.path.join(cam_dir, "tracks_2d.npz"))
+    per_cam_tracks[cam_dir_name] = cam_data["traj_2d"]
+    per_cam_vis[cam_dir_name] = cam_data["vis_2d"]
 
   return {
     "traj_3d": tracks_data["traj_3d"],
-    "vis_global": tracks_data["vis_global"],
     "per_cam_tracks": per_cam_tracks,
     "per_cam_vis": per_cam_vis,
     "n_static": int(meta_data["n_static"]),
@@ -355,24 +287,28 @@ def load_track_data(episode_id, tracks_root):
   }
 
 
-def evaluate_single_episode(
-  episode_id, depth_root, extrinsics_root, tracks_root, device, pb_renderer
-):
-  scene_constants = core.io.load_depth_data(episode_id, depth_root, load_video="first_frame")
-  scene_state = core.io.load_extrinsics(scene_constants, extrinsics_root)
+def evaluate_episode(episode_id, device, pb_renderer, csv_path, config):
+  t0 = time.time()
+  scene_constants = core.io.load_depth_data(episode_id, config.paths.depth, load_video=None)
+  scene_state = core.io.load_extrinsics(scene_constants, config.paths.extrinsics)
+  tracks = load_track_data(episode_id, config.paths.tracks)
 
-  tracks = load_track_data(episode_id, tracks_root)
-
-  return evaluate_episode(
+  metrics = compute_episode_metrics(
     scene_constants,
     scene_state,
     device,
-    final_traj_3d=tracks["traj_3d"],
-    final_per_cam_vis=tracks["per_cam_vis"],
-    n_static=tracks["n_static"],
-    n_robot=tracks["n_robot"],
-    compute_extrinsics_metrics=True,
-    pb_renderer=pb_renderer,
+    tracks["traj_3d"],
+    tracks["per_cam_vis"],
+    tracks["n_static"],
+    tracks["n_robot"],
+    pb_renderer,
+  )
+  _append_row(csv_path, metrics)
+
+  print(
+    f"  [OK] Done in {time.time() - t0:.1f}s | "
+    f"static={metrics['depth_residual_static_median_mm']:.1f}mm | "
+    f"robot={metrics['depth_residual_robot_median_mm']:.1f}mm"
   )
 
 
@@ -410,17 +346,7 @@ def main(_):
   pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=config.render.gpu)
 
   def evaluate(ep_id):
-    t0 = time.time()
-    metrics = evaluate_single_episode(
-      ep_id, config.paths.depth, config.paths.extrinsics, config.paths.tracks, device, pb_renderer
-    )
-    _append_row(csv_path, metrics)
-    print(
-      f"  [OK] Done in {time.time() - t0:.1f}s | "
-      f"chamfer={metrics.get('chamfer_mean', float('nan')):.4f} | "
-      f"depth_residual_median="
-      f"{metrics.get('depth_residual_overall_median_mm', float('nan')):.1f}mm"
-    )
+    evaluate_episode(ep_id, device, pb_renderer, csv_path, config)
 
   core.runner.run_episodes(
     core.runner.shard_episodes(
