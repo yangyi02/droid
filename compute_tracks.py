@@ -27,10 +27,10 @@ def depth_gap(cam_data, pts_3d, extrinsic, t):
   return u, v, sample_depth(cam_data["raw_depth"][t], u, v, z_pred) - z_pred
 
 
-def sample_tracks(keep, num_points=None, seed=42):
-  if num_points is None or len(keep) <= num_points:
-    return keep
-  return np.sort(np.random.default_rng(seed).choice(keep, num_points, replace=False))
+def sample_indices(indices, num_points=None, seed=42):
+  if num_points is None or len(indices) <= num_points:
+    return indices
+  return np.sort(np.random.default_rng(seed).choice(indices, num_points, replace=False))
 
 
 def keep_tracks(per_cam, keep):
@@ -124,7 +124,15 @@ def project_static_tracks(static_pts_3d, scene_constants, scene_state, depth_tol
   return per_cam_tracks, per_cam_vis, per_cam_gap
 
 
-def filter_static_tracks(per_cam_vis, per_cam_gap, tau=0.015, min_run_frames=30, flicker=0.10):
+def filter_static_tracks(
+  static_pts_3d,
+  per_cam_tracks,
+  per_cam_vis,
+  per_cam_gap,
+  tau=0.015,
+  min_run_frames=30,
+  flicker=0.10,
+):
   vis = np.stack(list(per_cam_vis.values()))
   gap = np.stack(list(per_cam_gap.values()))
   n_cams, T_frames, n_points = vis.shape
@@ -141,7 +149,12 @@ def filter_static_tracks(per_cam_vis, per_cam_gap, tau=0.015, min_run_frames=30,
 
   keep = np.flatnonzero(~(gone | jitters).any(axis=0))
   print(f"  Static: {len(keep)} of {n_points} candidates survive gone/jitter")
-  return keep
+  return static_pts_3d[keep], keep_tracks(per_cam_tracks, keep), keep_tracks(per_cam_vis, keep)
+
+
+def sample_tracks(static_pts_3d, per_cam_tracks, per_cam_vis, num_points=None, seed=42):
+  keep = sample_indices(np.arange(len(static_pts_3d)), num_points, seed)
+  return static_pts_3d[keep], keep_tracks(per_cam_tracks, keep), keep_tracks(per_cam_vis, keep)
 
 
 def find_robot_candidates(
@@ -166,7 +179,7 @@ def find_robot_candidates(
     is_robot = (obj_ids == pb_renderer.robot_id).astype(np.uint8)
     on_robot = cv2.erode(is_robot, kernel, iterations=1) > 0
 
-    flat = sample_tracks(np.flatnonzero(on_robot), max_robot_pts_per_cam)
+    flat = sample_indices(np.flatnonzero(on_robot), max_robot_pts_per_cam)
     vs, us = np.unravel_index(flat, on_robot.shape)
 
     seeds.append(
@@ -232,11 +245,11 @@ def project_robot_tracks(robot_traj_3d, scene_constants, scene_state, pb_rendere
   return per_cam_tracks, per_cam_vis
 
 
-def filter_robot_tracks(per_cam_vis):
+def filter_robot_tracks(robot_traj_3d, per_cam_tracks, per_cam_vis):
   vis = np.stack(list(per_cam_vis.values()))
   keep = np.flatnonzero(vis.any(axis=(0, 1)))
   print(f"  Robot: {len(keep)} of {vis.shape[2]} candidates are visible somewhere")
-  return keep
+  return robot_traj_3d[:, keep], keep_tracks(per_cam_tracks, keep), keep_tracks(per_cam_vis, keep)
 
 
 def merge_tracks(static_pts_3d, static_tracks, static_vis, robot_traj_3d, robot_tracks, robot_vis):
@@ -308,18 +321,18 @@ def process_episode(episode_id, pb_renderer, config):
   static_tracks, static_vis, static_gap = project_static_tracks(
     static_pts_3d, scene_constants, scene_state, depth_tolerance=config.tracks.depth_tolerance
   )
-  keep = filter_static_tracks(
+  static_pts_3d, static_tracks, static_vis = filter_static_tracks(
+    static_pts_3d,
+    static_tracks,
     static_vis,
     static_gap,
     tau=config.tracks.tau,
     min_run_frames=config.tracks.min_run_frames,
     flicker=config.tracks.flicker,
   )
-  keep = sample_tracks(keep, num_points=config.tracks.num_static_points)
-
-  static_pts_3d = static_pts_3d[keep]
-  static_tracks = keep_tracks(static_tracks, keep)
-  static_vis = keep_tracks(static_vis, keep)
+  static_pts_3d, static_tracks, static_vis = sample_tracks(
+    static_pts_3d, static_tracks, static_vis, num_points=config.tracks.num_static_points
+  )
 
   robot_traj_3d = find_robot_candidates(
     scene_constants,
@@ -331,11 +344,9 @@ def process_episode(episode_id, pb_renderer, config):
   robot_tracks, robot_vis = project_robot_tracks(
     robot_traj_3d, scene_constants, scene_state, pb_renderer
   )
-  keep = filter_robot_tracks(robot_vis)
-
-  robot_traj_3d = robot_traj_3d[:, keep]
-  robot_tracks = keep_tracks(robot_tracks, keep)
-  robot_vis = keep_tracks(robot_vis, keep)
+  robot_traj_3d, robot_tracks, robot_vis = filter_robot_tracks(
+    robot_traj_3d, robot_tracks, robot_vis
+  )
 
   traj_3d, per_cam_tracks, per_cam_vis = merge_tracks(
     static_pts_3d, static_tracks, static_vis, robot_traj_3d, robot_tracks, robot_vis
