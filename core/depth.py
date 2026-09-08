@@ -49,7 +49,7 @@ def compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, conf_
   return episode
 
 
-def extract_single_frame_mask(img_rgb, predictor):
+def extract_single_frame_mask(img_rgb, predictor, mask_area_min=0.02, mask_area_max=0.45):
   height, width = img_rgb.shape[:2]
 
   points = np.array(
@@ -73,7 +73,7 @@ def extract_single_frame_mask(img_rgb, predictor):
   valid_masks, valid_scores = [], []
   for m, s in zip(masks, scores):
     area_ratio = np.sum(m) / (width * height)
-    if 0.02 < area_ratio < 0.45:
+    if mask_area_min < area_ratio < mask_area_max:
       valid_masks.append(m)
       valid_scores.append(s * area_ratio)
 
@@ -97,15 +97,22 @@ def compute_consensus_mask(masks_list, consensus_thresh=0.5):
   return consensus_mask
 
 
-def build_universal_gripper_mask(episode, sam_predictor, consensus_thresh=0.5):
+def build_universal_gripper_mask(
+  episode,
+  sam_predictor,
+  consensus_thresh=0.5,
+  gripper_closed_thresh=0.05,
+  mask_area_min=0.02,
+  mask_area_max=0.45,
+):
   cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
   gripper_states = episode["robot"]["gripper_positions"]
-  closed_indices = np.where(gripper_states < 0.05)[0]
+  closed_indices = np.where(gripper_states < gripper_closed_thresh)[0]
 
   masks_list = []
   for idx in tqdm(closed_indices, desc="SAM mask"):
     img = cam_data["video_rgb"][idx].copy()
-    mask = extract_single_frame_mask(img, sam_predictor)
+    mask = extract_single_frame_mask(img, sam_predictor, mask_area_min, mask_area_max)
     masks_list.append(mask)
 
   final_mask = compute_consensus_mask(masks_list, consensus_thresh=consensus_thresh)
@@ -117,10 +124,10 @@ def build_universal_gripper_mask(episode, sam_predictor, consensus_thresh=0.5):
   return episode
 
 
-def distill_empirical_gripper_depth(episode, max_depth_thresh=0.15):
+def distill_empirical_gripper_depth(episode, max_depth_thresh=0.15, gripper_closed_thresh=0.05):
   cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
   gripper_states = episode["robot"]["gripper_positions"]
-  closed_indices = np.where(gripper_states < 0.05)[0]
+  closed_indices = np.where(gripper_states < gripper_closed_thresh)[0]
   height, width = cam_data["video_rgb"][0].shape[:2]
   n_frames = len(closed_indices)
 
@@ -140,12 +147,12 @@ def distill_empirical_gripper_depth(episode, max_depth_thresh=0.15):
   return episode
 
 
-def inject_gripper_depth(episode):
+def inject_gripper_depth(episode, gripper_closed_thresh=0.05):
   cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
   gripper_states = episode["robot"]["gripper_positions"]
   empirical_depth = cam_data["empirical_gripper_depth"]
 
-  closed_indices = np.where(gripper_states < 0.05)[0]
+  closed_indices = np.where(gripper_states < gripper_closed_thresh)[0]
   valid_mask = empirical_depth > 0
 
   cam_data["raw_depth"][closed_indices] = np.where(

@@ -39,6 +39,9 @@ def get_config():
   config.depth.conf_thresh = 0.95
   config.depth.consensus_thresh = 0.5
   config.depth.max_depth_thresh = 0.15
+  config.depth.gripper_closed_thresh = 0.05
+  config.depth.mask_area_min = 0.02
+  config.depth.mask_area_max = 0.45
 
   config.extrinsics = ml_collections.ConfigDict()
   config.extrinsics.outer_steps = 5
@@ -48,6 +51,8 @@ def get_config():
   config.extrinsics.chamfer_weight = 1.0
   config.extrinsics.robot_weight = 1.0
   config.extrinsics.chamfer_n_points = 2000
+  config.extrinsics.chamfer_match_radius = 0.05
+  config.extrinsics.max_depth = 1.5
 
   config.tracks = ml_collections.ConfigDict()
   config.tracks.num_static_points_per_view = 100
@@ -59,5 +64,8 @@ def get_config():
   config.tracks.min_run_frames = 30
   config.tracks.flicker = 0.10
   config.tracks.depth_tolerance = 0.05
+  config.tracks.occlusion_slack = 0.02
+  config.tracks.seed_min_depth = 0.05
+  config.tracks.seed_max_depth = 5.0
 
   return config

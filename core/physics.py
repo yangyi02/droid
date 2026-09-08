@@ -6,6 +6,16 @@ import pybullet
 import torch
 import torch.nn.functional as F
 
+NEAR_PLANE = 0.01
+FAR_PLANE = 10.0
+GRIPPER_ANGLE_SCALE = 0.8028
+GRIPPER_WIDTH_OFFSET = 0.08
+
+
+def metric_depth(depth_buf, height, width):
+  buf = np.reshape(depth_buf, (height, width))
+  return (FAR_PLANE * NEAR_PLANE) / (FAR_PLANE - buf * (FAR_PLANE - NEAR_PLANE))
+
 
 def _load_egl():
   cuda_pin = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
@@ -58,18 +68,19 @@ class PyBulletRenderer:
         sign = -sign
       self.gripper_signs.append(sign)
 
-  def update_robot_pose(self, joint_angles, gripper_state=None, gripper_width_offset=0.08):
+  def update_robot_pose(self, joint_angles, gripper_state=None):
     for i, angle in zip(self.arm_joints, joint_angles):
       pybullet.resetJointState(self.robot_id, i, angle)
 
     if gripper_state is not None and self.gripper_joints:
       raw_val = gripper_state[0] if isinstance(gripper_state, (list, np.ndarray)) else gripper_state
       raw_val = np.clip(raw_val, 0.0, 1.0)
-      angle = (raw_val * 0.8028) - gripper_width_offset
+      angle = (raw_val * GRIPPER_ANGLE_SCALE) - GRIPPER_WIDTH_OFFSET
       for i, sign in zip(self.gripper_joints, self.gripper_signs):
         pybullet.resetJointState(self.robot_id, i, angle * sign)
 
-  def _get_projection_matrix(self, K, width, height, near=0.01, far=10.0):
+  def _get_projection_matrix(self, K, width, height):
+    near, far = NEAR_PLANE, FAR_PLANE
     fx, fy = K[0, 0], K[1, 1]
     cx, cy = K[0, 2], K[1, 2]
     return [
@@ -109,8 +120,8 @@ class PyBulletRenderer:
 
   def render_depth(self, T_cam2world, K, width, height):
     depth_buf, _ = self._render_raw(T_cam2world, K, width, height)
-    metric = 0.1 / (10.0 - 9.99 * np.reshape(depth_buf, (height, width)))
-    return np.where(metric < 9.9, metric, 0.0)
+    metric = metric_depth(depth_buf, height, width)
+    return np.where(metric < FAR_PLANE * 0.99, metric, 0.0)
 
   def render_mask(self, T_cam2world, K, width, height):
     _, seg_buf = self._render_raw(T_cam2world, K, width, height)
@@ -119,8 +130,8 @@ class PyBulletRenderer:
 
   def render_segmentation(self, T_cam2world, K, width, height):
     depth_buf, seg_buf = self._render_raw(T_cam2world, K, width, height)
-    metric = 0.1 / (10.0 - 9.99 * np.reshape(depth_buf, (height, width)))
-    metric = np.where(metric < 9.9, metric, 0.0)
+    metric = metric_depth(depth_buf, height, width)
+    metric = np.where(metric < FAR_PLANE * 0.99, metric, 0.0)
     seg_array = np.reshape(seg_buf, (height, width)).astype(np.int32)
     obj_ids = seg_array & 0xFFFFFF
     link_ids = (seg_array >> 24) - 1
@@ -164,13 +175,13 @@ def get_foreground_gripper_points(T_cam2world, K, depth, pb_renderer, device, n_
     flags=pybullet.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
   )
 
-  metric_depth = 0.1 / (10.0 - 9.99 * np.reshape(depth_buffer, (height, width)))
+  metric = metric_depth(depth_buffer, height, width)
   seg_array = np.reshape(seg_buffer, (height, width)).astype(np.int32)
   link_ids = (seg_array >> 24) - 1
   valid_gripper = np.isin(link_ids, pb_renderer.gripper_links)
 
-  v_r, u_r = np.where((metric_depth < 9.9) & valid_gripper)
-  z_r = metric_depth[v_r, u_r]
+  v_r, u_r = np.where((metric < FAR_PLANE * 0.99) & valid_gripper)
+  z_r = metric[v_r, u_r]
   if len(z_r) < 100:
     return None
 
@@ -182,7 +193,7 @@ def get_foreground_gripper_points(T_cam2world, K, depth, pb_renderer, device, n_
   return points_cam[:, idx]
 
 
-def depth_loss_batched(points, T_cam2world, K, depth_batch):
+def depth_loss_batched(points, T_cam2world, K, depth_batch, max_depth=1.5):
   _, _, height, width = depth_batch.shape
 
   P_c = (points - T_cam2world[:3, 3]) @ T_cam2world[:3, :3]
@@ -201,9 +212,9 @@ def depth_loss_batched(points, T_cam2world, K, depth_batch):
 
   valid = (
     (z_pred > 0.0)
-    & (z_pred < 1.5)
+    & (z_pred < max_depth)
     & (z_obs > 0.0)
-    & (z_obs < 1.5)
+    & (z_obs < max_depth)
     & (u >= 0)
     & (u < width - 1)
     & (v >= 0)

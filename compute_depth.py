@@ -329,12 +329,21 @@ def process_episode(episode_id, models, dbs, raw_root, config):
   wrist_data["original_raw_depth"] = wrist_data["raw_depth"].copy()
 
   episode = core.depth.build_universal_gripper_mask(
-    episode, sam_predictor, consensus_thresh=config.depth.consensus_thresh
+    episode,
+    sam_predictor,
+    consensus_thresh=config.depth.consensus_thresh,
+    gripper_closed_thresh=config.depth.gripper_closed_thresh,
+    mask_area_min=config.depth.mask_area_min,
+    mask_area_max=config.depth.mask_area_max,
   )
   episode = core.depth.distill_empirical_gripper_depth(
-    episode, max_depth_thresh=config.depth.max_depth_thresh
+    episode,
+    max_depth_thresh=config.depth.max_depth_thresh,
+    gripper_closed_thresh=config.depth.gripper_closed_thresh,
   )
-  episode = core.depth.inject_gripper_depth(episode)
+  episode = core.depth.inject_gripper_depth(
+    episode, gripper_closed_thresh=config.depth.gripper_closed_thresh
+  )
   export_depth(episode, export_root=config.paths.depth)
 
 

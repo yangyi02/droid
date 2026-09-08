@@ -94,7 +94,9 @@ def extract_robot_clouds(cam_id, episode, pb_renderer, base_extrinsic, device, d
   return torch.stack(cache_X), depth_batch[kept]
 
 
-def per_camera_alignment(episode, pb_renderer, prev_poses, device, outer_steps=5, inner_steps=100):
+def per_camera_alignment(
+  episode, pb_renderer, prev_poses, device, outer_steps=5, inner_steps=100, lr=0.001
+):
   print("\nUnified camera-robot alignment (external + wrist)...")
   wrist_cam_id = episode['meta']['wrist_serial']
   poses = copy.deepcopy(prev_poses)
@@ -112,7 +114,7 @@ def per_camera_alignment(episode, pb_renderer, prev_poses, device, outer_steps=5
     )
     depth_batch = observed_depth(episode['camera'][cam_id], device)
     delta = torch.zeros(6, requires_grad=True, device=device)
-    optimizer = optim.Adam([delta], lr=0.001)
+    optimizer = optim.Adam([delta], lr=lr)
     loss_rob = None
 
     print(f"      {outer_steps} x {inner_steps} steps, re-rendering the cloud between them...")
@@ -164,13 +166,13 @@ def per_camera_alignment(episode, pb_renderer, prev_poses, device, outer_steps=5
   return poses
 
 
-def batched_chamfer_distance(p1, p2):
+def batched_chamfer_distance(p1, p2, match_radius=0.05):
   dist = torch.cdist(p1, p2)
   near_12 = dist.min(dim=2)[0]
   near_21 = dist.min(dim=1)[0]
 
-  valid_12 = near_12 < 0.05
-  valid_21 = near_21 < 0.05
+  valid_12 = near_12 < match_radius
+  valid_21 = near_21 < match_radius
   loss = (near_12 * valid_12).sum() / valid_12.sum().clamp(min=1)
   loss = loss + (near_21 * valid_21).sum() / valid_21.sum().clamp(min=1)
 
@@ -178,11 +180,11 @@ def batched_chamfer_distance(p1, p2):
   return loss, overlap
 
 
-def camera_frame_points(t, cam_data, device, n_points=2000):
+def camera_frame_points(t, cam_data, device, n_points=2000, max_depth=1.5):
   depth = cam_data["raw_depth"][t].astype(np.float32)
   K = cam_data["K"]
 
-  valid_mask = (depth > 0.0) & (depth < 1.5)
+  valid_mask = (depth > 0.0) & (depth < max_depth)
   vs, us = np.where(valid_mask)
   if len(us) < 100:
     return None
@@ -199,7 +201,9 @@ def camera_frame_points(t, cam_data, device, n_points=2000):
   return torch.tensor(points_cam[:, idx], dtype=torch.float32, device=device)
 
 
-def alignment_inputs(episode, poses, pb_renderer, device, chamfer_n_points=2000):
+def alignment_inputs(
+  episode, poses, pb_renderer, device, chamfer_n_points=2000, max_depth=1.5, match_radius=0.05
+):
   """The clouds and calibration the alignment loss reads, at one set of base extrinsics."""
   wrist_cam_id = episode['meta']['wrist_serial']
   cam_ids = [c for c in episode['camera'] if c != wrist_cam_id] + [wrist_cam_id]
@@ -224,7 +228,7 @@ def alignment_inputs(episode, poses, pb_renderer, device, chamfer_n_points=2000)
   cache_ee = []
   for t in range(n_frames):
     frame = {
-      cam_id: camera_frame_points(t, episode['camera'][cam_id], device, chamfer_n_points)
+      cam_id: camera_frame_points(t, episode['camera'][cam_id], device, chamfer_n_points, max_depth)
       for cam_id in cam_ids
     }
     if all(points is not None for points in frame.values()):
@@ -242,6 +246,8 @@ def alignment_inputs(episode, poses, pb_renderer, device, chamfer_n_points=2000)
     'depth_batch': depth_batch,
     'env': {cam_id: torch.stack(cache[cam_id]) for cam_id in cam_ids},
     'ee_poses': torch.stack(cache_ee),
+    'max_depth': max_depth,
+    'match_radius': match_radius,
   }
 
 
@@ -256,7 +262,9 @@ def alignment_losses(inputs, pose):
 
   chamfer, overlap = {}, {}
   for a, b in inputs['pairs']:
-    chamfer[a, b], overlap[a, b] = batched_chamfer_distance(world[a], world[b])
+    chamfer[a, b], overlap[a, b] = batched_chamfer_distance(
+      world[a], world[b], inputs['match_radius']
+    )
 
   robot = {
     cam_id: core.physics.depth_loss_batched(
@@ -281,9 +289,13 @@ def global_joint_alignment(
   chamfer_weight=1.0,
   robot_weight=1.0,
   chamfer_n_points=2000,
+  max_depth=1.5,
+  match_radius=0.05,
 ):
   print(f"\nGlobal joint optimization (Chamfer + Robot + Wrist, lr={lr})...")
-  inputs = alignment_inputs(episode, prev_poses, pb_renderer, device, chamfer_n_points)
+  inputs = alignment_inputs(
+    episode, prev_poses, pb_renderer, device, chamfer_n_points, max_depth, match_radius
+  )
   cam_ids, pairs, wrist_cam_id = inputs['cam_ids'], inputs['pairs'], inputs['wrist_cam_id']
   fixed_cam_ids = [c for c in cam_ids if c != wrist_cam_id]
   label = {c: str(i + 1) for i, c in enumerate(fixed_cam_ids)} | {wrist_cam_id: "W"}
@@ -382,6 +394,7 @@ def process_episode(episode_id, pb_renderer, extrinsics_db, device, config):
     device,
     outer_steps=config.extrinsics.outer_steps,
     inner_steps=config.extrinsics.inner_steps,
+    lr=config.extrinsics.lr,
   )
 
   joint_state = global_joint_alignment(
@@ -394,6 +407,8 @@ def process_episode(episode_id, pb_renderer, extrinsics_db, device, config):
     chamfer_weight=config.extrinsics.chamfer_weight,
     robot_weight=config.extrinsics.robot_weight,
     chamfer_n_points=config.extrinsics.chamfer_n_points,
+    max_depth=config.extrinsics.max_depth,
+    match_radius=config.extrinsics.chamfer_match_radius,
   )
 
   export_extrinsics(episode, joint_state, export_root=config.paths.extrinsics)

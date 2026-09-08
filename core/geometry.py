@@ -32,8 +32,8 @@ def project_points(points_world, K, T_cam2world):
   return u, v, z_cam
 
 
-def unproject_depth(depth, img_rgb, K, T_cam2world=None, min_depth=0.0, max_depth=1.5):
-  mask = (depth > min_depth) & (depth < max_depth)
+def unproject_depth(depth, img_rgb, K, T_cam2world=None, max_depth=1.5):
+  mask = (depth > 0) & (depth < max_depth)
   v, u = np.where(mask)
   if T_cam2world is None:
     T_cam2world = np.eye(4)
