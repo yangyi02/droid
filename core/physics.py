@@ -3,8 +3,6 @@ import os
 
 import numpy as np
 import pybullet
-import torch
-import torch.nn.functional as F
 
 NEAR_PLANE = 0.01
 FAR_PLANE = 10.0
@@ -136,56 +134,3 @@ class PyBulletRenderer:
     obj_ids = seg_array & 0xFFFFFF
     link_ids = (seg_array >> 24) - 1
     return obj_ids, link_ids, metric
-
-
-def foreground_points(T_cam2world, K, depth, pb_renderer, n_points=2000, links=None):
-  """Robot surface the camera sees, in camera coordinates. links=None takes every link."""
-  height, width = depth.shape
-  _, link_ids, metric = pb_renderer.render_segmentation(T_cam2world, K, width, height)
-
-  visible = metric > 0
-  if links is not None:
-    visible &= np.isin(link_ids, links)
-
-  v_r, u_r = np.where(visible)
-  if len(u_r) < n_points:
-    return None
-
-  idx = np.random.choice(len(u_r), n_points, replace=False)
-  v_r, u_r = v_r[idx], u_r[idx]
-  z_r = metric[v_r, u_r]
-
-  return np.stack(
-    [(u_r - K[0, 2]) * z_r / K[0, 0], (v_r - K[1, 2]) * z_r / K[1, 1], z_r, np.ones_like(z_r)]
-  )
-
-
-def depth_loss_batched(points, T_cam2world, K, depth_batch, max_depth=1.5):
-  _, _, height, width = depth_batch.shape
-
-  P_c = (points - T_cam2world[:3, 3]) @ T_cam2world[:3, :3]
-  z_pred = P_c[..., 2]
-
-  u = K[0, 0] * P_c[..., 0] / z_pred + K[0, 2]
-  v = K[1, 1] * P_c[..., 1] / z_pred + K[1, 2]
-
-  grid = torch.stack([(u / (width - 1)) * 2 - 1, (v / (height - 1)) * 2 - 1], dim=-1).unsqueeze(1)
-
-  z_obs = (
-    F.grid_sample(depth_batch, grid, mode='bilinear', padding_mode='border', align_corners=True)
-    .squeeze(1)
-    .squeeze(1)
-  )
-
-  valid = (
-    (z_pred > 0.0)
-    & (z_pred < max_depth)
-    & (z_obs > 0.0)
-    & (z_obs < max_depth)
-    & (u >= 0)
-    & (u < width - 1)
-    & (v >= 0)
-    & (v < height - 1)
-  )
-
-  return torch.nan_to_num(torch.abs(z_obs[valid] - z_pred[valid]).mean(), nan=0.0)

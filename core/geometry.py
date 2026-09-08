@@ -10,13 +10,15 @@ def decode_disparity(disp, fx, baseline):
   return z
 
 
-def unproject_pixels(u, v, z, K, T_cam2world=None):
-  x_cam = (u - K[0, 2]) * z / K[0, 0]
-  y_cam = (v - K[1, 2]) * z / K[1, 1]
-  points_cam = np.stack([x_cam, y_cam, z, np.ones_like(z)], axis=0)
-  if T_cam2world is None:
-    return points_cam[:3, :].T
-  return (T_cam2world @ points_cam)[:3, :].T
+def unproject_camera_frame(u, v, z, K):
+  """Camera-frame points as a [4, N] homogeneous array, ready for a T_cam2world @ points."""
+  return np.stack(
+    [(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z, np.ones_like(z)], axis=0
+  )
+
+
+def unproject_pixels(u, v, z, K, T_cam2world):
+  return (T_cam2world @ unproject_camera_frame(u, v, z, K))[:3, :].T
 
 
 def project_points(points_world, K, T_cam2world):
@@ -32,13 +34,10 @@ def project_points(points_world, K, T_cam2world):
   return u, v, z_cam
 
 
-def unproject_depth(depth, img_rgb, K, T_cam2world=None, max_depth=1.5):
+def unproject_depth(depth, img_rgb, K, T_cam2world, max_depth=1.5):
   mask = (depth > 0) & (depth < max_depth)
   v, u = np.where(mask)
-  if T_cam2world is None:
-    T_cam2world = np.eye(4)
-  points_world = unproject_pixels(u, v, depth[mask], K, T_cam2world)
-  return points_world, img_rgb[mask]
+  return unproject_pixels(u, v, depth[mask], K, T_cam2world), img_rgb[mask]
 
 
 def unproject_depth_torch(depth, img_rgb, K, T_cam2world, device, max_depth=1.5):

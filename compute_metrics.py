@@ -2,6 +2,7 @@
 import csv
 import fcntl
 import glob
+import itertools
 import os
 import time
 
@@ -10,8 +11,8 @@ import torch
 from absl import app
 from ml_collections import config_flags
 
-import compute_extrinsics
 import config
+import core.alignment
 import core.geometry
 import core.io
 import core.physics
@@ -21,18 +22,27 @@ import core.runner
 @torch.no_grad()
 def evaluate_extrinsics(episode, poses, device, pb_renderer):
   """Stage 2's own objective, read once at the extrinsics it converged to."""
-  inputs = compute_extrinsics.alignment_inputs(episode, poses, pb_renderer, device)
-  chamfer, overlap, robot = compute_extrinsics.alignment_losses(inputs, inputs["base"])
+  wrist_cam_id = episode["meta"]["wrist_serial"]
+  cam_ids = [c for c in episode["camera"] if c != wrist_cam_id] + [wrist_cam_id]
+  pairs = list(itertools.combinations(cam_ids, 2))
+  base = {
+    c: torch.tensor(poses[c]["base_extrinsic"], dtype=torch.float32, device=device) for c in cam_ids
+  }
 
-  wrist_cam_id = inputs["wrist_cam_id"]
-  fixed_cam_ids = [c for c in inputs["cam_ids"] if c != wrist_cam_id]
+  robot_points, depth_batch, K = core.alignment.robot_clouds(episode, poses, pb_renderer, device)
+  env, ee_poses = core.alignment.scene_clouds(episode, device)
+
+  chamfer, overlap = core.alignment.chamfer_overlap(env, ee_poses, base, wrist_cam_id, pairs)
+  robot = core.alignment.robot_depth_loss(robot_points, depth_batch, K, base)
+
+  fixed_cam_ids = [c for c in cam_ids if c != wrist_cam_id]
   label = {c: str(i + 1) for i, c in enumerate(fixed_cam_ids)} | {wrist_cam_id: "w"}
   suffix = {c: f"cam{i + 1}" for i, c in enumerate(fixed_cam_ids)} | {wrist_cam_id: "wrist"}
 
   return (
-    {f"chamfer_{label[a]}{label[b]}": chamfer[a, b].item() for a, b in inputs["pairs"]}
-    | {f"overlap_{label[a]}{label[b]}": overlap[a, b].item() * 100 for a, b in inputs["pairs"]}
-    | {f"robot_loss_{suffix[cam_id]}": robot[cam_id].item() for cam_id in inputs["cam_ids"]}
+    {f"chamfer_{label[a]}{label[b]}": chamfer[a, b].item() for a, b in pairs}
+    | {f"overlap_{label[a]}{label[b]}": overlap[a, b].item() * 100 for a, b in pairs}
+    | {f"robot_loss_{suffix[cam_id]}": robot[cam_id].item() for cam_id in cam_ids}
   )
 
 
@@ -76,32 +86,6 @@ def depth_residual_per_camera(episode, poses, tracks_3d, per_cam_vis, n_static):
     per_camera[cam_id] = {"static": np.concatenate(cam_static), "robot": np.concatenate(cam_robot)}
 
   return per_camera
-
-
-def track_depth_consistency(episode, poses, tracks_3d, per_cam_vis, n_static):
-  per_camera = depth_residual_per_camera(episode, poses, tracks_3d, per_cam_vis, n_static)
-
-  def _stats(arrs):
-    concat = np.concatenate(arrs)
-    if len(concat) == 0:
-      return float("nan"), float("nan")
-    return float(np.median(concat)), float(np.mean(concat))
-
-  static_median, static_mean = _stats([v["static"] for v in per_camera.values()])
-  robot_median, robot_mean = _stats([v["robot"] for v in per_camera.values()])
-
-  return {
-    "depth_residual_static_median_mm": static_median,
-    "depth_residual_static_mean_mm": static_mean,
-    "depth_residual_robot_median_mm": robot_median,
-    "depth_residual_robot_mean_mm": robot_mean,
-  }
-
-
-def track_visibility_stats(per_cam_vis):
-  return {
-    f"vis_percent_{cam_id[:8]}": float(vis.mean() * 100) for cam_id, vis in per_cam_vis.items()
-  }
 
 
 def motion_stats(episode):
@@ -165,8 +149,19 @@ def episode_metrics(episode, poses, device, tracks_3d, per_cam_vis, n_static, n_
   metrics["n_total_tracks"] = n_static + n_robot
   metrics["n_track_frames"] = tracks_3d.shape[0]
 
-  metrics.update(track_depth_consistency(episode, poses, tracks_3d, per_cam_vis, n_static))
-  metrics.update(track_visibility_stats(per_cam_vis))
+  per_camera = depth_residual_per_camera(episode, poses, tracks_3d, per_cam_vis, n_static)
+  metrics.update(
+    {
+      f"depth_residual_{kind}_mean_mm_{cam_id[:8]}": (
+        float(v[kind].mean()) if len(v[kind]) else float("nan")
+      )
+      for cam_id, v in per_camera.items()
+      for kind in ("static", "robot")
+    }
+  )
+  metrics.update(
+    {f"vis_percent_{cam_id[:8]}": float(vis.mean() * 100) for cam_id, vis in per_cam_vis.items()}
+  )
 
   return metrics
 
@@ -211,10 +206,12 @@ def process_episode(episode_id, device, pb_renderer, csv_path, config):
   )
   _append_row(csv_path, metrics)
 
+  static_means = [v for k, v in metrics.items() if k.startswith("depth_residual_static_mean_mm_")]
+  robot_means = [v for k, v in metrics.items() if k.startswith("depth_residual_robot_mean_mm_")]
   print(
     f"  [OK] Done in {time.time() - t0:.1f}s | "
-    f"static={metrics['depth_residual_static_median_mm']:.1f}mm | "
-    f"robot={metrics['depth_residual_robot_median_mm']:.1f}mm"
+    f"static={np.mean(static_means):.1f}mm | "
+    f"robot={np.mean(robot_means):.1f}mm"
   )
 
 

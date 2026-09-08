@@ -11,6 +11,7 @@ from ml_collections import config_flags
 import torch.optim as optim
 
 import config
+import core.alignment
 import core.geometry
 import core.io
 import core.physics
@@ -53,40 +54,6 @@ def init_camera_states(episode, extrinsics_db):
   return poses
 
 
-def observed_depth(cam_data, device):
-  return torch.tensor(np.asarray(cam_data['raw_depth'], dtype=np.float32), device=device).unsqueeze(
-    1
-  )
-
-
-def extract_robot_clouds(cam_id, episode, pb_renderer, base_extrinsic, device, depth_batch):
-  is_wrist = cam_id == episode['meta']['wrist_serial']
-  T_ee_base_all = episode['robot']['T_ee_base_all']
-  cam_data = episode['camera'][cam_id]
-  K = cam_data['K']
-
-  cache_X, kept = [], []
-  n_frames = len(episode['robot']['joint_positions'])
-  for t in range(n_frames):
-    pb_renderer.update_robot_pose(
-      episode['robot']['joint_positions'][t], episode['robot']['gripper_positions'][t]
-    )
-    depth = cam_data['raw_depth'][t].astype(np.float32)
-
-    T_cam2world = T_ee_base_all[t] @ base_extrinsic if is_wrist else base_extrinsic
-    links = pb_renderer.gripper_links if is_wrist else None
-    points_cam = core.physics.foreground_points(T_cam2world, K, depth, pb_renderer, links=links)
-    if points_cam is None:
-      continue
-
-    cache_X.append(
-      torch.tensor((base_extrinsic @ points_cam)[:3, :].T, dtype=torch.float32, device=device)
-    )
-    kept.append(t)
-
-  return torch.stack(cache_X), depth_batch[kept]
-
-
 def per_camera_alignment(
   episode, pb_renderer, prev_poses, device, outer_steps=5, inner_steps=100, lr=0.001
 ):
@@ -101,11 +68,14 @@ def per_camera_alignment(
     mode = "wrist (gripper-only)" if is_wrist else "external (full body)"
     print(f"\n  Optimizing [{mode}] camera: [{cam_id}] ...")
 
-    K = torch.tensor(episode['camera'][cam_id]['K'], dtype=torch.float32, device=device)
+    cam_data = episode['camera'][cam_id]
+    K = torch.tensor(cam_data['K'], dtype=torch.float32, device=device)
     T_cam2mount_init = torch.tensor(
       prev_poses[cam_id]['base_extrinsic'], dtype=torch.float32, device=device
     )
-    depth_batch = observed_depth(episode['camera'][cam_id], device)
+    depth_full = torch.tensor(
+      np.asarray(cam_data['raw_depth'], dtype=np.float32), device=device
+    ).unsqueeze(1)
     delta = torch.zeros(6, requires_grad=True, device=device)
     optimizer = optim.Adam([delta], lr=lr)
     loss_rob = None
@@ -116,12 +86,12 @@ def per_camera_alignment(
         T_cam2mount = (
           (T_cam2mount_init @ core.geometry.pose_from_axis_angle(delta, device)).cpu().numpy()
         )
-      robot_points, depth_batch = extract_robot_clouds(
-        cam_id, episode, pb_renderer, T_cam2mount, device, depth_batch
+      robot_points, depth_batch = core.alignment.extract_robot_clouds(
+        cam_id, episode, pb_renderer, T_cam2mount, device, depth_full
       )
       for _ in range(inner_steps):
         optimizer.zero_grad()
-        loss_rob = core.physics.depth_loss_batched(
+        loss_rob = core.alignment.depth_loss_batched(
           robot_points,
           T_cam2mount_init @ core.geometry.pose_from_axis_angle(delta, device),
           K,
@@ -159,119 +129,6 @@ def per_camera_alignment(
   return poses
 
 
-def batched_chamfer_distance(p1, p2, match_radius=0.05):
-  dist = torch.cdist(p1, p2)
-  near_12 = dist.min(dim=2)[0]
-  near_21 = dist.min(dim=1)[0]
-
-  valid_12 = near_12 < match_radius
-  valid_21 = near_21 < match_radius
-  loss = (near_12 * valid_12).sum() / valid_12.sum().clamp(min=1)
-  loss = loss + (near_21 * valid_21).sum() / valid_21.sum().clamp(min=1)
-
-  overlap = (valid_12.sum() + valid_21.sum()) / (p1.shape[0] * (p1.shape[1] + p2.shape[1]))
-  return loss, overlap
-
-
-def camera_frame_points(t, cam_data, device, n_points=2000, max_depth=1.5):
-  depth = cam_data["raw_depth"][t].astype(np.float32)
-  K = cam_data["K"]
-
-  valid_mask = (depth > 0.0) & (depth < max_depth)
-  vs, us = np.where(valid_mask)
-  if len(us) < 100:
-    return None
-
-  z_obs = depth[vs, us]
-  x_c = (us - K[0, 2]) * z_obs / K[0, 0]
-  y_c = (vs - K[1, 2]) * z_obs / K[1, 1]
-
-  points_cam = np.stack([x_c, y_c, z_obs, np.ones_like(z_obs)], axis=0)
-  if points_cam.shape[1] < 100:
-    return None
-
-  idx = np.random.choice(points_cam.shape[1], n_points, replace=(points_cam.shape[1] <= n_points))
-  return torch.tensor(points_cam[:, idx], dtype=torch.float32, device=device)
-
-
-def alignment_inputs(
-  episode, poses, pb_renderer, device, chamfer_n_points=2000, max_depth=1.5, match_radius=0.05
-):
-  """The clouds and calibration the alignment loss reads, at one set of base extrinsics."""
-  wrist_cam_id = episode['meta']['wrist_serial']
-  cam_ids = [c for c in episode['camera'] if c != wrist_cam_id] + [wrist_cam_id]
-  n_frames = len(episode['robot']['joint_positions'])
-  T_ee2base = episode['robot']['T_ee_base_all']
-
-  robot_points, depth_batch, K, base = {}, {}, {}, {}
-  for cam_id in cam_ids:
-    cam_data = episode['camera'][cam_id]
-    robot_points[cam_id], depth_batch[cam_id] = extract_robot_clouds(
-      cam_id,
-      episode,
-      pb_renderer,
-      poses[cam_id]['base_extrinsic'],
-      device,
-      observed_depth(cam_data, device),
-    )
-    K[cam_id] = torch.tensor(cam_data['K'], dtype=torch.float32, device=device)
-    base[cam_id] = torch.tensor(poses[cam_id]['base_extrinsic'], dtype=torch.float32, device=device)
-
-  cache = {cam_id: [] for cam_id in cam_ids}
-  cache_ee = []
-  for t in range(n_frames):
-    frame = {
-      cam_id: camera_frame_points(t, episode['camera'][cam_id], device, chamfer_n_points, max_depth)
-      for cam_id in cam_ids
-    }
-    if all(points is not None for points in frame.values()):
-      for cam_id in cam_ids:
-        cache[cam_id].append(frame[cam_id])
-      cache_ee.append(torch.tensor(T_ee2base[t], dtype=torch.float32, device=device))
-
-  return {
-    'cam_ids': cam_ids,
-    'wrist_cam_id': wrist_cam_id,
-    'pairs': list(itertools.combinations(cam_ids, 2)),
-    'base': base,
-    'K': K,
-    'robot_points': robot_points,
-    'depth_batch': depth_batch,
-    'env': {cam_id: torch.stack(cache[cam_id]) for cam_id in cam_ids},
-    'ee_poses': torch.stack(cache_ee),
-    'max_depth': max_depth,
-    'match_radius': match_radius,
-  }
-
-
-def alignment_losses(inputs, pose):
-  """Chamfer and overlap per camera pair, robot depth loss per camera, at one pose."""
-  world = {}
-  for cam_id in inputs['cam_ids']:
-    to_world = (
-      inputs['ee_poses'] @ pose[cam_id] if cam_id == inputs['wrist_cam_id'] else pose[cam_id]
-    )
-    world[cam_id] = (to_world @ inputs['env'][cam_id])[:, :3, :].transpose(1, 2)
-
-  chamfer, overlap = {}, {}
-  for a, b in inputs['pairs']:
-    chamfer[a, b], overlap[a, b] = batched_chamfer_distance(
-      world[a], world[b], inputs['match_radius']
-    )
-
-  robot = {
-    cam_id: core.physics.depth_loss_batched(
-      inputs['robot_points'][cam_id],
-      pose[cam_id],
-      inputs['K'][cam_id],
-      inputs['depth_batch'][cam_id],
-    )
-    for cam_id in inputs['cam_ids']
-  }
-
-  return chamfer, overlap, robot
-
-
 def global_joint_alignment(
   episode,
   prev_poses,
@@ -286,10 +143,19 @@ def global_joint_alignment(
   match_radius=0.05,
 ):
   print(f"\nGlobal joint optimization (Chamfer + Robot + Wrist, lr={lr})...")
-  inputs = alignment_inputs(
-    episode, prev_poses, pb_renderer, device, chamfer_n_points, max_depth, match_radius
+  wrist_cam_id = episode['meta']['wrist_serial']
+  cam_ids = [c for c in episode['camera'] if c != wrist_cam_id] + [wrist_cam_id]
+  pairs = list(itertools.combinations(cam_ids, 2))
+  base = {
+    c: torch.tensor(prev_poses[c]['base_extrinsic'], dtype=torch.float32, device=device)
+    for c in cam_ids
+  }
+
+  robot_points, depth_batch, K = core.alignment.robot_clouds(
+    episode, prev_poses, pb_renderer, device
   )
-  cam_ids, pairs, wrist_cam_id = inputs['cam_ids'], inputs['pairs'], inputs['wrist_cam_id']
+  env, ee_poses = core.alignment.scene_clouds(episode, device, chamfer_n_points, max_depth)
+
   fixed_cam_ids = [c for c in cam_ids if c != wrist_cam_id]
   label = {c: str(i + 1) for i, c in enumerate(fixed_cam_ids)} | {wrist_cam_id: "W"}
 
@@ -301,10 +167,13 @@ def global_joint_alignment(
     optimizer.zero_grad()
 
     pose = {
-      cam_id: inputs['base'][cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id], device)
+      cam_id: base[cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id], device)
       for cam_id in cam_ids
     }
-    chamfer, overlap, robot = alignment_losses(inputs, pose)
+    chamfer, overlap = core.alignment.chamfer_overlap(
+      env, ee_poses, pose, wrist_cam_id, pairs, match_radius
+    )
+    robot = core.alignment.robot_depth_loss(robot_points, depth_batch, K, pose, max_depth)
 
     loss_total = chamfer_weight * sum(chamfer.values()) + robot_weight * sum(robot.values())
     loss_total.backward()
@@ -324,7 +193,7 @@ def global_joint_alignment(
 
   with torch.no_grad():
     final = {
-      cam_id: (inputs['base'][cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id], device))
+      cam_id: (base[cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id], device))
       .cpu()
       .numpy()
       for cam_id in cam_ids
