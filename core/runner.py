@@ -1,5 +1,4 @@
 import os
-import random
 
 
 def list_episode_dirs(root):
@@ -7,9 +6,8 @@ def list_episode_dirs(root):
   return set(os.listdir(root)) if os.path.isdir(root) else set()
 
 
-def shard_episodes(episode_ids, rank, world_size, limit=-1, seed=42):
+def shard_episodes(episode_ids, rank, world_size, limit=-1):
   episode_ids = sorted(episode_ids)
-  random.Random(seed).shuffle(episode_ids)
   if limit > 0:
     episode_ids = episode_ids[:limit]
   return episode_ids[rank::world_size]
