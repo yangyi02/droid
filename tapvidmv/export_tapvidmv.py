@@ -54,18 +54,18 @@ def _sample_queries(per_cam_vis, per_cam_tracks, view_index_map, seed=42):
   return queries
 
 
-def _filter_always_invisible_tracks(final_traj_3d, per_cam_tracks, per_cam_vis, cam_ids):
-  F, P, _ = final_traj_3d.shape
+def _filter_always_invisible_tracks(traj_3d, per_cam_tracks, per_cam_vis, cam_ids):
+  F, P, _ = traj_3d.shape
   any_visible = np.zeros(P, dtype=bool)
   for cam_id in cam_ids:
     any_visible |= per_cam_vis[cam_id].any(axis=0)
 
   if any_visible.all():
-    return final_traj_3d, per_cam_tracks, per_cam_vis, any_visible
+    return traj_3d, per_cam_tracks, per_cam_vis, any_visible
 
   n_kept = any_visible.sum()
   print(f"  Filtering tracks: {P} → {n_kept} ({P - n_kept} never-visible tracks removed)")
-  filtered_traj = final_traj_3d[:, any_visible, :]
+  filtered_traj = traj_3d[:, any_visible, :]
   filtered_tracks = {c: per_cam_tracks[c][:, any_visible, :] for c in cam_ids}
   filtered_vis = {c: per_cam_vis[c][:, any_visible] for c in cam_ids}
   return filtered_traj, filtered_tracks, filtered_vis, any_visible
@@ -74,9 +74,9 @@ def _filter_always_invisible_tracks(final_traj_3d, per_cam_tracks, per_cam_vis, 
 def export_to_tapvid3d(
   episode,
   poses,
-  final_traj_3d,
-  final_per_cam_tracks,
-  final_per_cam_vis,
+  traj_3d,
+  per_cam_tracks,
+  per_cam_vis,
   output_root=config.paths.tapvidmv,
   include_depth=True,
   include_foreground_mask=True,
@@ -86,16 +86,16 @@ def export_to_tapvid3d(
   episode_id = episode["meta"]["episode_id"]
   wrist_cam_id = episode["meta"].get("wrist_serial")
   cam_ids = sorted(episode["camera"].keys())
-  F = final_traj_3d.shape[0]
+  F = traj_3d.shape[0]
 
   view_index_map = {cam_id: i for i, cam_id in enumerate(cam_ids)}
 
   print(f"\nExporting episode [{episode_id}] to TAPVid-3D format")
-  print(f"  Views: {len(cam_ids)} | Frames: {F} | Points: {final_traj_3d.shape[1]}")
+  print(f"  Views: {len(cam_ids)} | Frames: {F} | Points: {traj_3d.shape[1]}")
   print(f"  View index map: {view_index_map}")
 
   traj_3d, cam_tracks, cam_vis, _ = _filter_always_invisible_tracks(
-    final_traj_3d, final_per_cam_tracks, final_per_cam_vis, cam_ids
+    traj_3d, per_cam_tracks, per_cam_vis, cam_ids
   )
   P = traj_3d.shape[1]
 
@@ -162,22 +162,22 @@ def process_episode(episode_id, args):
 
   tracks_dir = os.path.abspath(os.path.expanduser(os.path.join(args.tracks_root, episode_id)))
   data_3d = np.load(os.path.join(tracks_dir, "tracks_3d.npz"))
-  final_traj_3d = data_3d["traj_3d"]
+  traj_3d = data_3d["traj_3d"]
 
   cam_ids = sorted(episode["camera"].keys())
-  final_per_cam_tracks = {}
-  final_per_cam_vis = {}
+  per_cam_tracks = {}
+  per_cam_vis = {}
   for cam_id in cam_ids:
     d = np.load(os.path.join(tracks_dir, cam_id, "tracks_2d.npz"))
-    final_per_cam_tracks[cam_id] = d["traj_2d"]
-    final_per_cam_vis[cam_id] = d["vis_2d"]
+    per_cam_tracks[cam_id] = d["traj_2d"]
+    per_cam_vis[cam_id] = d["vis_2d"]
 
   export_to_tapvid3d(
     episode=episode,
     poses=poses,
-    final_traj_3d=final_traj_3d,
-    final_per_cam_tracks=final_per_cam_tracks,
-    final_per_cam_vis=final_per_cam_vis,
+    traj_3d=traj_3d,
+    per_cam_tracks=per_cam_tracks,
+    per_cam_vis=per_cam_vis,
     output_root=args.output_root,
     include_depth=not args.no_depth,
     include_foreground_mask=not args.no_foreground_mask,
