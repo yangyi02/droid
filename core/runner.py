@@ -8,10 +8,11 @@ def list_episode_dirs(root):
 
 
 def shard_episodes(episode_ids, rank, world_size, limit=-1):
-  episode_ids = sorted(episode_ids)[rank::world_size]
-  random.shuffle(episode_ids)
+  episode_ids = sorted(episode_ids)
   if limit > 0:
-    episode_ids = episode_ids[: max(1, limit // world_size)]
+    episode_ids = episode_ids[:: max(1, len(episode_ids) // limit)][:limit]
+  episode_ids = episode_ids[rank::world_size]
+  random.shuffle(episode_ids)
   return episode_ids
 
 
