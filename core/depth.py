@@ -50,20 +50,20 @@ def compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, conf_
 
 
 def extract_single_frame_mask(img_rgb, predictor):
-  h, w = img_rgb.shape[:2]
+  height, width = img_rgb.shape[:2]
 
   points = np.array(
     [
-      [w // 2 - 120, h - 110],
-      [w // 2 + 500, h - 110],
-      [w // 2 - 250, h - 25],
-      [w // 2 + 450, h - 25],
-      [w // 2 + 100, h - 15],
-      [w // 2 + 100, h - 300],
+      [width // 2 - 120, height - 110],
+      [width // 2 + 500, height - 110],
+      [width // 2 - 250, height - 25],
+      [width // 2 + 450, height - 25],
+      [width // 2 + 100, height - 15],
+      [width // 2 + 100, height - 300],
     ]
   )
   labels = np.array([1, 1, 1, 1, 1, 0])
-  bbox = np.array([0, h // 2, w, h])
+  bbox = np.array([0, height // 2, width, height])
 
   predictor.set_image(img_rgb)
   masks, scores, _ = predictor.predict(
@@ -72,7 +72,7 @@ def extract_single_frame_mask(img_rgb, predictor):
 
   valid_masks, valid_scores = [], []
   for m, s in zip(masks, scores):
-    area_ratio = np.sum(m) / (w * h)
+    area_ratio = np.sum(m) / (width * height)
     if 0.02 < area_ratio < 0.45:
       valid_masks.append(m)
       valid_scores.append(s * area_ratio)
@@ -89,10 +89,8 @@ def compute_consensus_mask(masks_list, consensus_thresh=0.5):
   vote_map = np.mean(masks_list, axis=0)
   consensus_mask = vote_map >= consensus_thresh
 
-  num_labels, labels_map, stats, _ = cv2.connectedComponentsWithStats(
-    consensus_mask.astype(np.uint8)
-  )
-  if num_labels > 1:
+  n_labels, labels_map, stats, _ = cv2.connectedComponentsWithStats(consensus_mask.astype(np.uint8))
+  if n_labels > 1:
     largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
     consensus_mask = labels_map == largest_label
 
@@ -123,10 +121,10 @@ def distill_empirical_gripper_depth(episode, max_depth_thresh=0.15):
   cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
   gripper_states = episode["robot"]["gripper_positions"]
   closed_indices = np.where(gripper_states < 0.05)[0]
-  h, w = cam_data["video_rgb"][0].shape[:2]
-  num_frames = len(closed_indices)
+  height, width = cam_data["video_rgb"][0].shape[:2]
+  n_frames = len(closed_indices)
 
-  depth_bank = np.full((num_frames, h, w), np.nan, dtype=np.float32)
+  depth_bank = np.full((n_frames, height, width), np.nan, dtype=np.float32)
 
   for i, idx in enumerate(tqdm(closed_indices, desc="Depth collect")):
     raw_depth = cam_data["raw_depth"][idx].astype(np.float32)
@@ -135,7 +133,7 @@ def distill_empirical_gripper_depth(episode, max_depth_thresh=0.15):
     depth_bank[i, valid_pixels] = raw_depth[valid_pixels]
 
   observed = ~np.isnan(depth_bank).all(axis=0)
-  median_depth = np.zeros((h, w), dtype=np.float32)
+  median_depth = np.zeros((height, width), dtype=np.float32)
   median_depth[observed] = np.nanmedian(depth_bank[:, observed], axis=0)
   cam_data["empirical_gripper_depth"] = median_depth
 

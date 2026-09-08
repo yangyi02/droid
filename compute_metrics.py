@@ -25,9 +25,9 @@ def evaluate_extrinsics(episode, poses, device, pb_renderer):
   chamfer, overlap, robot = compute_extrinsics.alignment_losses(inputs, inputs["base"])
 
   wrist_cam_id = inputs["wrist_cam_id"]
-  ext_cam_ids = [c for c in inputs["cam_ids"] if c != wrist_cam_id]
-  label = {c: str(i + 1) for i, c in enumerate(ext_cam_ids)} | {wrist_cam_id: "w"}
-  suffix = {c: f"cam{i + 1}" for i, c in enumerate(ext_cam_ids)} | {wrist_cam_id: "wrist"}
+  fixed_cam_ids = [c for c in inputs["cam_ids"] if c != wrist_cam_id]
+  label = {c: str(i + 1) for i, c in enumerate(fixed_cam_ids)} | {wrist_cam_id: "w"}
+  suffix = {c: f"cam{i + 1}" for i, c in enumerate(fixed_cam_ids)} | {wrist_cam_id: "wrist"}
 
   return (
     {f"chamfer_{label[a]}{label[b]}": chamfer[a, b].item() for a, b in inputs["pairs"]}
@@ -36,24 +36,24 @@ def evaluate_extrinsics(episode, poses, device, pb_renderer):
   )
 
 
-def depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
-  u_proj, v_proj, z_proj = core.geometry.project_points(pts_3d, K, extrinsics)
-  ui = np.clip(np.round(u_proj).astype(int), 0, w_img - 1)
-  vi = np.clip(np.round(v_proj).astype(int), 0, h_img - 1)
+def depth_residual_mm(points_3d, K, extrinsics, raw_depth, width, height):
+  u_proj, v_proj, z_proj = core.geometry.project_points(points_3d, K, extrinsics)
+  ui = np.clip(np.round(u_proj).astype(int), 0, width - 1)
+  vi = np.clip(np.round(v_proj).astype(int), 0, height - 1)
   z_obs = raw_depth[vi, ui]
   valid = (z_obs > 0) & (z_proj > 0)
   return np.abs(z_proj[valid] - z_obs[valid]).astype(np.float32) * 1000.0
 
 
-def depth_residual_per_camera(episode, poses, traj_3d, per_cam_vis, n_static):
+def depth_residual_per_camera(episode, poses, tracks_3d, per_cam_vis, n_static):
   cam_ids = list(episode["camera"].keys())
-  n_frames = traj_3d.shape[0]
+  n_frames = tracks_3d.shape[0]
 
   per_camera = {}
   for cam_id in cam_ids:
     cam_data = episode["camera"][cam_id]
     K = cam_data["K"]
-    h_img, w_img = cam_data["raw_depth"][0].shape[:2]
+    height, width = cam_data["raw_depth"][0].shape[:2]
 
     cam_static, cam_robot = [], []
 
@@ -63,10 +63,14 @@ def depth_residual_per_camera(episode, poses, traj_3d, per_cam_vis, n_static):
       vis_t = per_cam_vis[cam_id][t]
 
       cam_static.append(
-        depth_residual_mm(traj_3d[t, :n_static][vis_t[:n_static]], K, ext, raw_depth, w_img, h_img)
+        depth_residual_mm(
+          tracks_3d[t, :n_static][vis_t[:n_static]], K, ext, raw_depth, width, height
+        )
       )
       cam_robot.append(
-        depth_residual_mm(traj_3d[t, n_static:][vis_t[n_static:]], K, ext, raw_depth, w_img, h_img)
+        depth_residual_mm(
+          tracks_3d[t, n_static:][vis_t[n_static:]], K, ext, raw_depth, width, height
+        )
       )
 
     per_camera[cam_id] = {"static": np.concatenate(cam_static), "robot": np.concatenate(cam_robot)}
@@ -74,8 +78,8 @@ def depth_residual_per_camera(episode, poses, traj_3d, per_cam_vis, n_static):
   return per_camera
 
 
-def track_depth_consistency(episode, poses, traj_3d, per_cam_vis, n_static):
-  per_camera = depth_residual_per_camera(episode, poses, traj_3d, per_cam_vis, n_static)
+def track_depth_consistency(episode, poses, tracks_3d, per_cam_vis, n_static):
+  per_camera = depth_residual_per_camera(episode, poses, tracks_3d, per_cam_vis, n_static)
 
   def _stats(arrs):
     concat = np.concatenate(arrs)
@@ -83,19 +87,21 @@ def track_depth_consistency(episode, poses, traj_3d, per_cam_vis, n_static):
       return float("nan"), float("nan")
     return float(np.median(concat)), float(np.mean(concat))
 
-  s_med, s_mean = _stats([v["static"] for v in per_camera.values()])
-  r_med, r_mean = _stats([v["robot"] for v in per_camera.values()])
+  static_median, static_mean = _stats([v["static"] for v in per_camera.values()])
+  robot_median, robot_mean = _stats([v["robot"] for v in per_camera.values()])
 
   return {
-    "depth_residual_static_median_mm": s_med,
-    "depth_residual_static_mean_mm": s_mean,
-    "depth_residual_robot_median_mm": r_med,
-    "depth_residual_robot_mean_mm": r_mean,
+    "depth_residual_static_median_mm": static_median,
+    "depth_residual_static_mean_mm": static_mean,
+    "depth_residual_robot_median_mm": robot_median,
+    "depth_residual_robot_mean_mm": robot_mean,
   }
 
 
 def track_visibility_stats(per_cam_vis):
-  return {f"vis_pct_{cam_id[:8]}": float(vis.mean() * 100) for cam_id, vis in per_cam_vis.items()}
+  return {
+    f"vis_percent_{cam_id[:8]}": float(vis.mean() * 100) for cam_id, vis in per_cam_vis.items()
+  }
 
 
 def motion_stats(episode):
@@ -140,14 +146,14 @@ def robot_coverage(episode, poses, pb_renderer):
 
   coverage = {}
   for cam_id, cam_data in episode["camera"].items():
-    h_img, w_img = cam_data["raw_depth"][0].shape
-    mask = pb_renderer.render_mask(poses[cam_id]["extrinsics"][0], cam_data["K"], w_img, h_img)
-    coverage[f"robot_pct_{cam_id[:8]}"] = float(mask.mean() * 100)
+    height, width = cam_data["raw_depth"][0].shape
+    mask = pb_renderer.render_mask(poses[cam_id]["extrinsics"][0], cam_data["K"], width, height)
+    coverage[f"robot_percent_{cam_id[:8]}"] = float(mask.mean() * 100)
 
   return coverage
 
 
-def episode_metrics(episode, poses, device, traj_3d, per_cam_vis, n_static, n_robot, pb_renderer):
+def episode_metrics(episode, poses, device, tracks_3d, per_cam_vis, n_static, n_robot, pb_renderer):
   metrics = {"episode_id": episode["meta"]["episode_id"]}
   metrics.update(scene_metadata(episode))
   metrics.update(robot_coverage(episode, poses, pb_renderer))
@@ -157,9 +163,9 @@ def episode_metrics(episode, poses, device, traj_3d, per_cam_vis, n_static, n_ro
   metrics["n_static"] = n_static
   metrics["n_robot"] = n_robot
   metrics["n_total_tracks"] = n_static + n_robot
-  metrics["n_track_frames"] = traj_3d.shape[0]
+  metrics["n_track_frames"] = tracks_3d.shape[0]
 
-  metrics.update(track_depth_consistency(episode, poses, traj_3d, per_cam_vis, n_static))
+  metrics.update(track_depth_consistency(episode, poses, tracks_3d, per_cam_vis, n_static))
   metrics.update(track_visibility_stats(per_cam_vis))
 
   return metrics
@@ -171,16 +177,16 @@ def load_track_data(episode_id, tracks_root):
   tracks_data = np.load(os.path.join(ep_dir, "tracks_3d.npz"))
   meta_data = np.load(os.path.join(ep_dir, "track_metadata.npz"))
 
-  per_cam_tracks, per_cam_vis = {}, {}
-  for vis_path in sorted(glob.glob(os.path.join(ep_dir, "*", "tracks_2d.npz"))):
-    cam_id = os.path.basename(os.path.dirname(vis_path))
-    cam_data = np.load(vis_path)
-    per_cam_tracks[cam_id] = cam_data["traj_2d"]
+  per_cam_tracks_2d, per_cam_vis = {}, {}
+  for tracks_path in sorted(glob.glob(os.path.join(ep_dir, "*", "tracks_2d.npz"))):
+    cam_id = os.path.basename(os.path.dirname(tracks_path))
+    cam_data = np.load(tracks_path)
+    per_cam_tracks_2d[cam_id] = cam_data["traj_2d"]
     per_cam_vis[cam_id] = cam_data["vis_2d"]
 
   return {
     "traj_3d": tracks_data["traj_3d"],
-    "per_cam_tracks": per_cam_tracks,
+    "per_cam_tracks_2d": per_cam_tracks_2d,
     "per_cam_vis": per_cam_vis,
     "n_static": int(meta_data["n_static"]),
     "n_robot": int(meta_data["n_robot"]),

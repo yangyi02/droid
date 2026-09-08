@@ -69,20 +69,20 @@ class PyBulletRenderer:
       for i, sign in zip(self.gripper_joints, self.gripper_signs):
         pybullet.resetJointState(self.robot_id, i, angle * sign)
 
-  def _get_projection_matrix(self, K, w, h, near=0.01, far=10.0):
+  def _get_projection_matrix(self, K, width, height, near=0.01, far=10.0):
     fx, fy = K[0, 0], K[1, 1]
     cx, cy = K[0, 2], K[1, 2]
     return [
-      2.0 * fx / w,
+      2.0 * fx / width,
       0.0,
       0.0,
       0.0,
       0.0,
-      2.0 * fy / h,
+      2.0 * fy / height,
       0.0,
       0.0,
-      1.0 - 2.0 * cx / w,
-      2.0 * cy / h - 1.0,
+      1.0 - 2.0 * cx / width,
+      2.0 * cy / height - 1.0,
       (far + near) / (near - far),
       -1.0,
       0.0,
@@ -91,15 +91,15 @@ class PyBulletRenderer:
       0.0,
     ]
 
-  def _render_raw(self, T_cam2world, K, w, h):
+  def _render_raw(self, T_cam2world, K, width, height):
     cam_pos = T_cam2world[:3, 3]
     view_matrix = pybullet.computeViewMatrix(
       cam_pos.tolist(), (cam_pos + T_cam2world[:3, 2]).tolist(), (-T_cam2world[:3, 1]).tolist()
     )
-    proj_matrix = self._get_projection_matrix(K, w, h)
+    proj_matrix = self._get_projection_matrix(K, width, height)
     _, _, _, depth_buf, seg_buf = pybullet.getCameraImage(
-      w,
-      h,
+      width,
+      height,
       viewMatrix=view_matrix,
       projectionMatrix=proj_matrix,
       renderer=self.render_mode,
@@ -107,29 +107,29 @@ class PyBulletRenderer:
     )
     return depth_buf, seg_buf
 
-  def render_depth(self, T_cam2world, K, w, h):
-    depth_buf, _ = self._render_raw(T_cam2world, K, w, h)
-    metric = 0.1 / (10.0 - 9.99 * np.reshape(depth_buf, (h, w)))
+  def render_depth(self, T_cam2world, K, width, height):
+    depth_buf, _ = self._render_raw(T_cam2world, K, width, height)
+    metric = 0.1 / (10.0 - 9.99 * np.reshape(depth_buf, (height, width)))
     return np.where(metric < 9.9, metric, 0.0)
 
-  def render_mask(self, T_cam2world, K, w, h):
-    _, seg_buf = self._render_raw(T_cam2world, K, w, h)
-    seg_array = np.reshape(seg_buf, (h, w)).astype(np.int32)
+  def render_mask(self, T_cam2world, K, width, height):
+    _, seg_buf = self._render_raw(T_cam2world, K, width, height)
+    seg_array = np.reshape(seg_buf, (height, width)).astype(np.int32)
     return (seg_array & 0xFFFFFF) == self.robot_id
 
-  def render_segmentation(self, T_cam2world, K, w, h):
-    depth_buf, seg_buf = self._render_raw(T_cam2world, K, w, h)
-    metric = 0.1 / (10.0 - 9.99 * np.reshape(depth_buf, (h, w)))
+  def render_segmentation(self, T_cam2world, K, width, height):
+    depth_buf, seg_buf = self._render_raw(T_cam2world, K, width, height)
+    metric = 0.1 / (10.0 - 9.99 * np.reshape(depth_buf, (height, width)))
     metric = np.where(metric < 9.9, metric, 0.0)
-    seg_array = np.reshape(seg_buf, (h, w)).astype(np.int32)
+    seg_array = np.reshape(seg_buf, (height, width)).astype(np.int32)
     obj_ids = seg_array & 0xFFFFFF
     link_ids = (seg_array >> 24) - 1
     return obj_ids, link_ids, metric
 
 
 def get_foreground_robot_points(T_cam2world, K, depth, pb_renderer, device, n_points=2000):
-  h_img, w_img = depth.shape
-  render_d = pb_renderer.render_depth(T_cam2world, K, w_img, h_img)
+  height, width = depth.shape
+  render_d = pb_renderer.render_depth(T_cam2world, K, width, height)
 
   v_r, u_r = np.where(render_d > 0)
   if len(u_r) < n_points:
@@ -139,33 +139,33 @@ def get_foreground_robot_points(T_cam2world, K, depth, pb_renderer, device, n_po
   v_r, u_r = v_r[idx], u_r[idx]
   z_r = render_d[v_r, u_r]
 
-  P_cam_r = np.stack(
+  points_cam = np.stack(
     [(u_r - K[0, 2]) * z_r / K[0, 0], (v_r - K[1, 2]) * z_r / K[1, 1], z_r, np.ones_like(z_r)]
   )
-  return torch.tensor((T_cam2world @ P_cam_r)[:3, :].T, dtype=torch.float32, device=device)
+  return torch.tensor((T_cam2world @ points_cam)[:3, :].T, dtype=torch.float32, device=device)
 
 
 def get_foreground_gripper_points(T_cam2world, K, depth, pb_renderer, device, n_points=2000):
-  h_img, w_img = depth.shape
+  height, width = depth.shape
 
   cam_pos = T_cam2world[:3, 3]
   target_pos = T_cam2world[:3, 3] + T_cam2world[:3, 2]
   view_matrix = pybullet.computeViewMatrix(
     cam_pos.tolist(), target_pos.tolist(), (-T_cam2world[:3, 1]).tolist()
   )
-  proj_matrix = pb_renderer._get_projection_matrix(K, w_img, h_img)
+  proj_matrix = pb_renderer._get_projection_matrix(K, width, height)
 
   _, _, _, depth_buffer, seg_buffer = pybullet.getCameraImage(
-    w_img,
-    h_img,
+    width,
+    height,
     viewMatrix=view_matrix,
     projectionMatrix=proj_matrix,
     renderer=pb_renderer.render_mode,
     flags=pybullet.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
   )
 
-  metric_depth = 0.1 / (10.0 - 9.99 * np.reshape(depth_buffer, (h_img, w_img)))
-  seg_array = np.reshape(seg_buffer, (h_img, w_img)).astype(np.int32)
+  metric_depth = 0.1 / (10.0 - 9.99 * np.reshape(depth_buffer, (height, width)))
+  seg_array = np.reshape(seg_buffer, (height, width)).astype(np.int32)
   link_ids = (seg_array >> 24) - 1
   valid_gripper = np.isin(link_ids, pb_renderer.gripper_links)
 
@@ -174,40 +174,40 @@ def get_foreground_gripper_points(T_cam2world, K, depth, pb_renderer, device, n_
   if len(z_r) < 100:
     return None
 
-  P_cam_r = np.stack(
+  points_cam = np.stack(
     [(u_r - K[0, 2]) * z_r / K[0, 0], (v_r - K[1, 2]) * z_r / K[1, 1], z_r, np.ones_like(z_r)]
   )
 
   idx = np.random.choice(len(z_r), n_points, replace=(len(z_r) < n_points))
-  return P_cam_r[:, idx]
+  return points_cam[:, idx]
 
 
-def depth_loss_batched(points, T_cam2world, K, batch_obs):
-  _, _, h_img, w_img = batch_obs.shape
+def depth_loss_batched(points, T_cam2world, K, depth_batch):
+  _, _, height, width = depth_batch.shape
 
   P_c = (points - T_cam2world[:3, 3]) @ T_cam2world[:3, :3]
-  Z_pred = P_c[..., 2]
+  z_pred = P_c[..., 2]
 
-  u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]
-  v = K[1, 1] * P_c[..., 1] / Z_pred + K[1, 2]
+  u = K[0, 0] * P_c[..., 0] / z_pred + K[0, 2]
+  v = K[1, 1] * P_c[..., 1] / z_pred + K[1, 2]
 
-  grid = torch.stack([(u / (w_img - 1)) * 2 - 1, (v / (h_img - 1)) * 2 - 1], dim=-1).unsqueeze(1)
+  grid = torch.stack([(u / (width - 1)) * 2 - 1, (v / (height - 1)) * 2 - 1], dim=-1).unsqueeze(1)
 
-  Z_obs = (
-    F.grid_sample(batch_obs, grid, mode='bilinear', padding_mode='border', align_corners=True)
+  z_obs = (
+    F.grid_sample(depth_batch, grid, mode='bilinear', padding_mode='border', align_corners=True)
     .squeeze(1)
     .squeeze(1)
   )
 
   valid = (
-    (Z_pred > 0.0)
-    & (Z_pred < 1.5)
-    & (Z_obs > 0.0)
-    & (Z_obs < 1.5)
+    (z_pred > 0.0)
+    & (z_pred < 1.5)
+    & (z_obs > 0.0)
+    & (z_obs < 1.5)
     & (u >= 0)
-    & (u < w_img - 1)
+    & (u < width - 1)
     & (v >= 0)
-    & (v < h_img - 1)
+    & (v < height - 1)
   )
 
-  return torch.nan_to_num(torch.abs(Z_obs[valid] - Z_pred[valid]).mean(), nan=0.0)
+  return torch.nan_to_num(torch.abs(z_obs[valid] - z_pred[valid]).mean(), nan=0.0)

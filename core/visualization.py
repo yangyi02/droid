@@ -29,8 +29,8 @@ def inspect_dict_structure(data, name="episode", indent=0):
 
 
 def show_plotly_point_cloud(
-  pts,
-  cols,
+  points,
+  colors,
   title="3D Point Cloud",
   max_points=150000,
   eye_pos=(-1.5, -1.5, 1.0),
@@ -38,8 +38,8 @@ def show_plotly_point_cloud(
   width=1000,
   renderer=None,
 ):
-  idx = np.random.permutation(len(pts))[:max_points]
-  p, c = pts[idx], cols[idx]
+  idx = np.random.permutation(len(points))[:max_points]
+  p, c = points[idx], colors[idx]
   fig = go.Figure(
     data=[
       go.Scatter3d(
@@ -87,8 +87,8 @@ def show_fused_point_cloud(episode, poses, t=0, use_tint=False, height=600, widt
     fused_colors.append(colors_rgb)
 
   show_plotly_point_cloud(
-    pts=np.vstack(fused_points),
-    cols=np.vstack(fused_colors),
+    points=np.vstack(fused_points),
+    colors=np.vstack(fused_colors),
     title=f"Fused Point Cloud (Frame {t})" + (" [Tinted]" if use_tint else ""),
     max_points=150000,
     eye_pos=(-1.2, -1.2, 0.8),
@@ -97,20 +97,20 @@ def show_fused_point_cloud(episode, poses, t=0, use_tint=False, height=600, widt
   )
 
 
-def show_distilled_gripper_3d(median_depth, K, rgb_img):
+def show_distilled_gripper_3d(median_depth, K, img_rgb):
   v, u = np.where(median_depth > 0)
   z = median_depth[v, u]
   x = (u - K[0, 2]) * z / K[0, 0]
   y = (v - K[1, 2]) * z / K[1, 1]
-  pts_3d = np.stack([x, y, z], axis=-1)
+  points_3d = np.stack([x, y, z], axis=-1)
   fig = go.Figure(
     data=[
       go.Scatter3d(
-        x=pts_3d[:, 0],
-        y=pts_3d[:, 1],
-        z=pts_3d[:, 2],
+        x=points_3d[:, 0],
+        y=points_3d[:, 1],
+        z=points_3d[:, 2],
         mode='markers',
-        marker=dict(size=2, color=rgb_img[v, u], opacity=0.8),
+        marker=dict(size=2, color=img_rgb[v, u], opacity=0.8),
       )
     ]
   )
@@ -254,14 +254,14 @@ def render_2d_tracking_video(
 
   n_frames, n_points, _ = tracks.shape
   point_radius = int(linewidth * 2)
-  h_img, w_img = video_frames[0].shape[:2]
+  height, width = video_frames[0].shape[:2]
   track_pts = tracks.copy()
 
   is_valid = (
     (track_pts[..., 0] >= 0)
-    & (track_pts[..., 0] < w_img)
+    & (track_pts[..., 0] < width)
     & (track_pts[..., 1] >= 0)
-    & (track_pts[..., 1] < h_img)
+    & (track_pts[..., 1] < height)
   )
   is_drawable = is_valid & visibility
 
@@ -326,9 +326,9 @@ def render_segmentation_video(episode, poses, pb_renderer, tgt_width=1200, max_f
       cam_data = episode['camera'][cam_id]
       cam_state = poses[cam_id]
       img_rgb = cam_data['video_rgb'][t].copy()
-      h_img, w_img = img_rgb.shape[:2]
+      height, width = img_rgb.shape[:2]
       robot_mask = (
-        pb_renderer.render_mask(cam_state['extrinsics'][t], cam_data['K'], w_img, h_img) > 0
+        pb_renderer.render_mask(cam_state['extrinsics'][t], cam_data['K'], width, height) > 0
       )
       overlay = img_rgb.copy()
       overlay[robot_mask] = [50, 150, 255]
@@ -362,7 +362,7 @@ def render_cross_camera_axes(episode, poses, max_frames=None):
     for obs_cam in cam_ids:
       cam_data = episode['camera'][obs_cam]
       img_rgb = cam_data['video_rgb'][t].copy()
-      h_img, w_img = img_rgb.shape[:2]
+      height, width = img_rgb.shape[:2]
       K = cam_data['K']
       obs_pose_inv = np.linalg.inv(poses[obs_cam]['extrinsics'][t])
 
@@ -370,12 +370,12 @@ def render_cross_camera_axes(episode, poses, max_frames=None):
         if obs_cam == tgt_cam:
           continue
         tgt_pose = poses[tgt_cam]['extrinsics'][t]
-        pts_cam = (obs_pose_inv @ tgt_pose @ axes_3d)[:3, :]
-        if pts_cam[2, 0] < 0:
+        points_cam = (obs_pose_inv @ tgt_pose @ axes_3d)[:3, :]
+        if points_cam[2, 0] < 0:
           continue
-        uv = K @ pts_cam
+        uv = K @ points_cam
         org, px, py, pz = map(tuple, (uv[:2] / uv[2]).astype(int).T)
-        if 0 <= org[0] < w_img and 0 <= org[1] < h_img:
+        if 0 <= org[0] < width and 0 <= org[1] < height:
           cv2.line(img_rgb, org, px, (255, 0, 0), 3)
           cv2.line(img_rgb, org, py, (0, 255, 0), 3)
           cv2.line(img_rgb, org, pz, (0, 0, 255), 3)
@@ -414,29 +414,29 @@ def render_cross_camera_axes(episode, poses, max_frames=None):
   return video_frames
 
 
-def splat(pts, cols, K, T_cam2world, height, width):
+def splat(points, colors, K, T_cam2world, height, width):
   T_world2cam = torch.linalg.inv(T_cam2world)
-  pts_cam = pts @ T_world2cam[:3, :3].T + T_world2cam[:3, 3]
-  z = pts_cam[:, 2]
-  uv = (pts_cam @ K.T)[:, :2] / z[:, None].clamp(min=1e-6)
+  points_cam = points @ T_world2cam[:3, :3].T + T_world2cam[:3, 3]
+  z = points_cam[:, 2]
+  uv = (points_cam @ K.T)[:, :2] / z[:, None].clamp(min=1e-6)
   u, v = uv.round().long().unbind(-1)
 
   keep = (z > 0) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
   idx, z = v[keep] * width + u[keep], z[keep]
 
-  depth = torch.full((height * width,), torch.inf, device=pts.device)
+  depth = torch.full((height * width,), torch.inf, device=points.device)
   depth.scatter_reduce_(0, idx, z, reduce="amin", include_self=False)
 
-  img = torch.zeros((height * width, 3), dtype=torch.uint8, device=pts.device)
+  img = torch.zeros((height * width, 3), dtype=torch.uint8, device=points.device)
   wins = z == depth[idx]
-  img[idx[wins]] = cols[keep][wins]
+  img[idx[wins]] = colors[keep][wins]
   return img.reshape(height, width, 3)
 
 
-def sample_segments(starts, ends, cols, n=64):
+def sample_segments(starts, ends, colors, n=64):
   alpha = torch.linspace(0, 1, n, device=starts.device)[None, :, None]
-  pts = starts[:, None] + (ends - starts)[:, None] * alpha
-  return pts.reshape(-1, 3), cols.repeat_interleave(n, 0)
+  points = starts[:, None] + (ends - starts)[:, None] * alpha
+  return points.reshape(-1, 3), colors.repeat_interleave(n, 0)
 
 
 def get_look_at_matrix(eye, target, up=(0, 0, 1)):
@@ -511,20 +511,20 @@ def render_4d_orbit_with_tracks(episode, poses, tracks_3d=None, max_frames=None)
 
     for cam_id in cam_ids:
       cam_data = episode['camera'][cam_id]
-      pts_3d, cols_rgb = core.geometry.unproject_depth_torch(
+      points_3d, colors_rgb = core.geometry.unproject_depth_torch(
         cam_data['raw_depth'][t],
         cam_data['video_rgb'][t],
         cam_data['K'],
         poses[cam_id]['extrinsics'][t],
         device,
       )
-      points.append(pts_3d)
-      colors.append(cols_rgb)
-    cloud, cloud_cols = torch.cat(points), torch.cat(colors)
+      points.append(points_3d)
+      colors.append(colors_rgb)
+    cloud, cloud_colors = torch.cat(points), torch.cat(colors)
     if len(cloud) > max_render_points:
       keep = torch.randperm(len(cloud), device=device)[:max_render_points]
-      cloud, cloud_cols = cloud[keep], cloud_cols[keep]
-    points, colors = [cloud], [cloud_cols]
+      cloud, cloud_colors = cloud[keep], cloud_colors[keep]
+    points, colors = [cloud], [cloud_colors]
 
     if tracks_3d is not None:
       dots = as_pts(tracks_3d[t])[:, None, :] + dot_offsets
@@ -539,27 +539,27 @@ def render_4d_orbit_with_tracks(episode, poses, tracks_3d=None, max_frames=None)
           ends.append(tracks_3d[j + 1][mask])
           trail_cols.append(track_colors[mask])
       if starts:
-        seg_pts, seg_cols = sample_segments(
+        seg_points, seg_colors = sample_segments(
           as_pts(np.concatenate(starts)),
           as_pts(np.concatenate(ends)),
           as_cols(np.concatenate(trail_cols)),
         )
-        points.append(seg_pts)
-        colors.append(seg_cols)
+        points.append(seg_points)
+        colors.append(seg_colors)
 
     starts, ends, frust_cols = [], [], []
     for ci, cam_id in enumerate(cam_ids):
-      ext_c2w = poses[cam_id]['extrinsics'][t]
-      corners_w = (ext_c2w[:3, :3] @ corners_cam.T).T + ext_c2w[:3, 3]
+      T_cam2world = poses[cam_id]['extrinsics'][t]
+      corners_w = (T_cam2world[:3, :3] @ corners_cam.T).T + T_cam2world[:3, 3]
       for ei, ej in frustum_edges:
         starts.append(corners_w[ei])
         ends.append(corners_w[ej])
         frust_cols.append(cam_colors[ci % len(cam_colors)])
-    seg_pts, seg_cols = sample_segments(
+    seg_points, seg_colors = sample_segments(
       as_pts(np.array(starts)), as_pts(np.array(ends)), as_cols(np.array(frust_cols))
     )
-    points.append(seg_pts)
-    colors.append(seg_cols)
+    points.append(seg_points)
+    colors.append(seg_colors)
 
     angle = angle_start + (t * np.pi / n_frames)
     eye_pos = [

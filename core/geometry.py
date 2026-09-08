@@ -13,43 +13,43 @@ def decode_disparity(disp, fx, baseline):
 def unproject_pixels(u, v, z, K, T_cam2world=None):
   x_cam = (u - K[0, 2]) * z / K[0, 0]
   y_cam = (v - K[1, 2]) * z / K[1, 1]
-  pts_cam = np.stack([x_cam, y_cam, z, np.ones_like(z)], axis=0)
+  points_cam = np.stack([x_cam, y_cam, z, np.ones_like(z)], axis=0)
   if T_cam2world is None:
-    return pts_cam[:3, :].T
-  return (T_cam2world @ pts_cam)[:3, :].T
+    return points_cam[:3, :].T
+  return (T_cam2world @ points_cam)[:3, :].T
 
 
-def project_points(pts_world, K, T_cam2world):
+def project_points(points_world, K, T_cam2world):
   T_world2cam = np.linalg.inv(T_cam2world)
-  pts_homo = np.hstack([pts_world, np.ones((len(pts_world), 1))]).T
-  pts_cam = T_world2cam @ pts_homo
-  z_cam = pts_cam[2, :]
+  points_homo = np.hstack([points_world, np.ones((len(points_world), 1))]).T
+  points_cam = T_world2cam @ points_homo
+  z_cam = points_cam[2, :]
   u = np.zeros_like(z_cam)
   v = np.zeros_like(z_cam)
   valid = z_cam > 0
-  u[valid] = (pts_cam[0, valid] / z_cam[valid]) * K[0, 0] + K[0, 2]
-  v[valid] = (pts_cam[1, valid] / z_cam[valid]) * K[1, 1] + K[1, 2]
+  u[valid] = (points_cam[0, valid] / z_cam[valid]) * K[0, 0] + K[0, 2]
+  v[valid] = (points_cam[1, valid] / z_cam[valid]) * K[1, 1] + K[1, 2]
   return u, v, z_cam
 
 
-def unproject_depth(depth, color_img, K, T_cam2world=None, min_depth=0.0, max_depth=1.5):
+def unproject_depth(depth, img_rgb, K, T_cam2world=None, min_depth=0.0, max_depth=1.5):
   mask = (depth > min_depth) & (depth < max_depth)
   v, u = np.where(mask)
   if T_cam2world is None:
     T_cam2world = np.eye(4)
-  pts_world = unproject_pixels(u, v, depth[mask], K, T_cam2world)
-  return pts_world, color_img[mask]
+  points_world = unproject_pixels(u, v, depth[mask], K, T_cam2world)
+  return points_world, img_rgb[mask]
 
 
-def unproject_depth_torch(depth, color_img, K, T_cam2world, device, max_depth=1.5):
+def unproject_depth_torch(depth, img_rgb, K, T_cam2world, device, max_depth=1.5):
   depth = torch.as_tensor(depth, device=device)
   v, u = torch.nonzero((depth > 0) & (depth < max_depth), as_tuple=True)
   z = depth[v, u]
   K = torch.as_tensor(K, dtype=torch.float32, device=device)
-  pts_cam = torch.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z], dim=1)
+  points_cam = torch.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z], dim=1)
   T = torch.as_tensor(T_cam2world, dtype=torch.float32, device=device)
-  pts_world = pts_cam @ T[:3, :3].T + T[:3, 3]
-  return pts_world, torch.as_tensor(color_img, device=device)[v, u]
+  points_world = points_cam @ T[:3, :3].T + T[:3, 3]
+  return points_world, torch.as_tensor(img_rgb, device=device)[v, u]
 
 
 def pose_from_euler(vec_6d):

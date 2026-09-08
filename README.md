@@ -124,7 +124,11 @@ One concept, one spelling, repo-wide. The pipeline files and the notebooks all f
 |---|---|
 | Identifiers | `episode_id`, `cam_id`, `cam_ids`, `wrist_cam_id`, `cam_data`, `cam_dir` |
 | Transforms | `T_<from>2<to>` — `T_cam2world`, `T_world2cam`, `T_ee2base`, `T_cam2ee`, `T_link2world`. The prefix keeps the family greppable; the direction is always in the name, so there is no bare `T_cam` or `T_init`. The exported `extrinsics_w2c.npy` uses the same idiom |
-| Frames on data | `pts_cam`, `pts_world` — suffix names the frame the coordinates are in |
+| Points vs tracks | `points_3d` is `(N, 3)`, positions with no time; `tracks_3d` is `(T, N, 3)`, a position per frame. Static candidates are points, robot candidates are already tracks |
+| Frames on data | `points_cam`, `points_world` — suffix names the frame the coordinates are in |
+| Image size | `height`, `width` — never `h`/`w` or `h_img`/`w_img` |
+| Images | `img_rgb`, `img_left`, `img_right` — modifier last, matching `video_rgb`, `video_right` |
+| Percentages | `_percent`, spelled out (`vis_percent_<cam>`, `robot_percent_<cam>`) |
 | Counts | `n_` for things that exist (`n_frames`, `n_points`, `n_static`); `num_` only in `config.py`, where it is a cap being requested |
 | Indices | `t` for a frame, `u`/`v` for a pixel |
 | Per-camera dicts | `per_cam_tracks`, `per_cam_vis` keyed by `cam_id`; one camera's array drops the prefix |
@@ -244,7 +248,7 @@ Outputs `metrics.csv` (shared across all ranks via file locking) with 30+ qualit
 | Extrinsics | `chamfer_*`, `overlap_*` and `robot_loss_*` per camera pair and camera — stage 2's own objective, read at the pose it converged to |
 | Track consistency | `depth_residual_{static,robot}_{median,mean}_mm` |
 | Motion | End-effector travel distance, joint range, gripper range |
-| Coverage | `vis_pct_<cam>` per camera, and `robot_pct_<cam>` — the share of each view's first frame the arm covers, for picking eval episodes |
+| Coverage | `vis_percent_<cam>` per camera, and `robot_percent_<cam>` — the share of each view's first frame the arm covers, for picking eval episodes |
 | Metadata | Site, robot ID, camera count, frame count |
 
 ### Step 2: Select

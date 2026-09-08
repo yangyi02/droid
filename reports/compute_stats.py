@@ -282,23 +282,23 @@ def main():
           vals.append(float(v))
       return vals
 
-    s_med = _extract_metric("depth_residual_static_median_mm")
+    static_median = _extract_metric("depth_residual_static_median_mm")
     s_mean = _extract_metric("depth_residual_static_mean_mm")
-    r_med = _extract_metric("depth_residual_robot_median_mm")
+    robot_median = _extract_metric("depth_residual_robot_median_mm")
     r_mean = _extract_metric("depth_residual_robot_mean_mm")
     o_med = _extract_metric("depth_residual_overall_median_mm")
     o_mean = _extract_metric("depth_residual_overall_mean_mm")
 
-    if o_med or s_med or r_med:
+    if o_med or static_median or robot_median:
       summary["depth_residual_mm"] = {
         "description": "Predicted 3D depth vs raw sensor depth (primary self-consistency metric).",
-        "static_median": round(float(np.median(s_med)), 2) if s_med else None,
+        "static_median": round(float(np.median(static_median)), 2) if static_median else None,
         "static_mean": round(float(np.mean(s_mean)), 2) if s_mean else None,
-        "robot_median": round(float(np.median(r_med)), 2) if r_med else None,
+        "robot_median": round(float(np.median(robot_median)), 2) if robot_median else None,
         "robot_mean": round(float(np.mean(r_mean)), 2) if r_mean else None,
         "overall_median": round(float(np.median(o_med)), 2) if o_med else None,
         "overall_mean": round(float(np.mean(o_mean)), 2) if o_mean else None,
-        "n_episodes": len(o_med) if o_med else len(s_med),
+        "n_episodes": len(o_med) if o_med else len(static_median),
       }
 
     chamfer = _extract_metric("chamfer_mean")
