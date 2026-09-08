@@ -26,10 +26,10 @@ def _encode_jpeg(rgb_frame, quality=95):
   return np.frombuffer(buf, dtype=np.uint8).copy()
 
 
-def _sample_queries(per_cam_vis, per_cam_tracks_2d, view_index_map, seed=42):
+def _sample_queries(per_cam_vis, per_cam_tracks_2d, view_index_map):
   cam_ids = list(view_index_map.keys())
   P = per_cam_vis[cam_ids[0]].shape[1]
-  rng = np.random.default_rng(seed)
+  rng = np.random.default_rng()
 
   queries = np.zeros((P, 4), dtype=np.float32)
 
@@ -81,7 +81,6 @@ def export_to_tapvid3d(
   include_depth=True,
   include_foreground_mask=True,
   jpeg_quality=95,
-  query_seed=42,
 ):
   episode_id = episode["meta"]["episode_id"]
   wrist_cam_id = episode["meta"].get("wrist_serial")
@@ -105,7 +104,7 @@ def export_to_tapvid3d(
   np.save(os.path.join(seq_dir, "tracks_xyz.npy"), tracks_3d.astype(np.float32))
   print(f"  tracks_xyz.npy: ({F}, {P}, 3)")
 
-  queries = _sample_queries(cam_vis, cam_tracks, view_index_map, seed=query_seed)
+  queries = _sample_queries(cam_vis, cam_tracks, view_index_map)
   np.save(os.path.join(seq_dir, "queries_xytv.npy"), queries)
   print(f"  queries_xytv.npy: ({P}, 4)")
 
@@ -182,7 +181,6 @@ def process_episode(episode_id, args):
     include_depth=not args.no_depth,
     include_foreground_mask=not args.no_foreground_mask,
     jpeg_quality=args.jpeg_quality,
-    query_seed=args.query_seed,
   )
 
 
@@ -218,7 +216,6 @@ if __name__ == "__main__":
     "--no_foreground_mask", action="store_true", help="Skip foreground_mask.npy export"
   )
   parser.add_argument("--jpeg_quality", type=int, default=95)
-  parser.add_argument("--query_seed", type=int, default=42)
   args = parser.parse_args()
 
   print("DROID \u2192 TAPVid-3D Export")

@@ -7,12 +7,12 @@ def list_episode_dirs(root):
   return set(os.listdir(root)) if os.path.isdir(root) else set()
 
 
-def shard_episodes(episode_ids, rank, world_size, limit=-1, seed=42):
-  episode_ids = sorted(episode_ids)
-  random.Random(seed).shuffle(episode_ids)
+def shard_episodes(episode_ids, rank, world_size, limit=-1):
+  episode_ids = sorted(episode_ids)[rank::world_size]
+  random.shuffle(episode_ids)
   if limit > 0:
-    episode_ids = episode_ids[:limit]
-  return episode_ids[rank::world_size]
+    episode_ids = episode_ids[: max(1, limit // world_size)]
+  return episode_ids
 
 
 def run_episodes(episode_ids, process, rank=0, world_size=1, done=(), stage="Pipeline"):

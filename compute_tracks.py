@@ -1,6 +1,5 @@
 import os
 
-import cv2
 import numpy as np
 import pybullet
 from absl import app
@@ -27,8 +26,8 @@ def depth_gap(cam_data, points_3d, T_cam2world, t):
   return u, v, sample_depth(cam_data["raw_depth"][t], u, v, z_pred) - z_pred
 
 
-def sample_per_view(per_cam_vis, n_points=None, seed=42):
-  rng = np.random.default_rng(seed)
+def sample_per_view(per_cam_vis, n_points=None):
+  rng = np.random.default_rng()
   keep = np.zeros(0, dtype=int)
   per_view = []
   for vis in per_cam_vis.values():
@@ -169,10 +168,9 @@ def sample_static_tracks(static_points_3d, per_cam_tracks_2d, per_cam_vis, n_poi
   )
 
 
-def find_robot_candidates(episode, poses, pb_renderer, safe_margin=7):
+def find_robot_candidates(episode, poses, pb_renderer):
   robot = episode["robot"]
   n_frames = len(robot["joint_positions"])
-  kernel = np.ones((safe_margin, safe_margin), np.uint8)
 
   pb_renderer.update_robot_pose(
     robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0]
@@ -186,8 +184,7 @@ def find_robot_candidates(episode, poses, pb_renderer, safe_margin=7):
     T_cam2world = poses[src_cam]["extrinsics"][0]
 
     obj_ids, link_ids, urdf_depth = pb_renderer.render_segmentation(T_cam2world, K, width, height)
-    is_robot = (obj_ids == pb_renderer.robot_id).astype(np.uint8)
-    on_robot = cv2.erode(is_robot, kernel, iterations=1) > 0
+    on_robot = obj_ids == pb_renderer.robot_id
 
     vs, us = np.where(on_robot)
 
@@ -346,7 +343,7 @@ def process_episode(episode_id, pb_renderer, config):
     poses,
     pb_renderer,
     match_radius=config.tracks.match_radius,
-    max_depth=config.tracks.seed_max_depth,
+    max_depth=config.tracks.max_depth,
   )
   static_tracks, static_vis, static_gap = project_static_tracks(
     static_points_3d, episode, poses, depth_tolerance=config.tracks.depth_tolerance
@@ -364,9 +361,7 @@ def process_episode(episode_id, pb_renderer, config):
     static_points_3d, static_tracks, static_vis, n_points=config.tracks.num_static_points_per_view
   )
 
-  robot_tracks_3d = find_robot_candidates(
-    episode, poses, pb_renderer, safe_margin=config.tracks.robot_safe_margin
-  )
+  robot_tracks_3d = find_robot_candidates(episode, poses, pb_renderer)
   robot_tracks, robot_vis = project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer)
   robot_tracks_3d, robot_tracks, robot_vis = filter_robot_tracks(
     robot_tracks_3d, robot_tracks, robot_vis
