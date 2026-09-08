@@ -182,14 +182,14 @@ def get_foreground_gripper_points(T_cam2world, K, depth, pb_renderer, device, n_
 
   v_r, u_r = np.where((metric < FAR_PLANE * 0.99) & valid_gripper)
   z_r = metric[v_r, u_r]
-  if len(z_r) < 100:
+  if len(z_r) < n_points:
     return None
 
   points_cam = np.stack(
     [(u_r - K[0, 2]) * z_r / K[0, 0], (v_r - K[1, 2]) * z_r / K[1, 1], z_r, np.ones_like(z_r)]
   )
 
-  idx = np.random.choice(len(z_r), n_points, replace=(len(z_r) < n_points))
+  idx = np.random.choice(len(z_r), n_points, replace=False)
   return points_cam[:, idx]
 
 
