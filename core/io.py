@@ -109,7 +109,7 @@ def load_depth_data(episode_id, depth_root, load_video="first_frame", inspection
 
     camera[cam_id] = cam_data
 
-  scene_constants = {
+  episode = {
     "meta": {
       "episode_id": episode_id,
       "wrist_serial": wrist_cam_id,
@@ -119,23 +119,23 @@ def load_depth_data(episode_id, depth_root, load_video="first_frame", inspection
     "camera": camera,
   }
 
-  return scene_constants
+  return episode
 
 
-def load_extrinsics(scene_constants, extrinsics_root):
-  episode_id = scene_constants["meta"]["episode_id"]
+def load_extrinsics(episode, extrinsics_root):
+  episode_id = episode["meta"]["episode_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(extrinsics_root, episode_id)))
 
-  scene_state = {}
-  for cam_id in scene_constants["camera"]:
+  poses = {}
+  for cam_id in episode["camera"]:
     cam_ext_path = os.path.join(ep_dir, cam_id, "extrinsics.json")
 
     with open(cam_ext_path, "r") as f:
       payload = json.load(f)
 
-    scene_state[cam_id] = {
+    poses[cam_id] = {
       "base_extrinsic": np.array(payload["base_extrinsic"], dtype=np.float32),
       "extrinsics": np.array(payload["extrinsics"], dtype=np.float32),
     }
 
-  return scene_state
+  return poses

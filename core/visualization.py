@@ -67,16 +67,14 @@ def show_plotly_point_cloud(
     fig.show()
 
 
-def show_fused_point_cloud(
-  scene_constants, scene_state, t=0, use_tint=False, height=600, width=1000
-):
-  cam_ids = sorted(scene_constants['camera'].keys())
+def show_fused_point_cloud(episode, poses, t=0, use_tint=False, height=600, width=1000):
+  cam_ids = sorted(episode['camera'].keys())
   tint_colors = np.array([[0, 50, 0], [50, 0, 0], [0, 0, 50]])
   fused_points, fused_colors = [], []
 
   for idx, cam_id in enumerate(cam_ids):
-    cam_data = scene_constants['camera'][cam_id]
-    cam_state = scene_state[cam_id]
+    cam_data = episode['camera'][cam_id]
+    cam_state = poses[cam_id]
     raw_depth = cam_data['raw_depth'][t].astype(np.float32)
     points_3d, colors_rgb = core.geometry.unproject_depth(
       raw_depth, cam_data['video_rgb'][t], cam_data['K_mat'], T_cam2world=cam_state['extrinsics'][t]
@@ -130,9 +128,9 @@ def show_distilled_gripper_3d(median_depth, K_mat, rgb_img):
   fig.show()
 
 
-def show_gripper_refinement(scene_constants, t=0):
-  wrist_cam_id = scene_constants['meta'].get('wrist_serial')
-  cam_data = scene_constants['camera'][wrist_cam_id]
+def show_gripper_refinement(episode, t=0):
+  wrist_cam_id = episode['meta'].get('wrist_serial')
+  cam_data = episode['camera'][wrist_cam_id]
   rgb = cam_data['video_rgb'][t]
 
   orig_depth = cam_data.get('original_raw_depth')
@@ -208,10 +206,10 @@ def colorize_disparity(disp_array, vmax=100.0):
   )
 
 
-def render_multicam_disparity_video(scene_constants, max_frames=None):
+def render_multicam_disparity_video(episode, max_frames=None):
   tgt_size = (128, 228)
   camera_rows = []
-  for cam_data in scene_constants['camera'].values():
+  for cam_data in episode['camera'].values():
     video_rgb = cam_data['video_rgb']
     video_right = cam_data['video_right']
     raw_depth = cam_data['raw_depth'].astype(np.float32)
@@ -312,23 +310,21 @@ def render_2d_tracking_video(
   return video_frames
 
 
-def render_segmentation_video(
-  scene_constants, scene_state, pb_renderer, tgt_width=1200, max_frames=None
-):
-  cam_ids = list(scene_constants['camera'].keys())
-  n_frames = len(scene_constants['camera'][cam_ids[0]]['video_rgb'])
+def render_segmentation_video(episode, poses, pb_renderer, tgt_width=1200, max_frames=None):
+  cam_ids = list(episode['camera'].keys())
+  n_frames = len(episode['camera'][cam_ids[0]]['video_rgb'])
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
   video_frames = []
 
   for t in tqdm(range(n_frames), desc="Rendering segmentation"):
-    current_joints = scene_constants['robot']['joint_positions'][t]
-    current_gripper = scene_constants['robot']['gripper_positions'][t]
+    current_joints = episode['robot']['joint_positions'][t]
+    current_gripper = episode['robot']['gripper_positions'][t]
     pb_renderer.update_robot_pose(current_joints, gripper_state=current_gripper)
     frame_views = []
     for cam_id in cam_ids:
-      cam_data = scene_constants['camera'][cam_id]
-      cam_state = scene_state[cam_id]
+      cam_data = episode['camera'][cam_id]
+      cam_state = poses[cam_id]
       img_rgb = cam_data['video_rgb'][t].copy()
       h_img, w_img = img_rgb.shape[:2]
       robot_mask = (
@@ -350,10 +346,10 @@ def render_segmentation_video(
   return video_frames
 
 
-def render_cross_camera_axes(scene_constants, scene_state, max_frames=None):
+def render_cross_camera_axes(episode, poses, max_frames=None):
   axis_len, tgt_w = 0.15, 1200
-  cam_ids = list(scene_constants['camera'].keys())
-  n_frames = len(scene_state[cam_ids[0]]['extrinsics'])
+  cam_ids = list(episode['camera'].keys())
+  n_frames = len(poses[cam_ids[0]]['extrinsics'])
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
   axes_3d = np.array(
@@ -364,16 +360,16 @@ def render_cross_camera_axes(scene_constants, scene_state, max_frames=None):
   for t in tqdm(range(n_frames), desc="Rendering camera axes"):
     camera_views = []
     for obs_cam in cam_ids:
-      cam_data = scene_constants['camera'][obs_cam]
+      cam_data = episode['camera'][obs_cam]
       img_rgb = cam_data['video_rgb'][t].copy()
       h_img, w_img = img_rgb.shape[:2]
       K_mat = cam_data['K_mat']
-      obs_pose_inv = np.linalg.inv(scene_state[obs_cam]['extrinsics'][t])
+      obs_pose_inv = np.linalg.inv(poses[obs_cam]['extrinsics'][t])
 
       for tgt_cam in cam_ids:
         if obs_cam == tgt_cam:
           continue
-        tgt_pose = scene_state[tgt_cam]['extrinsics'][t]
+        tgt_pose = poses[tgt_cam]['extrinsics'][t]
         pts_cam = (obs_pose_inv @ tgt_pose @ axes_3d)[:3, :]
         if pts_cam[2, 0] < 0:
           continue
@@ -454,7 +450,7 @@ def get_look_at_matrix(eye, target, up=(0, 0, 1)):
   return view_matrix
 
 
-def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, max_frames=None):
+def render_4d_orbit_with_tracks(episode, poses, tracks_3d=None, max_frames=None):
   device = "cuda" if torch.cuda.is_available() else "cpu"
   width, height = 640, 360
   fov_y = 60.0
@@ -464,8 +460,8 @@ def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, ma
   track_history, track_radius = 5, 0.008
   frustum_depth, frustum_aspect = 0.15, 4.0 / 3.0
 
-  cam_ids = sorted(scene_constants['camera'].keys())
-  n_frames = len(scene_state[cam_ids[0]]['extrinsics'])
+  cam_ids = sorted(episode['camera'].keys())
+  n_frames = len(poses[cam_ids[0]]['extrinsics'])
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
 
@@ -514,12 +510,12 @@ def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, ma
     points, colors = [], []
 
     for cam_id in cam_ids:
-      cam_data = scene_constants['camera'][cam_id]
+      cam_data = episode['camera'][cam_id]
       pts_3d, cols_rgb = core.geometry.unproject_depth_torch(
         cam_data['raw_depth'][t],
         cam_data['video_rgb'][t],
         cam_data['K_mat'],
-        scene_state[cam_id]['extrinsics'][t],
+        poses[cam_id]['extrinsics'][t],
         device,
       )
       points.append(pts_3d)
@@ -553,7 +549,7 @@ def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, ma
 
     starts, ends, frust_cols = [], [], []
     for ci, cam_id in enumerate(cam_ids):
-      ext_c2w = scene_state[cam_id]['extrinsics'][t]
+      ext_c2w = poses[cam_id]['extrinsics'][t]
       corners_w = (ext_c2w[:3, :3] @ corners_cam.T).T + ext_c2w[:3, 3]
       for ei, ej in frustum_edges:
         starts.append(corners_w[ei])

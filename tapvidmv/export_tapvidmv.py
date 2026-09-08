@@ -72,8 +72,8 @@ def _filter_always_invisible_tracks(final_traj_3d, per_cam_tracks, per_cam_vis, 
 
 
 def export_to_tapvid3d(
-  scene_constants,
-  scene_state,
+  episode,
+  poses,
   final_traj_3d,
   final_per_cam_tracks,
   final_per_cam_vis,
@@ -83,9 +83,9 @@ def export_to_tapvid3d(
   jpeg_quality=95,
   query_seed=42,
 ):
-  episode_id = scene_constants["meta"]["episode_id"]
-  wrist_cam_id = scene_constants["meta"].get("wrist_serial")
-  cam_ids = sorted(scene_constants["camera"].keys())
+  episode_id = episode["meta"]["episode_id"]
+  wrist_cam_id = episode["meta"].get("wrist_serial")
+  cam_ids = sorted(episode["camera"].keys())
   F = final_traj_3d.shape[0]
 
   view_index_map = {cam_id: i for i, cam_id in enumerate(cam_ids)}
@@ -114,7 +114,7 @@ def export_to_tapvid3d(
     view_dir = os.path.join(seq_dir, view_id)
     os.makedirs(view_dir, exist_ok=True)
 
-    cam_data = scene_constants["camera"][cam_id]
+    cam_data = episode["camera"][cam_id]
 
     video = cam_data["video_rgb"]
     jpeg_list = []
@@ -128,7 +128,7 @@ def export_to_tapvid3d(
     intrinsics = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]], dtype=np.float32)
     np.save(os.path.join(view_dir, "intrinsics.npy"), intrinsics)
 
-    c2w = scene_state[cam_id]["extrinsics"]
+    c2w = poses[cam_id]["extrinsics"]
     w2c = np.linalg.inv(c2w).astype(np.float32)
     np.save(os.path.join(view_dir, "extrinsics_w2c.npy"), w2c)
 
@@ -157,14 +157,14 @@ def export_to_tapvid3d(
 
 def process_episode(episode_id, args):
   print(f"\nLoading pipeline outputs for [{episode_id}]...")
-  scene_constants = core.io.load_depth_data(episode_id, args.depth_root, load_video="full")
-  scene_state = core.io.load_extrinsics(scene_constants, args.extrinsics_root)
+  episode = core.io.load_depth_data(episode_id, args.depth_root, load_video="full")
+  poses = core.io.load_extrinsics(episode, args.extrinsics_root)
 
   tracks_dir = os.path.abspath(os.path.expanduser(os.path.join(args.tracks_root, episode_id)))
   data_3d = np.load(os.path.join(tracks_dir, "tracks_3d.npz"))
   final_traj_3d = data_3d["traj_3d"]
 
-  cam_ids = sorted(scene_constants["camera"].keys())
+  cam_ids = sorted(episode["camera"].keys())
   final_per_cam_tracks = {}
   final_per_cam_vis = {}
   for cam_id in cam_ids:
@@ -173,8 +173,8 @@ def process_episode(episode_id, args):
     final_per_cam_vis[cam_id] = d["vis_2d"]
 
   export_to_tapvid3d(
-    scene_constants=scene_constants,
-    scene_state=scene_state,
+    episode=episode,
+    poses=poses,
     final_traj_3d=final_traj_3d,
     final_per_cam_tracks=final_per_cam_tracks,
     final_per_cam_vis=final_per_cam_vis,

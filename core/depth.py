@@ -26,12 +26,10 @@ def get_s2m2_disparity(
   return disp
 
 
-def compute_stereo_depth(
-  scene_constants, s2m2_model, run_stereo_matching, device, conf_thresh=0.95
-):
+def compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, conf_thresh=0.95):
 
-  for cam_id in scene_constants["camera"]:
-    cam_data = scene_constants["camera"][cam_id]
+  for cam_id in episode["camera"]:
+    cam_data = episode["camera"][cam_id]
     left_seq, right_seq = cam_data["video_rgb"], cam_data["video_right"]
 
     disp_frames = [
@@ -48,7 +46,7 @@ def compute_stereo_depth(
     baseline = cam_data["baseline"]
     cam_data["raw_depth"] = core.geometry.decode_disparity(raw_disp, fx, baseline)
 
-  return scene_constants
+  return episode
 
 
 def extract_single_frame_mask(img_rgb, predictor):
@@ -101,9 +99,9 @@ def compute_consensus_mask(masks_list, consensus_thresh=0.5):
   return consensus_mask
 
 
-def build_universal_gripper_mask(scene_constants, sam_predictor, consensus_thresh=0.5):
-  cam_data = scene_constants["camera"][scene_constants["meta"]["wrist_serial"]]
-  gripper_states = scene_constants["robot"]["gripper_positions"]
+def build_universal_gripper_mask(episode, sam_predictor, consensus_thresh=0.5):
+  cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
+  gripper_states = episode["robot"]["gripper_positions"]
   closed_indices = np.where(gripper_states < 0.05)[0]
 
   masks_list = []
@@ -118,12 +116,12 @@ def build_universal_gripper_mask(scene_constants, sam_predictor, consensus_thres
   cam_data["sam_real_masks"] = np.zeros((n_frames, *final_mask.shape), dtype=bool)
   cam_data["sam_real_masks"][closed_indices] = final_mask
 
-  return scene_constants
+  return episode
 
 
-def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
-  cam_data = scene_constants["camera"][scene_constants["meta"]["wrist_serial"]]
-  gripper_states = scene_constants["robot"]["gripper_positions"]
+def distill_empirical_gripper_depth(episode, max_depth_thresh=0.15):
+  cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
+  gripper_states = episode["robot"]["gripper_positions"]
   closed_indices = np.where(gripper_states < 0.05)[0]
   h, w = cam_data["video_rgb"][0].shape[:2]
   num_frames = len(closed_indices)
@@ -141,12 +139,12 @@ def distill_empirical_gripper_depth(scene_constants, max_depth_thresh=0.15):
   median_depth[observed] = np.nanmedian(depth_bank[:, observed], axis=0)
   cam_data["empirical_gripper_depth"] = median_depth
 
-  return scene_constants
+  return episode
 
 
-def inject_gripper_depth(scene_constants):
-  cam_data = scene_constants["camera"][scene_constants["meta"]["wrist_serial"]]
-  gripper_states = scene_constants["robot"]["gripper_positions"]
+def inject_gripper_depth(episode):
+  cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
+  gripper_states = episode["robot"]["gripper_positions"]
   empirical_depth = cam_data["empirical_gripper_depth"]
 
   closed_indices = np.where(gripper_states < 0.05)[0]
@@ -156,4 +154,4 @@ def inject_gripper_depth(scene_constants):
     valid_mask, empirical_depth, cam_data["raw_depth"][closed_indices]
   )
 
-  return scene_constants
+  return episode

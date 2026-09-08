@@ -19,9 +19,9 @@ import core.runner
 
 
 @torch.no_grad()
-def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer):
+def evaluate_extrinsics(episode, poses, device, pb_renderer):
   """Stage 2's own objective, read once at the extrinsics it converged to."""
-  inputs = compute_extrinsics.alignment_inputs(scene_constants, scene_state, pb_renderer, device)
+  inputs = compute_extrinsics.alignment_inputs(episode, poses, pb_renderer, device)
   chamfer, overlap, robot = compute_extrinsics.alignment_losses(inputs, inputs["base"])
 
   wrist_cam_id = inputs["wrist_cam_id"]
@@ -45,15 +45,13 @@ def depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
   return np.abs(z_proj[valid] - z_obs[valid]).astype(np.float32) * 1000.0
 
 
-def depth_residual_per_camera(
-  scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
-):
-  cam_ids = list(scene_constants["camera"].keys())
+def depth_residual_per_camera(episode, poses, final_traj_3d, final_per_cam_vis, n_static):
+  cam_ids = list(episode["camera"].keys())
   n_frames = final_traj_3d.shape[0]
 
   per_camera = {}
   for cam_id in cam_ids:
-    cam_data = scene_constants["camera"][cam_id]
+    cam_data = episode["camera"][cam_id]
     K = cam_data["K_mat"]
     h_img, w_img = cam_data["raw_depth"][0].shape[:2]
 
@@ -61,7 +59,7 @@ def depth_residual_per_camera(
 
     for t in range(n_frames):
       raw_depth = cam_data["raw_depth"][t]
-      ext = scene_state[cam_id]["extrinsics"][t]
+      ext = poses[cam_id]["extrinsics"][t]
       vis_t = final_per_cam_vis[cam_id][t]
 
       cam_static.append(
@@ -80,12 +78,8 @@ def depth_residual_per_camera(
   return per_camera
 
 
-def track_depth_consistency(
-  scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
-):
-  per_camera = depth_residual_per_camera(
-    scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
-  )
+def track_depth_consistency(episode, poses, final_traj_3d, final_per_cam_vis, n_static):
+  per_camera = depth_residual_per_camera(episode, poses, final_traj_3d, final_per_cam_vis, n_static)
 
   def _stats(arrs):
     concat = np.concatenate(arrs)
@@ -110,8 +104,8 @@ def track_visibility_stats(final_per_cam_vis):
   }
 
 
-def motion_stats(scene_constants):
-  robot = scene_constants["robot"]
+def motion_stats(episode):
+  robot = episode["robot"]
   joints = robot["joint_positions"]
   gripper = robot["gripper_positions"]
 
@@ -133,49 +127,40 @@ def motion_stats(scene_constants):
   }
 
 
-def scene_metadata(scene_constants):
-  site, robot_id, _ = scene_constants["meta"]["episode_id"].split("+")
+def scene_metadata(episode):
+  site, robot_id, _ = episode["meta"]["episode_id"].split("+")
 
   return {
     "site": site,
     "robot_id": robot_id,
-    "n_cameras": len(scene_constants["camera"]),
-    "wrist_serial": scene_constants["meta"]["wrist_serial"],
+    "n_cameras": len(episode["camera"]),
+    "wrist_serial": episode["meta"]["wrist_serial"],
   }
 
 
-def robot_coverage(scene_constants, scene_state, pb_renderer):
-  robot = scene_constants["robot"]
+def robot_coverage(episode, poses, pb_renderer):
+  robot = episode["robot"]
   pb_renderer.update_robot_pose(
     robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0]
   )
 
   coverage = {}
-  for cam_id, cam_data in scene_constants["camera"].items():
+  for cam_id, cam_data in episode["camera"].items():
     h_img, w_img = cam_data["raw_depth"][0].shape
-    mask = pb_renderer.render_mask(
-      scene_state[cam_id]["extrinsics"][0], cam_data["K_mat"], w_img, h_img
-    )
+    mask = pb_renderer.render_mask(poses[cam_id]["extrinsics"][0], cam_data["K_mat"], w_img, h_img)
     coverage[f"robot_pct_{cam_id[:8]}"] = float(mask.mean() * 100)
 
   return coverage
 
 
 def episode_metrics(
-  scene_constants,
-  scene_state,
-  device,
-  final_traj_3d,
-  final_per_cam_vis,
-  n_static,
-  n_robot,
-  pb_renderer,
+  episode, poses, device, final_traj_3d, final_per_cam_vis, n_static, n_robot, pb_renderer
 ):
-  metrics = {"episode_id": scene_constants["meta"]["episode_id"]}
-  metrics.update(scene_metadata(scene_constants))
-  metrics.update(robot_coverage(scene_constants, scene_state, pb_renderer))
-  metrics.update(motion_stats(scene_constants))
-  metrics.update(evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer))
+  metrics = {"episode_id": episode["meta"]["episode_id"]}
+  metrics.update(scene_metadata(episode))
+  metrics.update(robot_coverage(episode, poses, pb_renderer))
+  metrics.update(motion_stats(episode))
+  metrics.update(evaluate_extrinsics(episode, poses, device, pb_renderer))
 
   metrics["n_static"] = n_static
   metrics["n_robot"] = n_robot
@@ -183,9 +168,7 @@ def episode_metrics(
   metrics["n_track_frames"] = final_traj_3d.shape[0]
 
   metrics.update(
-    track_depth_consistency(
-      scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
-    )
+    track_depth_consistency(episode, poses, final_traj_3d, final_per_cam_vis, n_static)
   )
   metrics.update(track_visibility_stats(final_per_cam_vis))
 
@@ -216,13 +199,13 @@ def load_track_data(episode_id, tracks_root):
 
 def process_episode(episode_id, device, pb_renderer, csv_path, config):
   t0 = time.time()
-  scene_constants = core.io.load_depth_data(episode_id, config.paths.depth, load_video=None)
-  scene_state = core.io.load_extrinsics(scene_constants, config.paths.extrinsics)
+  episode = core.io.load_depth_data(episode_id, config.paths.depth, load_video=None)
+  poses = core.io.load_extrinsics(episode, config.paths.extrinsics)
   tracks = load_track_data(episode_id, config.paths.tracks)
 
   metrics = episode_metrics(
-    scene_constants,
-    scene_state,
+    episode,
+    poses,
     device,
     tracks["traj_3d"],
     tracks["per_cam_vis"],

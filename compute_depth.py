@@ -76,12 +76,12 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
   }
 
 
-def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
+def extract_svo_video(episode, min_frames=0, max_frames=250):
   import pyzed.sl as sl
 
-  episode_path = scene_constants["meta"]["episode_path"]
+  episode_path = episode["meta"]["episode_path"]
 
-  for cam_id in scene_constants["camera"]:
+  for cam_id in episode["camera"]:
     svo_files = glob.glob(os.path.join(episode_path, f"**/{cam_id}.svo"), recursive=True)
     if not svo_files:
       return None
@@ -162,7 +162,7 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
 
     zed.close()
 
-    scene_constants["camera"][cam_id].update(
+    episode["camera"][cam_id].update(
       {
         "K_mat": K_calib_left,
         "zed_calibration": {
@@ -187,11 +187,11 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
       }
     )
 
-  return scene_constants
+  return episode
 
 
-def parse_robot_kinematics(scene_constants):
-  ep_path = scene_constants["meta"]["episode_path"]
+def parse_robot_kinematics(episode):
+  ep_path = episode["meta"]["episode_path"]
 
   with h5py.File(f"{ep_path}/trajectory.h5", "r") as f:
     ee_poses = f["observation/robot_state/cartesian_position"][:]
@@ -210,7 +210,7 @@ def parse_robot_kinematics(scene_constants):
   T_ee2base[:, :3, :3] = R.from_euler("xyz", ee_poses[:, 3:]).as_matrix()
   T_ee2base[:, :3, 3] = ee_poses[:, :3]
 
-  scene_constants["robot"] = {
+  episode["robot"] = {
     "joint_positions": joint_poses,
     "gripper_positions": gripper_poses,
     "T_cam_ee_init": (
@@ -220,31 +220,29 @@ def parse_robot_kinematics(scene_constants):
     "T_ee_base_all": T_ee2base,
     "timestamps": timestamps,
   }
-  return scene_constants
+  return episode
 
 
-def align_temporal_streams(scene_constants):
+def align_temporal_streams(episode):
   robot_streams = ["joint_positions", "gripper_positions", "T_ee_base_all", "timestamps"]
   camera_streams = ["video_rgb", "video_right", "video_raw_rgb", "video_raw_right", "timestamps"]
 
-  streams = [(scene_constants["robot"], key) for key in robot_streams]
-  streams += [
-    (cam_data, key) for cam_data in scene_constants["camera"].values() for key in camera_streams
-  ]
+  streams = [(episode["robot"], key) for key in robot_streams]
+  streams += [(cam_data, key) for cam_data in episode["camera"].values() for key in camera_streams]
 
   n_frames = min(len(owner[key]) for owner, key in streams)
   for owner, key in streams:
     owner[key] = owner[key][:n_frames]
 
-  return scene_constants
+  return episode
 
 
-def export_depth(scene_constants, export_root):
-  episode_id = scene_constants["meta"]["episode_id"]
+def export_depth(episode, export_root):
+  episode_id = episode["meta"]["episode_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode_id)))
   os.makedirs(ep_dir, exist_ok=True)
 
-  for cam_id, data in scene_constants["camera"].items():
+  for cam_id, data in episode["camera"].items():
     cam_dir = os.path.join(ep_dir, str(cam_id))
     os.makedirs(cam_dir, exist_ok=True)
 
@@ -289,7 +287,7 @@ def export_depth(scene_constants, export_root):
         baseline=np.array(data["baseline"], dtype=np.float32),
       )
 
-  robot = scene_constants["robot"]
+  robot = episode["robot"]
   if robot:
     robot_save = {}
     if "joint_positions" in robot:
@@ -300,7 +298,7 @@ def export_depth(scene_constants, export_root):
       robot_save["T_ee_base_all"] = robot["T_ee_base_all"].astype(np.float32)
     if "T_cam_ee_init" in robot:
       robot_save["T_cam_ee_init"] = robot["T_cam_ee_init"].astype(np.float32)
-    meta = scene_constants["meta"]
+    meta = episode["meta"]
     if meta.get("valid_indices") is not None:
       robot_save["valid_indices"] = meta["valid_indices"]
     if meta.get("wrist_serial") is not None:
@@ -314,30 +312,30 @@ def process_episode(episode_id, models, dbs, raw_root, config):
   s2m2_model, sam_predictor, run_stereo_matching, device = models
   id_to_path, serials_db, keep_ranges = dbs
 
-  scene_constants = init_episode(episode_id, raw_root, id_to_path, serials_db, keep_ranges)
-  scene_constants = extract_svo_video(
-    scene_constants, min_frames=config.depth.min_frames, max_frames=config.depth.max_frames
+  episode = init_episode(episode_id, raw_root, id_to_path, serials_db, keep_ranges)
+  episode = extract_svo_video(
+    episode, min_frames=config.depth.min_frames, max_frames=config.depth.max_frames
   )
-  if scene_constants is None:
+  if episode is None:
     return
 
-  scene_constants = parse_robot_kinematics(scene_constants)
-  scene_constants = align_temporal_streams(scene_constants)
-  scene_constants = core.depth.compute_stereo_depth(
-    scene_constants, s2m2_model, run_stereo_matching, device, conf_thresh=config.depth.conf_thresh
+  episode = parse_robot_kinematics(episode)
+  episode = align_temporal_streams(episode)
+  episode = core.depth.compute_stereo_depth(
+    episode, s2m2_model, run_stereo_matching, device, conf_thresh=config.depth.conf_thresh
   )
 
-  wrist_data = scene_constants["camera"][scene_constants["meta"]["wrist_serial"]]
+  wrist_data = episode["camera"][episode["meta"]["wrist_serial"]]
   wrist_data["original_raw_depth"] = wrist_data["raw_depth"].copy()
 
-  scene_constants = core.depth.build_universal_gripper_mask(
-    scene_constants, sam_predictor, consensus_thresh=config.depth.consensus_thresh
+  episode = core.depth.build_universal_gripper_mask(
+    episode, sam_predictor, consensus_thresh=config.depth.consensus_thresh
   )
-  scene_constants = core.depth.distill_empirical_gripper_depth(
-    scene_constants, max_depth_thresh=config.depth.max_depth_thresh
+  episode = core.depth.distill_empirical_gripper_depth(
+    episode, max_depth_thresh=config.depth.max_depth_thresh
   )
-  scene_constants = core.depth.inject_gripper_depth(scene_constants)
-  export_depth(scene_constants, export_root=config.paths.depth)
+  episode = core.depth.inject_gripper_depth(episode)
+  export_depth(episode, export_root=config.paths.depth)
 
 
 def main(_):
