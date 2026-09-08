@@ -579,9 +579,9 @@ def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, ma
     ]
     viz_pose = as_pts(get_look_at_matrix(eye_pos, orbit_center))
 
-    img_rgb = splat(
-      torch.cat(points), torch.cat(colors), K_viz, viz_pose, height, width
-    ).cpu().numpy()
+    img_rgb = (
+      splat(torch.cat(points), torch.cat(colors), K_viz, viz_pose, height, width).cpu().numpy()
+    )
     cv2.putText(
       img_rgb,
       f"Frame: {frame_idx:03d}",

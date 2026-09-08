@@ -110,7 +110,7 @@ def per_camera_alignment(
     print(f"\n  Optimizing [{mode}] camera: [{cam}] ...")
 
     K = torch.tensor(scene_constants['camera'][cam]['K_mat'], dtype=torch.float32, device=device)
-    T_init = torch.tensor(
+    T_cam2mount_init = torch.tensor(
       prev_scene_state[cam]['base_extrinsic'], dtype=torch.float32, device=device
     )
     obs = observed_depth(scene_constants['camera'][cam], device)
@@ -121,14 +121,19 @@ def per_camera_alignment(
     print(f"      {outer_steps} x {inner_steps} steps, re-rendering the cloud between them...")
     for outer in range(outer_steps):
       with torch.no_grad():
-        T_cur = (T_init @ core.geometry.pose_from_axis_angle(d_ext, device)).cpu().numpy()
+        T_cam2mount = (
+          (T_cam2mount_init @ core.geometry.pose_from_axis_angle(d_ext, device)).cpu().numpy()
+        )
       batch_X, batch_obs = extract_robot_clouds(
-        cam, scene_constants, pb_renderer, T_cur, device, obs
+        cam, scene_constants, pb_renderer, T_cam2mount, device, obs
       )
       for _ in range(inner_steps):
         optimizer.zero_grad()
         loss_rob = core.physics.depth_loss_batched(
-          batch_X, T_init @ core.geometry.pose_from_axis_angle(d_ext, device), K, batch_obs
+          batch_X,
+          T_cam2mount_init @ core.geometry.pose_from_axis_angle(d_ext, device),
+          K,
+          batch_obs,
         )
         loss_rob.backward()
         optimizer.step()
@@ -146,7 +151,9 @@ def per_camera_alignment(
       continue
 
     with torch.no_grad():
-      T_final = (T_init @ core.geometry.pose_from_axis_angle(d_ext, device)).cpu().numpy()
+      T_cam2mount_final = (
+        (T_cam2mount_init @ core.geometry.pose_from_axis_angle(d_ext, device)).cpu().numpy()
+      )
       shift_mm = torch.norm(d_ext[:3]).item() * 1000.0
       rot_deg = torch.norm(d_ext[3:]).item() * (180.0 / np.pi)
       print(
@@ -154,8 +161,8 @@ def per_camera_alignment(
         f"(shift: {shift_mm:.2f}mm, rot: {rot_deg:.2f}°)"
       )
 
-      scene_state[cam]['base_extrinsic'] = T_final
-      scene_state[cam]['extrinsics'] = world_extrinsics(T_final, T_ee_base_all, is_wrist)
+      scene_state[cam]['base_extrinsic'] = T_cam2mount_final
+      scene_state[cam]['extrinsics'] = world_extrinsics(T_cam2mount_final, T_ee_base_all, is_wrist)
 
   return scene_state
 
@@ -200,7 +207,7 @@ def alignment_inputs(scene_constants, scene_state, pb_renderer, device, chamfer_
   wrist_cam = scene_constants['meta']['wrist_serial']
   cams = [c for c in scene_constants['camera'] if c != wrist_cam] + [wrist_cam]
   n_frames = len(scene_constants['robot']['joint_positions'])
-  T_ee_all = scene_constants['robot']['T_ee_base_all']
+  T_ee2base = scene_constants['robot']['T_ee_base_all']
 
   robot_pts, obs, K, base = {}, {}, {}, {}
   for cam in cams:
@@ -226,7 +233,7 @@ def alignment_inputs(scene_constants, scene_state, pb_renderer, device, chamfer_
     if all(pts is not None for pts in frame.values()):
       for cam in cams:
         cache[cam].append(frame[cam])
-      cache_ee.append(torch.tensor(T_ee_all[t], dtype=torch.float32, device=device))
+      cache_ee.append(torch.tensor(T_ee2base[t], dtype=torch.float32, device=device))
 
   return {
     'cams': cams,
@@ -319,11 +326,11 @@ def global_joint_alignment(
 
   print("\nGlobal joint optimization complete!")
 
-  T_ee_all = scene_constants['robot']['T_ee_base_all']
+  T_ee2base = scene_constants['robot']['T_ee_base_all']
   return {
     cam: {
       "base_extrinsic": final[cam],
-      "extrinsics": world_extrinsics(final[cam], T_ee_all, cam == wrist_cam),
+      "extrinsics": world_extrinsics(final[cam], T_ee2base, cam == wrist_cam),
     }
     for cam in scene_constants['camera']
   }

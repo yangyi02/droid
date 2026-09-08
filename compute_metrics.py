@@ -49,7 +49,7 @@ def compute_depth_residual_per_camera(
   scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
 ):
   camera_ids = list(scene_constants["camera"].keys())
-  T_frames = final_traj_3d.shape[0]
+  n_frames = final_traj_3d.shape[0]
 
   per_camera = {}
   for cam_id in camera_ids:
@@ -59,7 +59,7 @@ def compute_depth_residual_per_camera(
 
     cam_static, cam_robot = [], []
 
-    for t in range(T_frames):
+    for t in range(n_frames):
       raw_depth = cam_data["raw_depth"][t]
       ext = scene_state[cam_id]["extrinsics"][t]
       vis_t = final_per_cam_vis[cam_id][t]
@@ -118,8 +118,8 @@ def compute_motion_stats(scene_constants):
   joint_ranges = joints.max(axis=0) - joints.min(axis=0)
   joint_stds = joints.std(axis=0)
 
-  T_ee_all = robot["T_ee_base_all"]
-  ee_positions = T_ee_all[:, :3, 3]
+  T_ee2base = robot["T_ee_base_all"]
+  ee_positions = T_ee2base[:, :3, 3]
   ee_deltas = np.linalg.norm(np.diff(ee_positions, axis=0), axis=1)
   ee_travel = float(np.sum(ee_deltas))
 

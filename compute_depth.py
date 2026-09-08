@@ -204,17 +204,18 @@ def parse_robot_kinematics(scene_constants):
 
   total_frames = len(ee_poses)
 
-  T_ee_all = np.tile(np.eye(4), (total_frames, 1, 1))
-  T_ee_all[:, :3, :3] = R.from_euler("xyz", ee_poses[:, 3:]).as_matrix()
-  T_ee_all[:, :3, 3] = ee_poses[:, :3]
+  T_ee2base = np.tile(np.eye(4), (total_frames, 1, 1))
+  T_ee2base[:, :3, :3] = R.from_euler("xyz", ee_poses[:, 3:]).as_matrix()
+  T_ee2base[:, :3, 3] = ee_poses[:, :3]
 
   scene_constants["robot"] = {
     "joint_positions": joint_poses,
     "gripper_positions": gripper_poses,
     "T_cam_ee_init": (
-      np.linalg.inv(core.geometry.pose_from_euler(ee_poses[0])) @ core.geometry.pose_from_euler(wrist_ext)
+      np.linalg.inv(core.geometry.pose_from_euler(ee_poses[0]))
+      @ core.geometry.pose_from_euler(wrist_ext)
     ),
-    "T_ee_base_all": T_ee_all,
+    "T_ee_base_all": T_ee2base,
     "timestamps": timestamps,
   }
   return scene_constants

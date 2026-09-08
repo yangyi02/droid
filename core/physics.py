@@ -32,7 +32,7 @@ class PyBulletRenderer:
     self.gpu = bool(gpu) and _load_egl()
     if gpu and not self.gpu:
       raise RuntimeError("EGL requested but the plugin did not load. --config.render.gpu=False")
-    self.renderer = pybullet.ER_BULLET_HARDWARE_OPENGL if self.gpu else pybullet.ER_TINY_RENDERER
+    self.render_mode = pybullet.ER_BULLET_HARDWARE_OPENGL if self.gpu else pybullet.ER_TINY_RENDERER
 
     self.robot_id = pybullet.loadURDF(
       urdf, useFixedBase=True, flags=pybullet.URDF_IGNORE_COLLISION_SHAPES
@@ -91,10 +91,10 @@ class PyBulletRenderer:
       0.0,
     ]
 
-  def _render_raw(self, extrinsic, K, w, h):
-    cam_pos = extrinsic[:3, 3]
+  def _render_raw(self, T_cam2world, K, w, h):
+    cam_pos = T_cam2world[:3, 3]
     view_matrix = pybullet.computeViewMatrix(
-      cam_pos.tolist(), (cam_pos + extrinsic[:3, 2]).tolist(), (-extrinsic[:3, 1]).tolist()
+      cam_pos.tolist(), (cam_pos + T_cam2world[:3, 2]).tolist(), (-T_cam2world[:3, 1]).tolist()
     )
     proj_matrix = self._get_projection_matrix(K, w, h)
     _, _, _, depth_buf, seg_buf = pybullet.getCameraImage(
@@ -102,23 +102,23 @@ class PyBulletRenderer:
       h,
       viewMatrix=view_matrix,
       projectionMatrix=proj_matrix,
-      renderer=self.renderer,
+      renderer=self.render_mode,
       flags=pybullet.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
     )
     return depth_buf, seg_buf
 
-  def render_depth(self, extrinsic, K, w, h):
-    depth_buf, _ = self._render_raw(extrinsic, K, w, h)
+  def render_depth(self, T_cam2world, K, w, h):
+    depth_buf, _ = self._render_raw(T_cam2world, K, w, h)
     metric = 0.1 / (10.0 - 9.99 * np.reshape(depth_buf, (h, w)))
     return np.where(metric < 9.9, metric, 0.0)
 
-  def render_mask(self, extrinsic, K, w, h):
-    _, seg_buf = self._render_raw(extrinsic, K, w, h)
+  def render_mask(self, T_cam2world, K, w, h):
+    _, seg_buf = self._render_raw(T_cam2world, K, w, h)
     seg_array = np.reshape(seg_buf, (h, w)).astype(np.int32)
     return (seg_array & 0xFFFFFF) == self.robot_id
 
-  def render_segmentation(self, extrinsic, K, w, h):
-    depth_buf, seg_buf = self._render_raw(extrinsic, K, w, h)
+  def render_segmentation(self, T_cam2world, K, w, h):
+    depth_buf, seg_buf = self._render_raw(T_cam2world, K, w, h)
     metric = 0.1 / (10.0 - 9.99 * np.reshape(depth_buf, (h, w)))
     metric = np.where(metric < 9.9, metric, 0.0)
     seg_array = np.reshape(seg_buf, (h, w)).astype(np.int32)
@@ -127,9 +127,9 @@ class PyBulletRenderer:
     return obj_ids, link_ids, metric
 
 
-def get_foreground_robot_points(T_init, K, obs_depth, pb_renderer, device, max_pts=2000):
+def get_foreground_robot_points(T_cam2world, K, obs_depth, pb_renderer, device, max_pts=2000):
   h_img, w_img = obs_depth.shape
-  render_d = pb_renderer.render_depth(T_init, K, w_img, h_img)
+  render_d = pb_renderer.render_depth(T_cam2world, K, w_img, h_img)
 
   v_r, u_r = np.where(render_d > 0)
   if len(u_r) < max_pts:
@@ -142,16 +142,16 @@ def get_foreground_robot_points(T_init, K, obs_depth, pb_renderer, device, max_p
   P_cam_r = np.stack(
     [(u_r - K[0, 2]) * z_r / K[0, 0], (v_r - K[1, 2]) * z_r / K[1, 1], z_r, np.ones_like(z_r)]
   )
-  return torch.tensor((T_init @ P_cam_r)[:3, :].T, dtype=torch.float32, device=device)
+  return torch.tensor((T_cam2world @ P_cam_r)[:3, :].T, dtype=torch.float32, device=device)
 
 
-def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer, device, max_pts=2000):
+def get_foreground_gripper_points(T_cam2world, K, obs_depth, pb_renderer, device, max_pts=2000):
   h_img, w_img = obs_depth.shape
 
-  cam_pos = T_cam_world[:3, 3]
-  target_pos = T_cam_world[:3, 3] + T_cam_world[:3, 2]
+  cam_pos = T_cam2world[:3, 3]
+  target_pos = T_cam2world[:3, 3] + T_cam2world[:3, 2]
   view_matrix = pybullet.computeViewMatrix(
-    cam_pos.tolist(), target_pos.tolist(), (-T_cam_world[:3, 1]).tolist()
+    cam_pos.tolist(), target_pos.tolist(), (-T_cam2world[:3, 1]).tolist()
   )
   proj_matrix = pb_renderer._get_projection_matrix(K, w_img, h_img)
 
@@ -160,7 +160,7 @@ def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer, device
     h_img,
     viewMatrix=view_matrix,
     projectionMatrix=proj_matrix,
-    renderer=pb_renderer.renderer,
+    renderer=pb_renderer.render_mode,
     flags=pybullet.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
   )
 
@@ -182,10 +182,10 @@ def get_foreground_gripper_points(T_cam_world, K, obs_depth, pb_renderer, device
   return P_cam_r[:, idx]
 
 
-def depth_loss_batched(points, T_cam_to_frame, K, batch_obs):
+def depth_loss_batched(points, T_cam2world, K, batch_obs):
   _, _, h_img, w_img = batch_obs.shape
 
-  P_c = (points - T_cam_to_frame[:3, 3]) @ T_cam_to_frame[:3, :3]
+  P_c = (points - T_cam2world[:3, 3]) @ T_cam2world[:3, :3]
   Z_pred = P_c[..., 2]
 
   u = K[0, 0] * P_c[..., 0] / Z_pred + K[0, 2]

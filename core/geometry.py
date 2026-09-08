@@ -80,6 +80,6 @@ def axis_angle_to_matrix(v):
 def pose_from_axis_angle(delta, device):
   rot = axis_angle_to_matrix(delta[3:])
   t = delta[:3].unsqueeze(1)
-  T_top = torch.cat([rot, t], dim=1)
-  T_bottom = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=device, dtype=torch.float32)
-  return torch.cat([T_top, T_bottom], dim=0)
+  top_rows = torch.cat([rot, t], dim=1)
+  bottom_row = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=device, dtype=torch.float32)
+  return torch.cat([top_rows, bottom_row], dim=0)
