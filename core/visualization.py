@@ -68,21 +68,18 @@ def show_plotly_point_cloud(
 
 
 def show_fused_point_cloud(
-  scene_constants, scene_state, frame_idx=0, use_tint=False, height=600, width=1000
+  scene_constants, scene_state, t=0, use_tint=False, height=600, width=1000
 ):
-  camera_ids = sorted(scene_constants['camera'].keys())
+  cam_ids = sorted(scene_constants['camera'].keys())
   tint_colors = np.array([[0, 50, 0], [50, 0, 0], [0, 0, 50]])
   fused_points, fused_colors = [], []
 
-  for idx, cam_id in enumerate(camera_ids):
+  for idx, cam_id in enumerate(cam_ids):
     cam_data = scene_constants['camera'][cam_id]
     cam_state = scene_state[cam_id]
-    raw_depth = cam_data['raw_depth'][frame_idx].astype(np.float32)
+    raw_depth = cam_data['raw_depth'][t].astype(np.float32)
     points_3d, colors_rgb = core.geometry.unproject_depth(
-      raw_depth,
-      cam_data['video_rgb'][frame_idx],
-      cam_data['K_mat'],
-      T_cam2world=cam_state['extrinsics'][frame_idx],
+      raw_depth, cam_data['video_rgb'][t], cam_data['K_mat'], T_cam2world=cam_state['extrinsics'][t]
     )
     if use_tint:
       colors_rgb = np.clip(
@@ -94,7 +91,7 @@ def show_fused_point_cloud(
   show_plotly_point_cloud(
     pts=np.vstack(fused_points),
     cols=np.vstack(fused_colors),
-    title=f"Fused Point Cloud (Frame {frame_idx})" + (" [Tinted]" if use_tint else ""),
+    title=f"Fused Point Cloud (Frame {t})" + (" [Tinted]" if use_tint else ""),
     max_points=150000,
     eye_pos=(-1.2, -1.2, 0.8),
     height=height,
@@ -133,24 +130,22 @@ def show_distilled_gripper_3d(median_depth, K_mat, rgb_img):
   fig.show()
 
 
-def show_gripper_refinement(scene_constants, frame_idx=0):
-  wrist_serial = scene_constants['meta'].get('wrist_serial')
-  cam_data = scene_constants['camera'][wrist_serial]
-  rgb = cam_data['video_rgb'][frame_idx]
+def show_gripper_refinement(scene_constants, t=0):
+  wrist_cam_id = scene_constants['meta'].get('wrist_serial')
+  cam_data = scene_constants['camera'][wrist_cam_id]
+  rgb = cam_data['video_rgb'][t]
 
   orig_depth = cam_data.get('original_raw_depth')
   raw_depth = cam_data.get('raw_depth')
   gripper_mask = cam_data.get('sam_real_masks')
   emp_depth = cam_data.get('empirical_gripper_depth')
 
-  d_orig = orig_depth[frame_idx] if orig_depth is not None and len(orig_depth) > frame_idx else None
-  d_final = raw_depth[frame_idx] if raw_depth is not None and len(raw_depth) > frame_idx else None
+  d_orig = orig_depth[t] if orig_depth is not None and len(orig_depth) > t else None
+  d_final = raw_depth[t] if raw_depth is not None and len(raw_depth) > t else None
 
   if gripper_mask is not None:
     mask_vis = (
-      gripper_mask[min(frame_idx, len(gripper_mask) - 1)]
-      if gripper_mask.ndim == 3
-      else gripper_mask
+      gripper_mask[min(t, len(gripper_mask) - 1)] if gripper_mask.ndim == 3 else gripper_mask
     )
   else:
     mask_vis = None
@@ -195,7 +190,7 @@ def show_gripper_refinement(scene_constants, frame_idx=0):
   axes[3].axis('off')
 
   plt.suptitle(
-    f"Wrist Camera [{wrist_serial[:8]}] Gripper Refinement Inspection (Frame {frame_idx})",
+    f"Wrist Camera [{wrist_cam_id[:8]}] Gripper Refinement Inspection (Frame {t})",
     fontsize=13,
     y=1.02,
   )
@@ -320,25 +315,24 @@ def render_2d_tracking_video(
 def render_segmentation_video(
   scene_constants, scene_state, pb_renderer, tgt_width=1200, max_frames=None
 ):
-  camera_ids = list(scene_constants['camera'].keys())
-  n_frames = len(scene_constants['camera'][camera_ids[0]]['video_rgb'])
+  cam_ids = list(scene_constants['camera'].keys())
+  n_frames = len(scene_constants['camera'][cam_ids[0]]['video_rgb'])
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
   video_frames = []
 
-  for frame_idx in tqdm(range(n_frames), desc="Rendering segmentation"):
-    current_joints = scene_constants['robot']['joint_positions'][frame_idx]
-    current_gripper = scene_constants['robot']['gripper_positions'][frame_idx]
+  for t in tqdm(range(n_frames), desc="Rendering segmentation"):
+    current_joints = scene_constants['robot']['joint_positions'][t]
+    current_gripper = scene_constants['robot']['gripper_positions'][t]
     pb_renderer.update_robot_pose(current_joints, gripper_state=current_gripper)
     frame_views = []
-    for cam_id in camera_ids:
+    for cam_id in cam_ids:
       cam_data = scene_constants['camera'][cam_id]
       cam_state = scene_state[cam_id]
-      img_rgb = cam_data['video_rgb'][frame_idx].copy()
+      img_rgb = cam_data['video_rgb'][t].copy()
       h_img, w_img = img_rgb.shape[:2]
       robot_mask = (
-        pb_renderer.render_mask(cam_state['extrinsics'][frame_idx], cam_data['K_mat'], w_img, h_img)
-        > 0
+        pb_renderer.render_mask(cam_state['extrinsics'][t], cam_data['K_mat'], w_img, h_img) > 0
       )
       overlay = img_rgb.copy()
       overlay[robot_mask] = [50, 150, 255]
@@ -358,8 +352,8 @@ def render_segmentation_video(
 
 def render_cross_camera_axes(scene_constants, scene_state, max_frames=None):
   axis_len, tgt_w = 0.15, 1200
-  cams = list(scene_constants['camera'].keys())
-  n_frames = len(scene_state[cams[0]]['extrinsics'])
+  cam_ids = list(scene_constants['camera'].keys())
+  n_frames = len(scene_state[cam_ids[0]]['extrinsics'])
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
   axes_3d = np.array(
@@ -367,19 +361,19 @@ def render_cross_camera_axes(scene_constants, scene_state, max_frames=None):
   ).T
   video_frames = []
 
-  for frame_idx in tqdm(range(n_frames), desc="Rendering camera axes"):
+  for t in tqdm(range(n_frames), desc="Rendering camera axes"):
     camera_views = []
-    for obs_cam in cams:
+    for obs_cam in cam_ids:
       cam_data = scene_constants['camera'][obs_cam]
-      img_rgb = cam_data['video_rgb'][frame_idx].copy()
+      img_rgb = cam_data['video_rgb'][t].copy()
       h_img, w_img = img_rgb.shape[:2]
       K_mat = cam_data['K_mat']
-      obs_pose_inv = np.linalg.inv(scene_state[obs_cam]['extrinsics'][frame_idx])
+      obs_pose_inv = np.linalg.inv(scene_state[obs_cam]['extrinsics'][t])
 
-      for tgt_cam in cams:
+      for tgt_cam in cam_ids:
         if obs_cam == tgt_cam:
           continue
-        tgt_pose = scene_state[tgt_cam]['extrinsics'][frame_idx]
+        tgt_pose = scene_state[tgt_cam]['extrinsics'][t]
         pts_cam = (obs_pose_inv @ tgt_pose @ axes_3d)[:3, :]
         if pts_cam[2, 0] < 0:
           continue
@@ -426,9 +420,9 @@ def render_cross_camera_axes(scene_constants, scene_state, max_frames=None):
 
 def splat(pts, cols, K, T_cam2world, height, width):
   T_world2cam = torch.linalg.inv(T_cam2world)
-  cam = pts @ T_world2cam[:3, :3].T + T_world2cam[:3, 3]
-  z = cam[:, 2]
-  uv = (cam @ K.T)[:, :2] / z[:, None].clamp(min=1e-6)
+  cam_id = pts @ T_world2cam[:3, :3].T + T_world2cam[:3, 3]
+  z = cam_id[:, 2]
+  uv = (cam_id @ K.T)[:, :2] / z[:, None].clamp(min=1e-6)
   u, v = uv.round().long().unbind(-1)
 
   keep = (z > 0) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
@@ -444,8 +438,8 @@ def splat(pts, cols, K, T_cam2world, height, width):
 
 
 def sample_segments(starts, ends, cols, n=64):
-  t = torch.linspace(0, 1, n, device=starts.device)[None, :, None]
-  pts = starts[:, None] + (ends - starts)[:, None] * t
+  alpha = torch.linspace(0, 1, n, device=starts.device)[None, :, None]
+  pts = starts[:, None] + (ends - starts)[:, None] * alpha
   return pts.reshape(-1, 3), cols.repeat_interleave(n, 0)
 
 
@@ -470,8 +464,8 @@ def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, ma
   track_history, track_radius = 5, 0.008
   frustum_depth, frustum_aspect = 0.15, 4.0 / 3.0
 
-  camera_ids = sorted(scene_constants['camera'].keys())
-  n_frames = len(scene_state[camera_ids[0]]['extrinsics'])
+  cam_ids = sorted(scene_constants['camera'].keys())
+  n_frames = len(scene_state[cam_ids[0]]['extrinsics'])
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
 
@@ -516,16 +510,16 @@ def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, ma
     return torch.as_tensor(np.ascontiguousarray(arr), dtype=torch.uint8, device=device)
 
   video_frames = []
-  for frame_idx in tqdm(range(n_frames), desc="Rendering 4D orbit"):
+  for t in tqdm(range(n_frames), desc="Rendering 4D orbit"):
     points, colors = [], []
 
-    for cam_id in camera_ids:
+    for cam_id in cam_ids:
       cam_data = scene_constants['camera'][cam_id]
       pts_3d, cols_rgb = core.geometry.unproject_depth_torch(
-        cam_data['raw_depth'][frame_idx],
-        cam_data['video_rgb'][frame_idx],
+        cam_data['raw_depth'][t],
+        cam_data['video_rgb'][t],
         cam_data['K_mat'],
-        scene_state[cam_id]['extrinsics'][frame_idx],
+        scene_state[cam_id]['extrinsics'][t],
         device,
       )
       points.append(pts_3d)
@@ -537,12 +531,12 @@ def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, ma
     points, colors = [cloud], [cloud_cols]
 
     if tracks_3d is not None:
-      dots = as_pts(tracks_3d[frame_idx])[:, None, :] + dot_offsets
+      dots = as_pts(tracks_3d[t])[:, None, :] + dot_offsets
       points.append(dots.reshape(-1, 3))
       colors.append(as_cols(track_colors).repeat_interleave(len(dot_offsets), 0))
 
       starts, ends, trail_cols = [], [], []
-      for j in range(max(0, frame_idx - track_history), frame_idx):
+      for j in range(max(0, t - track_history), t):
         mask = np.linalg.norm(tracks_3d[j + 1] - tracks_3d[j], axis=1) > 1e-6
         if mask.any():
           starts.append(tracks_3d[j][mask])
@@ -558,8 +552,8 @@ def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, ma
         colors.append(seg_cols)
 
     starts, ends, frust_cols = [], [], []
-    for ci, cam_id in enumerate(camera_ids):
-      ext_c2w = scene_state[cam_id]['extrinsics'][frame_idx]
+    for ci, cam_id in enumerate(cam_ids):
+      ext_c2w = scene_state[cam_id]['extrinsics'][t]
       corners_w = (ext_c2w[:3, :3] @ corners_cam.T).T + ext_c2w[:3, 3]
       for ei, ej in frustum_edges:
         starts.append(corners_w[ei])
@@ -571,7 +565,7 @@ def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, ma
     points.append(seg_pts)
     colors.append(seg_cols)
 
-    angle = angle_start + (frame_idx * np.pi / n_frames)
+    angle = angle_start + (t * np.pi / n_frames)
     eye_pos = [
       orbit_center[0] + orbit_radius * np.cos(angle),
       orbit_center[1] + orbit_radius * np.sin(angle),
@@ -583,13 +577,7 @@ def render_4d_orbit_with_tracks(scene_constants, scene_state, tracks_3d=None, ma
       splat(torch.cat(points), torch.cat(colors), K_viz, viz_pose, height, width).cpu().numpy()
     )
     cv2.putText(
-      img_rgb,
-      f"Frame: {frame_idx:03d}",
-      (30, 50),
-      cv2.FONT_HERSHEY_SIMPLEX,
-      0.7,
-      (255, 255, 255),
-      2,
+      img_rgb, f"Frame: {t:03d}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2
     )
     video_frames.append(img_rgb)
 

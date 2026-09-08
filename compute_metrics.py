@@ -24,19 +24,19 @@ def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer):
   inputs = compute_extrinsics.alignment_inputs(scene_constants, scene_state, pb_renderer, device)
   chamfer, overlap, robot = compute_extrinsics.alignment_losses(inputs, inputs["base"])
 
-  wrist_cam = inputs["wrist_cam"]
-  ext_cams = [c for c in inputs["cams"] if c != wrist_cam]
-  label = {c: str(i + 1) for i, c in enumerate(ext_cams)} | {wrist_cam: "w"}
-  suffix = {c: f"cam{i + 1}" for i, c in enumerate(ext_cams)} | {wrist_cam: "wrist"}
+  wrist_cam_id = inputs["wrist_cam_id"]
+  ext_cam_ids = [c for c in inputs["cam_ids"] if c != wrist_cam_id]
+  label = {c: str(i + 1) for i, c in enumerate(ext_cam_ids)} | {wrist_cam_id: "w"}
+  suffix = {c: f"cam{i + 1}" for i, c in enumerate(ext_cam_ids)} | {wrist_cam_id: "wrist"}
 
   return (
     {f"chamfer_{label[a]}{label[b]}": chamfer[a, b].item() for a, b in inputs["pairs"]}
     | {f"overlap_{label[a]}{label[b]}": overlap[a, b].item() * 100 for a, b in inputs["pairs"]}
-    | {f"robot_loss_{suffix[cam]}": robot[cam].item() for cam in inputs["cams"]}
+    | {f"robot_loss_{suffix[cam_id]}": robot[cam_id].item() for cam_id in inputs["cam_ids"]}
   )
 
 
-def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
+def depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
   u_proj, v_proj, z_proj = core.geometry.project_points(pts_3d, K, extrinsics)
   ui = np.clip(np.round(u_proj).astype(int), 0, w_img - 1)
   vi = np.clip(np.round(v_proj).astype(int), 0, h_img - 1)
@@ -45,14 +45,14 @@ def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
   return np.abs(z_proj[valid] - z_obs[valid]).astype(np.float32) * 1000.0
 
 
-def compute_depth_residual_per_camera(
+def depth_residual_per_camera(
   scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
 ):
-  camera_ids = list(scene_constants["camera"].keys())
+  cam_ids = list(scene_constants["camera"].keys())
   n_frames = final_traj_3d.shape[0]
 
   per_camera = {}
-  for cam_id in camera_ids:
+  for cam_id in cam_ids:
     cam_data = scene_constants["camera"][cam_id]
     K = cam_data["K_mat"]
     h_img, w_img = cam_data["raw_depth"][0].shape[:2]
@@ -65,12 +65,12 @@ def compute_depth_residual_per_camera(
       vis_t = final_per_cam_vis[cam_id][t]
 
       cam_static.append(
-        compute_depth_residual_mm(
+        depth_residual_mm(
           final_traj_3d[t, :n_static][vis_t[:n_static]], K, ext, raw_depth, w_img, h_img
         )
       )
       cam_robot.append(
-        compute_depth_residual_mm(
+        depth_residual_mm(
           final_traj_3d[t, n_static:][vis_t[n_static:]], K, ext, raw_depth, w_img, h_img
         )
       )
@@ -80,10 +80,10 @@ def compute_depth_residual_per_camera(
   return per_camera
 
 
-def compute_track_depth_consistency(
+def track_depth_consistency(
   scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
 ):
-  per_camera = compute_depth_residual_per_camera(
+  per_camera = depth_residual_per_camera(
     scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
   )
 
@@ -104,13 +104,13 @@ def compute_track_depth_consistency(
   }
 
 
-def compute_track_visibility_stats(final_per_cam_vis):
+def track_visibility_stats(final_per_cam_vis):
   return {
     f"vis_pct_{cam_id[:8]}": float(vis.mean() * 100) for cam_id, vis in final_per_cam_vis.items()
   }
 
 
-def compute_motion_stats(scene_constants):
+def motion_stats(scene_constants):
   robot = scene_constants["robot"]
   joints = robot["joint_positions"]
   gripper = robot["gripper_positions"]
@@ -133,7 +133,7 @@ def compute_motion_stats(scene_constants):
   }
 
 
-def compute_scene_metadata(scene_constants):
+def scene_metadata(scene_constants):
   site, robot_id, _ = scene_constants["meta"]["episode_id"].split("+")
 
   return {
@@ -144,7 +144,7 @@ def compute_scene_metadata(scene_constants):
   }
 
 
-def compute_robot_coverage(scene_constants, scene_state, pb_renderer):
+def robot_coverage(scene_constants, scene_state, pb_renderer):
   robot = scene_constants["robot"]
   pb_renderer.update_robot_pose(
     robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0]
@@ -161,7 +161,7 @@ def compute_robot_coverage(scene_constants, scene_state, pb_renderer):
   return coverage
 
 
-def compute_episode_metrics(
+def episode_metrics(
   scene_constants,
   scene_state,
   device,
@@ -172,9 +172,9 @@ def compute_episode_metrics(
   pb_renderer,
 ):
   metrics = {"episode_id": scene_constants["meta"]["episode_id"]}
-  metrics.update(compute_scene_metadata(scene_constants))
-  metrics.update(compute_robot_coverage(scene_constants, scene_state, pb_renderer))
-  metrics.update(compute_motion_stats(scene_constants))
+  metrics.update(scene_metadata(scene_constants))
+  metrics.update(robot_coverage(scene_constants, scene_state, pb_renderer))
+  metrics.update(motion_stats(scene_constants))
   metrics.update(evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer))
 
   metrics["n_static"] = n_static
@@ -183,11 +183,11 @@ def compute_episode_metrics(
   metrics["n_track_frames"] = final_traj_3d.shape[0]
 
   metrics.update(
-    compute_track_depth_consistency(
+    track_depth_consistency(
       scene_constants, scene_state, final_traj_3d, final_per_cam_vis, n_static
     )
   )
-  metrics.update(compute_track_visibility_stats(final_per_cam_vis))
+  metrics.update(track_visibility_stats(final_per_cam_vis))
 
   return metrics
 
@@ -220,7 +220,7 @@ def process_episode(episode_id, device, pb_renderer, csv_path, config):
   scene_state = core.io.load_extrinsics(scene_constants, config.paths.extrinsics)
   tracks = load_track_data(episode_id, config.paths.tracks)
 
-  metrics = compute_episode_metrics(
+  metrics = episode_metrics(
     scene_constants,
     scene_state,
     device,

@@ -84,7 +84,7 @@ def export_to_tapvid3d(
   query_seed=42,
 ):
   episode_id = scene_constants["meta"]["episode_id"]
-  wrist_serial = scene_constants["meta"].get("wrist_serial")
+  wrist_cam_id = scene_constants["meta"].get("wrist_serial")
   cam_ids = sorted(scene_constants["camera"].keys())
   F = final_traj_3d.shape[0]
 
@@ -139,7 +139,7 @@ def export_to_tapvid3d(
       depth[~np.isfinite(depth)] = 0.0
       np.save(os.path.join(view_dir, "depth.npy"), depth)
 
-    if include_foreground_mask and cam_id == wrist_serial and "sam_real_masks" in cam_data:
+    if include_foreground_mask and cam_id == wrist_cam_id and "sam_real_masks" in cam_data:
       mask = cam_data["sam_real_masks"].astype(bool)
       np.save(os.path.join(view_dir, "foreground_mask.npy"), mask)
 
@@ -147,7 +147,7 @@ def export_to_tapvid3d(
     parts = [f"  view {view_id} [{cam_id}]: imgs({F},JPEG) intr(4,) extr({F},4,4) vis({F},{P})"]
     if include_depth and "raw_depth" in cam_data:
       parts.append(f" depth({F},{H},{W})")
-    if include_foreground_mask and cam_id == wrist_serial and "sam_real_masks" in cam_data:
+    if include_foreground_mask and cam_id == wrist_cam_id and "sam_real_masks" in cam_data:
       parts.append(f" fg_mask({F},{H},{W})")
     print("".join(parts))
 

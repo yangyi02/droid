@@ -44,7 +44,7 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
   episode_path = os.path.join(root_path, relative_path)
 
   cam_info = serials_db[episode_id]
-  wrist_serial = cam_info.get("wrist_cam_serial")
+  wrist_cam_id = cam_info.get("wrist_cam_serial")
 
   valid_cams = sorted(set(cam_info.values()))
 
@@ -66,11 +66,13 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
     "meta": {
       "episode_id": episode_id,
       "episode_path": episode_path,
-      "wrist_serial": wrist_serial,
+      "wrist_serial": wrist_cam_id,
       "valid_indices": valid_indices,
     },
     "robot": {},
-    "camera": {cam: {"baseline": 0.063 if cam == wrist_serial else 0.120} for cam in valid_cams},
+    "camera": {
+      cam_id: {"baseline": 0.063 if cam_id == wrist_cam_id else 0.120} for cam_id in valid_cams
+    },
   }
 
 
@@ -79,8 +81,8 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
 
   episode_path = scene_constants["meta"]["episode_path"]
 
-  for cam in scene_constants["camera"]:
-    svo_files = glob.glob(os.path.join(episode_path, f"**/{cam}.svo"), recursive=True)
+  for cam_id in scene_constants["camera"]:
+    svo_files = glob.glob(os.path.join(episode_path, f"**/{cam_id}.svo"), recursive=True)
     if not svo_files:
       return None
 
@@ -143,7 +145,7 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
     left_mat, right_mat = sl.Mat(), sl.Mat()
     left_raw_mat, right_raw_mat = sl.Mat(), sl.Mat()
 
-    for _ in tqdm(range(zed.get_svo_number_of_frames()), desc=f"Decoding {cam}"):
+    for _ in tqdm(range(zed.get_svo_number_of_frames()), desc=f"Decoding {cam_id}"):
       if zed.grab() == sl.ERROR_CODE.SUCCESS:
         timestamp_ms = zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_milliseconds()
         all_timestamps.append(timestamp_ms)
@@ -160,7 +162,7 @@ def extract_svo_video(scene_constants, min_frames=0, max_frames=250):
 
     zed.close()
 
-    scene_constants["camera"][cam].update(
+    scene_constants["camera"][cam_id].update(
       {
         "K_mat": K_calib_left,
         "zed_calibration": {
@@ -226,7 +228,9 @@ def align_temporal_streams(scene_constants):
   camera_streams = ["video_rgb", "video_right", "video_raw_rgb", "video_raw_right", "timestamps"]
 
   streams = [(scene_constants["robot"], key) for key in robot_streams]
-  streams += [(cam, key) for cam in scene_constants["camera"].values() for key in camera_streams]
+  streams += [
+    (cam_data, key) for cam_data in scene_constants["camera"].values() for key in camera_streams
+  ]
 
   n_frames = min(len(owner[key]) for owner, key in streams)
   for owner, key in streams:
@@ -236,8 +240,8 @@ def align_temporal_streams(scene_constants):
 
 
 def export_depth(scene_constants, export_root):
-  ep_id = scene_constants["meta"]["episode_id"]
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_id)))
+  episode_id = scene_constants["meta"]["episode_id"]
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode_id)))
   os.makedirs(ep_dir, exist_ok=True)
 
   for cam_id, data in scene_constants["camera"].items():
@@ -306,11 +310,11 @@ def export_depth(scene_constants, export_root):
   return ep_dir
 
 
-def process_episode(ep_id, models, dbs, raw_root, config):
+def process_episode(episode_id, models, dbs, raw_root, config):
   s2m2_model, sam_predictor, run_stereo_matching, device = models
   id_to_path, serials_db, keep_ranges = dbs
 
-  scene_constants = init_episode(ep_id, raw_root, id_to_path, serials_db, keep_ranges)
+  scene_constants = init_episode(episode_id, raw_root, id_to_path, serials_db, keep_ranges)
   scene_constants = extract_svo_video(
     scene_constants, min_frames=config.depth.min_frames, max_frames=config.depth.max_frames
   )
@@ -347,11 +351,15 @@ def main(_):
     valid_ids, config.runner.rank, config.runner.world_size, config.runner.limit
   )
   export_abs = os.path.abspath(os.path.expanduser(config.paths.depth))
-  done = {ep for ep in target if os.path.exists(os.path.join(export_abs, ep, "robot.npz"))}
+  done = {
+    episode_id
+    for episode_id in target
+    if os.path.exists(os.path.join(export_abs, episode_id, "robot.npz"))
+  }
 
-  def run_one(ep_id):
+  def run_one(episode_id):
     process_episode(
-      ep_id,
+      episode_id,
       (s2m2_model, sam_predictor, run_stereo_matching, device),
       (id_to_path, serials_db, keep_ranges),
       raw_root,

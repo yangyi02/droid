@@ -45,7 +45,7 @@ def load_depth_data(episode_id, depth_root, load_video="first_frame", inspection
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(depth_root, episode_id)))
 
   robot_data = np.load(os.path.join(ep_dir, "robot.npz"), allow_pickle=True)
-  wrist_serial = str(robot_data["wrist_serial"]) if "wrist_serial" in robot_data else None
+  wrist_cam_id = str(robot_data["wrist_serial"]) if "wrist_serial" in robot_data else None
 
   robot = {
     "joint_positions": robot_data["joint_positions"].astype(np.float32),
@@ -112,7 +112,7 @@ def load_depth_data(episode_id, depth_root, load_video="first_frame", inspection
   scene_constants = {
     "meta": {
       "episode_id": episode_id,
-      "wrist_serial": wrist_serial,
+      "wrist_serial": wrist_cam_id,
       "valid_indices": valid_indices,
     },
     "robot": robot,
@@ -123,8 +123,8 @@ def load_depth_data(episode_id, depth_root, load_video="first_frame", inspection
 
 
 def load_extrinsics(scene_constants, extrinsics_root):
-  ep_id = scene_constants["meta"]["episode_id"]
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(extrinsics_root, ep_id)))
+  episode_id = scene_constants["meta"]["episode_id"]
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(extrinsics_root, episode_id)))
 
   scene_state = {}
   for cam_id in scene_constants["camera"]:

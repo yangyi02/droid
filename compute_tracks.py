@@ -41,7 +41,7 @@ def sample_per_view(per_cam_vis, num_points=None, seed=42):
 
 
 def keep_tracks(per_cam, keep):
-  return {cam: arr[:, keep] for cam, arr in per_cam.items()}
+  return {cam_id: arr[:, keep] for cam_id, arr in per_cam.items()}
 
 
 def link_transform(obj_id, link_id):
@@ -59,7 +59,7 @@ def link_transform(obj_id, link_id):
 def find_static_candidates(
   scene_constants, scene_state, pb_renderer, safe_margin=15, match_radius=0.005
 ):
-  camera_ids = list(scene_constants["camera"])
+  cam_ids = list(scene_constants["camera"])
   robot = scene_constants["robot"]
   kernel = np.ones((safe_margin, safe_margin), np.uint8)
 
@@ -68,7 +68,7 @@ def find_static_candidates(
   )
 
   verified = []
-  for src_cam in camera_ids:
+  for src_cam in cam_ids:
     cam_data = scene_constants["camera"][src_cam]
     depth = cam_data["raw_depth"][0]
     h_img, w_img = depth.shape
@@ -89,7 +89,7 @@ def find_static_candidates(
     )
 
     n_agree = np.zeros(len(pts), dtype=int)
-    for dst_cam in camera_ids:
+    for dst_cam in cam_ids:
       if dst_cam == src_cam:
         continue
       _, _, gap = depth_gap(
@@ -271,16 +271,22 @@ def merge_tracks(static_pts_3d, static_tracks, static_vis, robot_traj_3d, robot_
   static_traj_3d = np.broadcast_to(static_pts_3d[None], (n_frames, n_static, 3))
   return (
     np.concatenate([static_traj_3d, robot_traj_3d], axis=1),
-    {cam: np.concatenate([static_tracks[cam], robot_tracks[cam]], axis=1) for cam in static_tracks},
-    {cam: np.concatenate([static_vis[cam], robot_vis[cam]], axis=1) for cam in static_vis},
+    {
+      cam_id: np.concatenate([static_tracks[cam_id], robot_tracks[cam_id]], axis=1)
+      for cam_id in static_tracks
+    },
+    {
+      cam_id: np.concatenate([static_vis[cam_id], robot_vis[cam_id]], axis=1)
+      for cam_id in static_vis
+    },
   )
 
 
 def export_tracks(
   scene_constants, scene_state, traj_3d, per_cam_tracks, per_cam_vis, n_static, export_root
 ):
-  ep_id = scene_constants["meta"]["episode_id"]
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, ep_id)))
+  episode_id = scene_constants["meta"]["episode_id"]
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode_id)))
   os.makedirs(ep_dir, exist_ok=True)
 
   np.savez_compressed(
@@ -383,7 +389,11 @@ def main(_):
     config.runner.limit,
   )
   export_abs = os.path.abspath(os.path.expanduser(config.paths.tracks))
-  done = {ep for ep in target if os.path.exists(os.path.join(export_abs, ep, "tracks_3d.npz"))}
+  done = {
+    episode_id
+    for episode_id in target
+    if os.path.exists(os.path.join(export_abs, episode_id, "tracks_3d.npz"))
+  }
 
   def run_one(episode_id):
     process_episode(episode_id, pb_renderer, config)

@@ -17,7 +17,7 @@ def shard_episodes(episode_ids, rank, world_size, limit=-1, seed=42):
 
 def run_episodes(episode_ids, process, rank=0, world_size=1, done=(), stage="Pipeline"):
   done = set(done)
-  todo = [ep for ep in episode_ids if ep not in done]
+  todo = [episode_id for episode_id in episode_ids if episode_id not in done]
   skipped = len(episode_ids) - len(todo)
   print(
     f"Rank {rank}/{world_size}: {len(todo)} episodes to process"
@@ -25,10 +25,10 @@ def run_episodes(episode_ids, process, rank=0, world_size=1, done=(), stage="Pip
   )
 
   succeeded = []
-  for idx, ep_id in enumerate(todo):
-    print(f"\n[{idx + 1}/{len(todo)}] Episode: {ep_id}")
-    process(ep_id)
-    succeeded.append(ep_id)
+  for idx, episode_id in enumerate(todo):
+    print(f"\n[{idx + 1}/{len(todo)}] Episode: {episode_id}")
+    process(episode_id)
+    succeeded.append(episode_id)
 
   print(f"\n{stage} complete! {len(succeeded)}/{len(todo)} episodes succeeded.")
   return succeeded
