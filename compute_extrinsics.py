@@ -73,22 +73,15 @@ def extract_robot_clouds(cam_id, episode, pb_renderer, base_extrinsic, device, d
     )
     depth = cam_data['raw_depth'][t].astype(np.float32)
 
-    if is_wrist:
-      points_cam = core.physics.get_foreground_gripper_points(
-        T_ee_base_all[t] @ base_extrinsic, K, depth, pb_renderer, device
-      )
-      if points_cam is None:
-        continue
-      cache_X.append(
-        torch.tensor((base_extrinsic @ points_cam)[:3, :].T, dtype=torch.float32, device=device)
-      )
-    else:
-      points_world = core.physics.get_foreground_robot_points(
-        base_extrinsic, K, depth, pb_renderer, device
-      )
-      if points_world is None:
-        continue
-      cache_X.append(points_world)
+    T_cam2world = T_ee_base_all[t] @ base_extrinsic if is_wrist else base_extrinsic
+    links = pb_renderer.gripper_links if is_wrist else None
+    points_cam = core.physics.foreground_points(T_cam2world, K, depth, pb_renderer, links=links)
+    if points_cam is None:
+      continue
+
+    cache_X.append(
+      torch.tensor((base_extrinsic @ points_cam)[:3, :].T, dtype=torch.float32, device=device)
+    )
     kept.append(t)
 
   return torch.stack(cache_X), depth_batch[kept]

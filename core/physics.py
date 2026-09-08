@@ -138,59 +138,26 @@ class PyBulletRenderer:
     return obj_ids, link_ids, metric
 
 
-def get_foreground_robot_points(T_cam2world, K, depth, pb_renderer, device, n_points=2000):
+def foreground_points(T_cam2world, K, depth, pb_renderer, n_points=2000, links=None):
+  """Robot surface the camera sees, in camera coordinates. links=None takes every link."""
   height, width = depth.shape
-  render_d = pb_renderer.render_depth(T_cam2world, K, width, height)
+  _, link_ids, metric = pb_renderer.render_segmentation(T_cam2world, K, width, height)
 
-  v_r, u_r = np.where(render_d > 0)
+  visible = metric > 0
+  if links is not None:
+    visible &= np.isin(link_ids, links)
+
+  v_r, u_r = np.where(visible)
   if len(u_r) < n_points:
     return None
 
   idx = np.random.choice(len(u_r), n_points, replace=False)
   v_r, u_r = v_r[idx], u_r[idx]
-  z_r = render_d[v_r, u_r]
-
-  points_cam = np.stack(
-    [(u_r - K[0, 2]) * z_r / K[0, 0], (v_r - K[1, 2]) * z_r / K[1, 1], z_r, np.ones_like(z_r)]
-  )
-  return torch.tensor((T_cam2world @ points_cam)[:3, :].T, dtype=torch.float32, device=device)
-
-
-def get_foreground_gripper_points(T_cam2world, K, depth, pb_renderer, device, n_points=2000):
-  height, width = depth.shape
-
-  cam_pos = T_cam2world[:3, 3]
-  target_pos = T_cam2world[:3, 3] + T_cam2world[:3, 2]
-  view_matrix = pybullet.computeViewMatrix(
-    cam_pos.tolist(), target_pos.tolist(), (-T_cam2world[:3, 1]).tolist()
-  )
-  proj_matrix = pb_renderer._get_projection_matrix(K, width, height)
-
-  _, _, _, depth_buffer, seg_buffer = pybullet.getCameraImage(
-    width,
-    height,
-    viewMatrix=view_matrix,
-    projectionMatrix=proj_matrix,
-    renderer=pb_renderer.render_mode,
-    flags=pybullet.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
-  )
-
-  metric = metric_depth(depth_buffer, height, width)
-  seg_array = np.reshape(seg_buffer, (height, width)).astype(np.int32)
-  link_ids = (seg_array >> 24) - 1
-  valid_gripper = np.isin(link_ids, pb_renderer.gripper_links)
-
-  v_r, u_r = np.where((metric < FAR_PLANE * 0.99) & valid_gripper)
   z_r = metric[v_r, u_r]
-  if len(z_r) < n_points:
-    return None
 
-  points_cam = np.stack(
+  return np.stack(
     [(u_r - K[0, 2]) * z_r / K[0, 0], (v_r - K[1, 2]) * z_r / K[1, 1], z_r, np.ones_like(z_r)]
   )
-
-  idx = np.random.choice(len(z_r), n_points, replace=False)
-  return points_cam[:, idx]
 
 
 def depth_loss_batched(points, T_cam2world, K, depth_batch, max_depth=1.5):
