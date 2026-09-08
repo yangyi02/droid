@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import csv
 import fcntl
-import itertools
+import glob
 import os
 import time
 
@@ -20,91 +20,20 @@ import core.runner
 
 @torch.no_grad()
 def evaluate_extrinsics(scene_constants, scene_state, device, pb_renderer):
-  wrist_cam = scene_constants["meta"]["wrist_serial"]
-  ext_cams = [c for c in scene_constants["camera"] if c != wrist_cam]
-  cams = ext_cams + [wrist_cam]
-  pairs = list(itertools.combinations(cams, 2))
+  """Stage 2's own objective, read once at the extrinsics it converged to."""
+  inputs = compute_extrinsics.alignment_inputs(scene_constants, scene_state, pb_renderer, device)
+  chamfer, overlap, robot = compute_extrinsics.alignment_losses(inputs, inputs["base"])
+
+  wrist_cam = inputs["wrist_cam"]
+  ext_cams = [c for c in inputs["cams"] if c != wrist_cam]
   label = {c: str(i + 1) for i, c in enumerate(ext_cams)} | {wrist_cam: "w"}
   suffix = {c: f"cam{i + 1}" for i, c in enumerate(ext_cams)} | {wrist_cam: "wrist"}
-  n_frames = len(scene_constants["robot"]["joint_positions"])
-  T_ee_all = scene_constants["robot"]["T_ee_base_all"]
 
-  metrics = {}
-  base = {}
-  for cam in cams:
-    base[cam] = torch.tensor(scene_state[cam]["base_extrinsic"], dtype=torch.float32, device=device)
-
-  for cam in cams:
-    K_mat = scene_constants["camera"][cam]["K_mat"]
-    cache_pts, cache_obs = [], []
-
-    for t in range(n_frames):
-      pb_renderer.update_robot_pose(
-        scene_constants["robot"]["joint_positions"][t],
-        scene_constants["robot"]["gripper_positions"][t],
-      )
-      d_obs = scene_constants["camera"][cam]["raw_depth"][t].astype(np.float32)
-      T_cam = scene_state[cam]["extrinsics"][t]
-
-      if cam == wrist_cam:
-        pts = core.physics.get_foreground_gripper_points(T_cam, K_mat, d_obs, pb_renderer, device)
-        if pts is None:
-          continue
-        T_world_to_ee = np.linalg.inv(T_ee_all[t])
-        pts_world = (T_cam @ pts)[:3, :].T
-        pts = torch.tensor(
-          (T_world_to_ee[:3, :3] @ pts_world.T + T_world_to_ee[:3, 3:4]).T,
-          dtype=torch.float32,
-          device=device,
-        )
-      else:
-        pts = core.physics.get_foreground_robot_points(T_cam, K_mat, d_obs, pb_renderer, device)
-        if pts is None:
-          continue
-
-      cache_pts.append(pts)
-      cache_obs.append(torch.tensor(d_obs, dtype=torch.float32, device=device)[None, ...])
-
-    if not cache_pts:
-      metrics[f"robot_loss_{suffix[cam]}"] = float("nan")
-      continue
-
-    K = torch.tensor(K_mat, dtype=torch.float32, device=device)
-    loss = core.physics.depth_loss_batched(
-      torch.stack(cache_pts), base[cam], K, torch.stack(cache_obs)
-    )
-    metrics[f"robot_loss_{suffix[cam]}"] = loss.item()
-
-  chamfer_sum = {p: 0.0 for p in pairs}
-  overlap_sum = {p: 0.0 for p in pairs}
-  n_valid = 0
-
-  for t in range(n_frames):
-    env = {}
-    for cam in cams:
-      env[cam] = compute_extrinsics.camera_frame_points(
-        t, scene_constants["camera"][cam], device, n_points=5000
-      )
-    if any(pts is None for pts in env.values()):
-      continue
-
-    ee_pose = torch.tensor(T_ee_all[t], dtype=torch.float32, device=device)
-    world = {}
-    for cam in cams:
-      to_world = ee_pose @ base[cam] if cam == wrist_cam else base[cam]
-      world[cam] = (to_world @ env[cam])[:3, :].T.unsqueeze(0)
-
-    for a, b in pairs:
-      loss, overlap = compute_extrinsics.batched_chamfer_distance(world[a], world[b])
-      chamfer_sum[a, b] += loss.item()
-      overlap_sum[a, b] += overlap.item()
-    n_valid += 1
-
-  for a, b in pairs:
-    metrics[f"chamfer_{label[a]}{label[b]}"] = chamfer_sum[a, b] / n_valid
-    metrics[f"overlap_{label[a]}{label[b]}"] = overlap_sum[a, b] / n_valid * 100
-
-  return metrics
+  return (
+    {f"chamfer_{label[a]}{label[b]}": chamfer[a, b].item() for a, b in inputs["pairs"]}
+    | {f"overlap_{label[a]}{label[b]}": overlap[a, b].item() * 100 for a, b in inputs["pairs"]}
+    | {f"robot_loss_{suffix[cam]}": robot[cam].item() for cam in inputs["cams"]}
+  )
 
 
 def compute_depth_residual_mm(pts_3d, K, extrinsics, raw_depth, w_img, h_img):
@@ -270,11 +199,11 @@ def load_track_data(episode_id, tracks_root):
   meta_data = np.load(os.path.join(ep_dir, "track_metadata.npz"))
 
   per_cam_tracks, per_cam_vis = {}, {}
-  for cam_dir_name in sorted(os.listdir(ep_dir)):
-    cam_dir = os.path.join(ep_dir, cam_dir_name)
-    cam_data = np.load(os.path.join(cam_dir, "tracks_2d.npz"))
-    per_cam_tracks[cam_dir_name] = cam_data["traj_2d"]
-    per_cam_vis[cam_dir_name] = cam_data["vis_2d"]
+  for vis_path in sorted(glob.glob(os.path.join(ep_dir, "*", "tracks_2d.npz"))):
+    cam_id = os.path.basename(os.path.dirname(vis_path))
+    cam_data = np.load(vis_path)
+    per_cam_tracks[cam_id] = cam_data["traj_2d"]
+    per_cam_vis[cam_id] = cam_data["vis_2d"]
 
   return {
     "traj_3d": tracks_data["traj_3d"],
