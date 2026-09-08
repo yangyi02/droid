@@ -404,8 +404,6 @@ def process_episode(episode_id, pb_renderer, extrinsics_db, device, config):
     device,
     lr=config.extrinsics.lr,
     n_steps=config.extrinsics.n_steps,
-    chamfer_weight=config.extrinsics.chamfer_weight,
-    robot_weight=config.extrinsics.robot_weight,
     chamfer_n_points=config.extrinsics.chamfer_n_points,
     max_depth=config.extrinsics.max_depth,
     match_radius=config.extrinsics.chamfer_match_radius,

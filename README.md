@@ -33,7 +33,7 @@ scripts read it through `ml_collections.config_flags`, so any field can be
 overridden on the command line without editing the file:
 
 ```bash
-python compute_tracks.py --config.tracks.tau=0.02 --config.tracks.num_static_points_per_view=200
+python compute_tracks.py --config.tracks.depth_tolerance=0.03 --config.tracks.num_static_points_per_view=200
 python compute_extrinsics.py --config.extrinsics.lr=0.005 --config.extrinsics.n_steps=800
 python compute_depth.py --config.depth.max_frames=400 --config.runner.limit=20
 python compute_tracks.py --config.render.gpu=False  # CPU rasteriser, for a box with no EGL

@@ -331,7 +331,6 @@ def process_episode(episode_id, models, dbs, raw_root, config):
   episode = core.depth.build_universal_gripper_mask(
     episode,
     sam_predictor,
-    consensus_thresh=config.depth.consensus_thresh,
     gripper_closed_thresh=config.depth.gripper_closed_thresh,
     mask_area_min=config.depth.mask_area_min,
     mask_area_max=config.depth.mask_area_max,

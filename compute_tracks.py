@@ -56,12 +56,9 @@ def link_transform(obj_id, link_id):
   return T_link2world
 
 
-def find_static_candidates(
-  episode, poses, pb_renderer, safe_margin=15, match_radius=0.005, min_depth=0.05, max_depth=5.0
-):
+def find_static_candidates(episode, poses, pb_renderer, match_radius=0.005, max_depth=5.0):
   cam_ids = list(episode["camera"])
   robot = episode["robot"]
-  kernel = np.ones((safe_margin, safe_margin), np.uint8)
 
   pb_renderer.update_robot_pose(
     robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0]
@@ -76,8 +73,7 @@ def find_static_candidates(
     robot_mask = pb_renderer.render_mask(
       poses[src_cam]["extrinsics"][0], cam_data["K"], width, height
     )
-    near_robot = cv2.dilate(robot_mask.astype(np.uint8), kernel, iterations=1) > 0
-    on_env = ~near_robot & (depth > min_depth) & (depth < max_depth)
+    on_env = ~robot_mask & (depth > 0) & (depth < max_depth)
     vs, us = np.where(on_env)
 
     points = core.geometry.unproject_pixels(
@@ -136,7 +132,7 @@ def filter_static_tracks(
   per_cam_tracks_2d,
   per_cam_vis,
   per_cam_gap,
-  tau=0.015,
+  depth_tolerance=0.02,
   min_run_frames=30,
   flicker=0.10,
 ):
@@ -147,7 +143,7 @@ def filter_static_tracks(
   run = np.zeros((n_cams, n_points), dtype=np.int32)
   streak = np.zeros((n_cams, n_points), dtype=np.int32)
   for t in range(n_frames):
-    run = np.where(gap[:, t] > tau, run + 1, 0)
+    run = np.where(gap[:, t] > depth_tolerance, run + 1, 0)
     streak = np.maximum(streak, run)
 
   gone = (streak >= min_run_frames) & vis[:, 0]
@@ -222,7 +218,7 @@ def find_robot_candidates(episode, poses, pb_renderer, safe_margin=7):
   return tracks_3d
 
 
-def project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer, occlusion_slack=0.02):
+def project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer, depth_tolerance=0.02):
   robot = episode["robot"]
   n_frames, n_points, _ = robot_tracks_3d.shape
 
@@ -248,9 +244,10 @@ def project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer, occlusion
 
       z_urdf = sample_depth(urdf_depth, u, v, z_pred)
       z_sensor = sample_depth(cam_data["raw_depth"][t], u, v, z_pred)
-      facing_camera = (z_urdf > 0) & (z_pred <= z_urdf + occlusion_slack)
-      behind_scene = (z_sensor > 0) & (z_pred > z_sensor + occlusion_slack)
-      vis[t] = facing_camera & ~behind_scene
+      facing_camera = (z_urdf > 0) & (z_pred <= z_urdf + depth_tolerance)
+      occluded = (z_sensor > 0) & (z_pred > z_sensor + depth_tolerance)
+      background_bleed = (z_sensor > 0) & (z_sensor > z_urdf + depth_tolerance)
+      vis[t] = facing_camera & ~occluded & ~background_bleed
 
     per_cam_tracks_2d[cam_id] = tracks
     per_cam_vis[cam_id] = vis
@@ -348,9 +345,7 @@ def process_episode(episode_id, pb_renderer, config):
     episode,
     poses,
     pb_renderer,
-    safe_margin=config.tracks.safe_margin,
     match_radius=config.tracks.match_radius,
-    min_depth=config.tracks.seed_min_depth,
     max_depth=config.tracks.seed_max_depth,
   )
   static_tracks, static_vis, static_gap = project_static_tracks(
@@ -361,7 +356,7 @@ def process_episode(episode_id, pb_renderer, config):
     static_tracks,
     static_vis,
     static_gap,
-    tau=config.tracks.tau,
+    depth_tolerance=config.tracks.depth_tolerance,
     min_run_frames=config.tracks.min_run_frames,
     flicker=config.tracks.flicker,
   )
