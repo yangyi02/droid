@@ -32,20 +32,20 @@ def project_points(pts_world, K, T_cam2world):
   return u, v, z_cam
 
 
-def unproject_depth(depth, color_img, K_mat, T_cam2world=None, min_depth=0.0, max_depth=1.5):
+def unproject_depth(depth, color_img, K, T_cam2world=None, min_depth=0.0, max_depth=1.5):
   mask = (depth > min_depth) & (depth < max_depth)
   v, u = np.where(mask)
   if T_cam2world is None:
     T_cam2world = np.eye(4)
-  pts_world = unproject_pixels(u, v, depth[mask], K_mat, T_cam2world)
+  pts_world = unproject_pixels(u, v, depth[mask], K, T_cam2world)
   return pts_world, color_img[mask]
 
 
-def unproject_depth_torch(depth, color_img, K_mat, T_cam2world, device, max_depth=1.5):
+def unproject_depth_torch(depth, color_img, K, T_cam2world, device, max_depth=1.5):
   depth = torch.as_tensor(depth, device=device)
   v, u = torch.nonzero((depth > 0) & (depth < max_depth), as_tuple=True)
   z = depth[v, u]
-  K = torch.as_tensor(K_mat, dtype=torch.float32, device=device)
+  K = torch.as_tensor(K, dtype=torch.float32, device=device)
   pts_cam = torch.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z], dim=1)
   T = torch.as_tensor(T_cam2world, dtype=torch.float32, device=device)
   pts_world = pts_cam @ T[:3, :3].T + T[:3, 3]

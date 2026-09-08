@@ -9,7 +9,7 @@ from tqdm import tqdm
 import core.geometry
 
 
-def inspect_dict_structure(data, name="scene_constants", indent=0):
+def inspect_dict_structure(data, name="episode", indent=0):
   spacing = "  " * indent
   if isinstance(data, dict):
     print(f"{spacing}{name} (dict, {len(data)} keys)")
@@ -77,7 +77,7 @@ def show_fused_point_cloud(episode, poses, t=0, use_tint=False, height=600, widt
     cam_state = poses[cam_id]
     raw_depth = cam_data['raw_depth'][t].astype(np.float32)
     points_3d, colors_rgb = core.geometry.unproject_depth(
-      raw_depth, cam_data['video_rgb'][t], cam_data['K_mat'], T_cam2world=cam_state['extrinsics'][t]
+      raw_depth, cam_data['video_rgb'][t], cam_data['K'], T_cam2world=cam_state['extrinsics'][t]
     )
     if use_tint:
       colors_rgb = np.clip(
@@ -97,11 +97,11 @@ def show_fused_point_cloud(episode, poses, t=0, use_tint=False, height=600, widt
   )
 
 
-def show_distilled_gripper_3d(median_depth, K_mat, rgb_img):
+def show_distilled_gripper_3d(median_depth, K, rgb_img):
   v, u = np.where(median_depth > 0)
   z = median_depth[v, u]
-  x = (u - K_mat[0, 2]) * z / K_mat[0, 0]
-  y = (v - K_mat[1, 2]) * z / K_mat[1, 1]
+  x = (u - K[0, 2]) * z / K[0, 0]
+  y = (v - K[1, 2]) * z / K[1, 1]
   pts_3d = np.stack([x, y, z], axis=-1)
   fig = go.Figure(
     data=[
@@ -219,7 +219,7 @@ def render_multicam_disparity_video(episode, max_frames=None):
       raw_depth = raw_depth[:max_frames]
     left_video = media.resize_video(video_rgb, tgt_size)
     right_video = media.resize_video(video_right, tgt_size)
-    fx = cam_data['K_mat'][0, 0]
+    fx = cam_data['K'][0, 0]
     baseline = cam_data['baseline']
     raw_disp = np.zeros_like(raw_depth)
     valid_mask = raw_depth > 0
@@ -328,7 +328,7 @@ def render_segmentation_video(episode, poses, pb_renderer, tgt_width=1200, max_f
       img_rgb = cam_data['video_rgb'][t].copy()
       h_img, w_img = img_rgb.shape[:2]
       robot_mask = (
-        pb_renderer.render_mask(cam_state['extrinsics'][t], cam_data['K_mat'], w_img, h_img) > 0
+        pb_renderer.render_mask(cam_state['extrinsics'][t], cam_data['K'], w_img, h_img) > 0
       )
       overlay = img_rgb.copy()
       overlay[robot_mask] = [50, 150, 255]
@@ -363,7 +363,7 @@ def render_cross_camera_axes(episode, poses, max_frames=None):
       cam_data = episode['camera'][obs_cam]
       img_rgb = cam_data['video_rgb'][t].copy()
       h_img, w_img = img_rgb.shape[:2]
-      K_mat = cam_data['K_mat']
+      K = cam_data['K']
       obs_pose_inv = np.linalg.inv(poses[obs_cam]['extrinsics'][t])
 
       for tgt_cam in cam_ids:
@@ -373,7 +373,7 @@ def render_cross_camera_axes(episode, poses, max_frames=None):
         pts_cam = (obs_pose_inv @ tgt_pose @ axes_3d)[:3, :]
         if pts_cam[2, 0] < 0:
           continue
-        uv = K_mat @ pts_cam
+        uv = K @ pts_cam
         org, px, py, pz = map(tuple, (uv[:2] / uv[2]).astype(int).T)
         if 0 <= org[0] < w_img and 0 <= org[1] < h_img:
           cv2.line(img_rgb, org, px, (255, 0, 0), 3)
@@ -416,9 +416,9 @@ def render_cross_camera_axes(episode, poses, max_frames=None):
 
 def splat(pts, cols, K, T_cam2world, height, width):
   T_world2cam = torch.linalg.inv(T_cam2world)
-  cam_id = pts @ T_world2cam[:3, :3].T + T_world2cam[:3, 3]
-  z = cam_id[:, 2]
-  uv = (cam_id @ K.T)[:, :2] / z[:, None].clamp(min=1e-6)
+  pts_cam = pts @ T_world2cam[:3, :3].T + T_world2cam[:3, 3]
+  z = pts_cam[:, 2]
+  uv = (pts_cam @ K.T)[:, :2] / z[:, None].clamp(min=1e-6)
   u, v = uv.round().long().unbind(-1)
 
   keep = (z > 0) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
@@ -514,7 +514,7 @@ def render_4d_orbit_with_tracks(episode, poses, tracks_3d=None, max_frames=None)
       pts_3d, cols_rgb = core.geometry.unproject_depth_torch(
         cam_data['raw_depth'][t],
         cam_data['video_rgb'][t],
-        cam_data['K_mat'],
+        cam_data['K'],
         poses[cam_id]['extrinsics'][t],
         device,
       )

@@ -52,7 +52,7 @@ def depth_residual_per_camera(episode, poses, traj_3d, per_cam_vis, n_static):
   per_camera = {}
   for cam_id in cam_ids:
     cam_data = episode["camera"][cam_id]
-    K = cam_data["K_mat"]
+    K = cam_data["K"]
     h_img, w_img = cam_data["raw_depth"][0].shape[:2]
 
     cam_static, cam_robot = [], []
@@ -141,7 +141,7 @@ def robot_coverage(episode, poses, pb_renderer):
   coverage = {}
   for cam_id, cam_data in episode["camera"].items():
     h_img, w_img = cam_data["raw_depth"][0].shape
-    mask = pb_renderer.render_mask(poses[cam_id]["extrinsics"][0], cam_data["K_mat"], w_img, h_img)
+    mask = pb_renderer.render_mask(poses[cam_id]["extrinsics"][0], cam_data["K"], w_img, h_img)
     coverage[f"robot_pct_{cam_id[:8]}"] = float(mask.mean() * 100)
 
   return coverage

@@ -164,7 +164,7 @@ def extract_svo_video(episode, min_frames=0, max_frames=250):
 
     episode["camera"][cam_id].update(
       {
-        "K_mat": K_calib_left,
+        "K": K_calib_left,
         "zed_calibration": {
           "calibrated": {
             "K": K_calib_left,

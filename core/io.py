@@ -73,7 +73,7 @@ def load_depth_data(episode_id, depth_root, load_video="first_frame", inspection
     calib_path = os.path.join(cam_path, "calibration.npz")
     if os.path.exists(calib_path):
       calib = np.load(calib_path)
-      cam_data["K_mat"] = calib["K_calib_left"].astype(np.float32)
+      cam_data["K"] = calib["K_calib_left"].astype(np.float32)
       if "baseline" in calib:
         cam_data["baseline"] = float(calib["baseline"])
 

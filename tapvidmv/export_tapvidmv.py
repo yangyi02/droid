@@ -124,7 +124,7 @@ def export_to_tapvid3d(
     jpeg_arr[:] = jpeg_list
     np.save(os.path.join(view_dir, "images_jpeg_bytes.npy"), jpeg_arr)
 
-    K = cam_data["K_mat"]
+    K = cam_data["K"]
     intrinsics = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]], dtype=np.float32)
     np.save(os.path.join(view_dir, "intrinsics.npy"), intrinsics)
 

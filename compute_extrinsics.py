@@ -63,7 +63,7 @@ def extract_robot_clouds(cam_id, episode, pb_renderer, base_extrinsic, device, o
   is_wrist = cam_id == episode['meta']['wrist_serial']
   T_ee_base_all = episode['robot']['T_ee_base_all']
   cam_data = episode['camera'][cam_id]
-  K_mat = cam_data['K_mat']
+  K = cam_data['K']
 
   cache_X, kept = [], []
   n_frames = len(episode['robot']['joint_positions'])
@@ -75,7 +75,7 @@ def extract_robot_clouds(cam_id, episode, pb_renderer, base_extrinsic, device, o
 
     if is_wrist:
       pts_cam = core.physics.get_foreground_gripper_points(
-        T_ee_base_all[t] @ base_extrinsic, K_mat, depth, pb_renderer, device
+        T_ee_base_all[t] @ base_extrinsic, K, depth, pb_renderer, device
       )
       if pts_cam is None:
         continue
@@ -84,7 +84,7 @@ def extract_robot_clouds(cam_id, episode, pb_renderer, base_extrinsic, device, o
       )
     else:
       pts_world = core.physics.get_foreground_robot_points(
-        base_extrinsic, K_mat, depth, pb_renderer, device
+        base_extrinsic, K, depth, pb_renderer, device
       )
       if pts_world is None:
         continue
@@ -108,7 +108,7 @@ def per_camera_alignment(
     mode = "wrist (gripper-only)" if is_wrist else "external (full body)"
     print(f"\n  Optimizing [{mode}] camera: [{cam_id}] ...")
 
-    K = torch.tensor(episode['camera'][cam_id]['K_mat'], dtype=torch.float32, device=device)
+    K = torch.tensor(episode['camera'][cam_id]['K'], dtype=torch.float32, device=device)
     T_cam2mount_init = torch.tensor(
       prev_scene_state[cam_id]['base_extrinsic'], dtype=torch.float32, device=device
     )
@@ -182,7 +182,7 @@ def batched_chamfer_distance(p1, p2):
 
 def camera_frame_points(t, cam_data, device, n_points=2000):
   depth = cam_data["raw_depth"][t].astype(np.float32)
-  K_mat = cam_data["K_mat"]
+  K = cam_data["K"]
 
   valid_mask = (depth > 0.0) & (depth < 1.5)
   vs, us = np.where(valid_mask)
@@ -190,8 +190,8 @@ def camera_frame_points(t, cam_data, device, n_points=2000):
     return None
 
   zs_obs = depth[vs, us]
-  x_c = (us - K_mat[0, 2]) * zs_obs / K_mat[0, 0]
-  y_c = (vs - K_mat[1, 2]) * zs_obs / K_mat[1, 1]
+  x_c = (us - K[0, 2]) * zs_obs / K[0, 0]
+  y_c = (vs - K[1, 2]) * zs_obs / K[1, 1]
 
   P_cam = np.stack([x_c, y_c, zs_obs, np.ones_like(zs_obs)], axis=0)
   if P_cam.shape[1] < 100:
@@ -219,7 +219,7 @@ def alignment_inputs(episode, poses, pb_renderer, device, chamfer_n_points=2000)
       device,
       observed_depth(cam_data, device),
     )
-    K[cam_id] = torch.tensor(cam_data['K_mat'], dtype=torch.float32, device=device)
+    K[cam_id] = torch.tensor(cam_data['K'], dtype=torch.float32, device=device)
     base[cam_id] = torch.tensor(poses[cam_id]['base_extrinsic'], dtype=torch.float32, device=device)
 
   cache = {cam_id: [] for cam_id in cam_ids}

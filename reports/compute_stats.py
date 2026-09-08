@@ -214,8 +214,8 @@ def main():
 
   with ProcessPoolExecutor(max_workers=args.workers) as pool:
     futures = {
-      pool.submit(_worker, ep_id, args.tracks_root, args.depth_root): ep_id
-      for ep_id in completed_eps
+      pool.submit(_worker, episode_id, args.tracks_root, args.depth_root): episode_id
+      for episode_id in completed_eps
     }
 
     with tqdm(total=len(futures), desc="Computing stats") as pbar:

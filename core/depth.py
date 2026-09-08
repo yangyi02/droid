@@ -42,7 +42,7 @@ def compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, conf_
     ]
     raw_disp = np.stack(disp_frames)
 
-    fx = cam_data["K_mat"][0, 0]
+    fx = cam_data["K"][0, 0]
     baseline = cam_data["baseline"]
     cam_data["raw_depth"] = core.geometry.decode_disparity(raw_disp, fx, baseline)
 

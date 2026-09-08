@@ -23,7 +23,7 @@ def sample_depth(depth, u, v, z_pred):
 
 
 def depth_gap(cam_data, pts_3d, T_cam2world, t):
-  u, v, z_pred = core.geometry.project_points(pts_3d, cam_data["K_mat"], T_cam2world)
+  u, v, z_pred = core.geometry.project_points(pts_3d, cam_data["K"], T_cam2world)
   return u, v, sample_depth(cam_data["raw_depth"][t], u, v, z_pred) - z_pred
 
 
@@ -72,7 +72,7 @@ def find_static_candidates(episode, poses, pb_renderer, safe_margin=15, match_ra
     h_img, w_img = depth.shape
 
     robot_mask = pb_renderer.render_mask(
-      poses[src_cam]["extrinsics"][0], cam_data["K_mat"], w_img, h_img
+      poses[src_cam]["extrinsics"][0], cam_data["K"], w_img, h_img
     )
     near_robot = cv2.dilate(robot_mask.astype(np.uint8), kernel, iterations=1) > 0
     on_env = ~near_robot & (depth > 0.05) & (depth < 5.0)
@@ -82,7 +82,7 @@ def find_static_candidates(episode, poses, pb_renderer, safe_margin=15, match_ra
       us.astype(np.float32),
       vs.astype(np.float32),
       depth[vs, us],
-      cam_data["K_mat"],
+      cam_data["K"],
       poses[src_cam]["extrinsics"][0],
     )
 
@@ -173,7 +173,7 @@ def find_robot_candidates(episode, poses, pb_renderer, safe_margin=7):
   seeds = []
   parts = []
   for src_cam, cam_data in episode["camera"].items():
-    K = cam_data["K_mat"]
+    K = cam_data["K"]
     h_img, w_img = cam_data["raw_depth"][0].shape
     T_cam2world = poses[src_cam]["extrinsics"][0]
 
@@ -218,7 +218,7 @@ def project_robot_tracks(robot_traj_3d, episode, poses, pb_renderer):
   per_cam_vis = {}
 
   for cam_id, cam_data in episode["camera"].items():
-    K = cam_data["K_mat"]
+    K = cam_data["K"]
     h_img, w_img = cam_data["raw_depth"][0].shape
     tracks = np.zeros((n_frames, n_points, 2), dtype=np.float32)
     vis = np.zeros((n_frames, n_points), dtype=bool)
@@ -299,7 +299,7 @@ def export_tracks(episode, poses, traj_3d, per_cam_tracks, per_cam_vis, n_static
       os.path.join(cam_dir, "tracks_2d.npz"), traj_2d=traj_2d.astype(np.float32), vis_2d=vis
     )
 
-    K = cam_data["K_mat"]
+    K = cam_data["K"]
     np.save(
       os.path.join(cam_dir, "intrinsics.npy"),
       np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]], dtype=np.float32),
