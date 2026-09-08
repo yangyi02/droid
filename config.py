@@ -58,6 +58,5 @@ def get_config():
   config.tracks.min_run_frames = 30
   config.tracks.flicker = 0.10
   config.tracks.depth_tolerance = 0.02
-  config.tracks.max_depth = 5.0
 
   return config

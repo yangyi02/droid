@@ -55,7 +55,7 @@ def link_transform(obj_id, link_id):
   return T_link2world
 
 
-def find_static_candidates(episode, poses, pb_renderer, match_radius=0.005, max_depth=5.0):
+def find_static_candidates(episode, poses, pb_renderer, match_radius=0.005):
   cam_ids = list(episode["camera"])
   robot = episode["robot"]
 
@@ -72,7 +72,7 @@ def find_static_candidates(episode, poses, pb_renderer, match_radius=0.005, max_
     robot_mask = pb_renderer.render_mask(
       poses[src_cam]["extrinsics"][0], cam_data["K"], width, height
     )
-    on_env = ~robot_mask & (depth > 0) & (depth < max_depth)
+    on_env = ~robot_mask & (depth > 0)
     vs, us = np.where(on_env)
 
     points = core.geometry.unproject_pixels(
@@ -339,11 +339,7 @@ def process_episode(episode_id, pb_renderer, config):
   poses = core.io.load_extrinsics(episode, config.paths.extrinsics)
 
   static_points_3d = find_static_candidates(
-    episode,
-    poses,
-    pb_renderer,
-    match_radius=config.tracks.match_radius,
-    max_depth=config.tracks.max_depth,
+    episode, poses, pb_renderer, match_radius=config.tracks.match_radius
   )
   static_tracks, static_vis, static_gap = project_static_tracks(
     static_points_3d, episode, poses, depth_tolerance=config.tracks.depth_tolerance
