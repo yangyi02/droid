@@ -116,6 +116,30 @@ track_metadata.npz             # n_static, n_robot
   tracks_2d.npz                # per-camera 2D tracks (traj_2d) + visibility (vis_2d)
 ```
 
+## Naming Conventions
+
+One concept, one spelling, repo-wide. The pipeline files and the notebooks all follow these.
+
+| Rule | |
+|---|---|
+| Identifiers | `episode_id`, `cam_id`, `cam_ids`, `wrist_cam_id`, `cam_data`, `cam_dir` |
+| Transforms | `T_<from>2<to>` — `T_cam2world`, `T_world2cam`, `T_ee2base`, `T_cam2ee`, `T_link2world`. The prefix keeps the family greppable; the direction is always in the name, so there is no bare `T_cam` or `T_init`. The exported `extrinsics_w2c.npy` uses the same idiom |
+| Frames on data | `pts_cam`, `pts_world` — suffix names the frame the coordinates are in |
+| Counts | `n_` for things that exist (`n_frames`, `n_points`, `n_static`); `num_` only in `config.py`, where it is a cap being requested |
+| Indices | `t` for a frame, `u`/`v` for a pixel |
+| Per-camera dicts | `per_cam_tracks`, `per_cam_vis` keyed by `cam_id`; one camera's array drops the prefix |
+| Math symbols | `K`, `T`, `R` stay symbols — everything else is complete words |
+| Modules | don't repeat the module in its functions (`compute_metrics.motion_stats`, not `compute_motion_stats`) |
+
+The two dicts threaded through every stage are `episode` (one episode's loaded data:
+`meta`, `robot`, `camera`) and `poses` (per-camera extrinsics, the thing stage 2 estimates
+and stage 4 measures).
+
+**On-disk keys are frozen and may disagree with the code.** `robot.npz` still says
+`wrist_serial`, `T_ee_base_all` and `T_cam_ee_init`, and `extrinsics.json` still says
+`base_extrinsic` and `extrinsics`, because 255 episodes are already computed and stage 1 is
+too expensive to re-run for a name. The loaders in `core/io.py` translate at the boundary.
+
 ## Directory Structure
 
 ```
@@ -217,11 +241,11 @@ Outputs `metrics.csv` (shared across all ranks via file locking) with 30+ qualit
 
 | Category | Metrics |
 |---|---|
-| Extrinsics | Chamfer distance, robot depth loss per camera |
-| Track consistency | Depth residual (median/mean mm) for static/robot/overall |
+| Extrinsics | `chamfer_*`, `overlap_*` and `robot_loss_*` per camera pair and camera — stage 2's own objective, read at the pose it converged to |
+| Track consistency | `depth_residual_{static,robot}_{median,mean}_mm` |
 | Motion | End-effector travel distance, joint range, gripper range |
-| Coverage | Depth valid-pixel percentage, per-camera visibility |
-| Metadata | Site, robot ID, frame count, resolution |
+| Coverage | `vis_pct_<cam>` per camera, and `robot_pct_<cam>` — the share of each view's first frame the arm covers, for picking eval episodes |
+| Metadata | Site, robot ID, camera count, frame count |
 
 ### Step 2: Select
 
