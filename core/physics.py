@@ -74,27 +74,16 @@ class PyBulletRenderer:
         pybullet.resetJointState(self.robot_id, i, angle * sign)
 
   def _get_projection_matrix(self, K, width, height):
+    """OpenGL perspective matrix, flattened in the column-major order pybullet expects."""
     near, far = NEAR_PLANE, FAR_PLANE
-    fx, fy = K[0, 0], K[1, 1]
-    cx, cy = K[0, 2], K[1, 2]
-    return [
-      2.0 * fx / width,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      2.0 * fy / height,
-      0.0,
-      0.0,
-      1.0 - 2.0 * cx / width,
-      2.0 * cy / height - 1.0,
-      (far + near) / (near - far),
-      -1.0,
-      0.0,
-      0.0,
-      2.0 * far * near / (near - far),
-      0.0,
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+    columns = [
+      [2.0 * fx / width, 0.0, 0.0, 0.0],
+      [0.0, 2.0 * fy / height, 0.0, 0.0],
+      [1.0 - 2.0 * cx / width, 2.0 * cy / height - 1.0, (far + near) / (near - far), -1.0],
+      [0.0, 0.0, 2.0 * far * near / (near - far), 0.0],
     ]
+    return [value for column in columns for value in column]
 
   def _render_raw(self, T_cam2world, K, width, height):
     cam_pos = T_cam2world[:3, 3]

@@ -230,11 +230,14 @@ if __name__ == "__main__":
     def run_one(episode_id):
       process_episode(episode_id, args)
 
+    target = core.runner.shard_episodes(available, args.rank, args.world_size, args.limit)
+    done = core.runner.list_episode_dirs(args.output_root)
+
     core.runner.run_episodes(
-      core.runner.shard_episodes(available, args.rank, args.world_size, args.limit),
+      target,
       run_one,
       rank=args.rank,
       world_size=args.world_size,
-      done=core.runner.list_episode_dirs(args.output_root),
+      done=done,
       stage="Export",
     )

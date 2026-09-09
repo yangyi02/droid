@@ -55,14 +55,10 @@ def robot_clouds(episode, poses, pb_renderer, device, n_points):
   """Robot surface per camera, rendered at the given extrinsics, with the depth it is scored on."""
   robot_points, depth_batch, K = {}, {}, {}
   for cam_id, cam_data in episode["camera"].items():
+    base_extrinsic = poses[cam_id]["base_extrinsic"]
+    observed = torch.tensor(np.asarray(cam_data["raw_depth"], dtype=np.float32), device=device).unsqueeze(1)
     robot_points[cam_id], depth_batch[cam_id] = extract_robot_clouds(
-      cam_id,
-      episode,
-      pb_renderer,
-      poses[cam_id]["base_extrinsic"],
-      device,
-      torch.tensor(np.asarray(cam_data["raw_depth"], dtype=np.float32), device=device).unsqueeze(1),
-      n_points,
+      cam_id, episode, pb_renderer, base_extrinsic, device, observed, n_points
     )
     K[cam_id] = torch.tensor(cam_data["K"], dtype=torch.float32, device=device)
 
@@ -121,16 +117,9 @@ def depth_loss_batched(points, T_cam2world, K, depth_batch, max_depth):
     F.grid_sample(depth_batch, grid, mode="bilinear", padding_mode="border", align_corners=True).squeeze(1).squeeze(1)
   )
 
-  valid = (
-    (z_pred > 0.0)
-    & (z_pred < max_depth)
-    & (z_obs > 0.0)
-    & (z_obs < max_depth)
-    & (u >= 0)
-    & (u < width - 1)
-    & (v >= 0)
-    & (v < height - 1)
-  )
+  depth_in_range = (z_pred > 0.0) & (z_pred < max_depth) & (z_obs > 0.0) & (z_obs < max_depth)
+  uv_in_frame = (u >= 0) & (u < width - 1) & (v >= 0) & (v < height - 1)
+  valid = depth_in_range & uv_in_frame
 
   return torch.nan_to_num(torch.abs(z_obs[valid] - z_pred[valid]).mean(), nan=0.0)
 

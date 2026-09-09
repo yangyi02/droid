@@ -264,17 +264,17 @@ def export_depth(episode, export_root):
       np.savez_compressed(os.path.join(cam_dir, "gripper_depth.npz"), depth=gripper_uint16)
 
     if "zed_calibration" in data:
-      calib = data["zed_calibration"]
+      calibrated, raw = data["zed_calibration"]["calibrated"], data["zed_calibration"]["raw"]
       np.savez(
         os.path.join(cam_dir, "calibration.npz"),
-        K_calib_left=calib["calibrated"]["K"],
-        K_calib_right=calib["calibrated"]["K_right"],
-        disto_calib_left=calib["calibrated"]["disto"],
-        disto_calib_right=calib["calibrated"]["disto_right"],
-        K_raw_left=calib["raw"]["K"],
-        K_raw_right=calib["raw"]["K_right"],
-        disto_raw_left=calib["raw"]["disto"],
-        disto_raw_right=calib["raw"]["disto_right"],
+        K_calib_left=calibrated["K"],
+        K_calib_right=calibrated["K_right"],
+        disto_calib_left=calibrated["disto"],
+        disto_calib_right=calibrated["disto_right"],
+        K_raw_left=raw["K"],
+        K_raw_right=raw["K_right"],
+        disto_raw_left=raw["disto"],
+        disto_raw_right=raw["disto_right"],
         baseline=np.array(data["baseline"], dtype=np.float32),
       )
 

@@ -9,6 +9,12 @@ from tqdm import tqdm
 import core.geometry
 
 
+def draw_label(img, text, org, scale, colour, thickness, outline):
+  """Text with a dark outline, so it stays legible over whatever the frame happens to show."""
+  cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), outline)
+  cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, colour, thickness)
+
+
 def inspect_dict_structure(data, name="episode", indent=0):
   spacing = "  " * indent
   if isinstance(data, dict):
@@ -317,8 +323,7 @@ def render_segmentation_video(episode, poses, pb_renderer, tgt_width=1200, max_f
       overlay = img_rgb.copy()
       overlay[robot_mask] = [50, 150, 255]
       blended_img = cv2.addWeighted(img_rgb, 0.6, overlay, 0.4, 0)
-      cv2.putText(blended_img, f"Cam [{cam_id}]", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 4)
-      cv2.putText(blended_img, f"Cam [{cam_id}]", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
+      draw_label(blended_img, f"Cam [{cam_id}]", (20, 50), 1.2, (255, 255, 255), 2, 4)
       frame_views.append(blended_img)
     row_concat = np.concatenate(frame_views, axis=1)
     tgt_height = int(row_concat.shape[0] * (tgt_width / row_concat.shape[1]))
@@ -359,27 +364,9 @@ def render_cross_camera_axes(episode, poses, max_frames=None):
           cv2.line(img_rgb, org, pz, (0, 0, 255), 3)
           cv2.circle(img_rgb, org, 5, (0, 0, 0), -1)
           cv2.circle(img_rgb, org, 2, (255, 255, 255), -1)
-          cv2.putText(
-            img_rgb,
-            f"Cam {tgt_cam}",
-            (org[0] + 8, org[1] - 8),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 0, 0),
-            3,
-          )
-          cv2.putText(
-            img_rgb,
-            f"Cam {tgt_cam}",
-            (org[0] + 8, org[1] - 8),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
-            2,
-          )
+          draw_label(img_rgb, f"Cam {tgt_cam}", (org[0] + 8, org[1] - 8), 0.6, (255, 255, 255), 2, 3)
 
-      cv2.putText(img_rgb, f"View: {obs_cam}", (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3)
-      cv2.putText(img_rgb, f"View: {obs_cam}", (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+      draw_label(img_rgb, f"View: {obs_cam}", (15, 35), 0.8, (0, 255, 255), 2, 3)
       camera_views.append(img_rgb)
 
     row_concat = np.concatenate(camera_views, axis=1)

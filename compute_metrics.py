@@ -239,12 +239,15 @@ def main(_):
   def run_one(episode_id):
     process_episode(episode_id, device, pb_renderer, csv_path, config)
 
+  target = core.runner.shard_episodes(available, config.runner.rank, config.runner.world_size, config.runner.limit)
+  done = _read_done(csv_path)
+
   core.runner.run_episodes(
-    core.runner.shard_episodes(available, config.runner.rank, config.runner.world_size, config.runner.limit),
+    target,
     run_one,
     rank=config.runner.rank,
     world_size=config.runner.world_size,
-    done=_read_done(csv_path),
+    done=done,
     stage="Evaluation",
   )
 
