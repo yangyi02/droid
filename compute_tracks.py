@@ -13,17 +13,9 @@ import core.physics
 import core.runner
 
 
-def sample_depth(depth, u, v, z_pred):
-  height, width = depth.shape
-  ui = np.clip(np.round(u).astype(int), 0, width - 1)
-  vi = np.clip(np.round(v).astype(int), 0, height - 1)
-  in_frame = (u >= 0) & (u < width) & (v >= 0) & (v < height) & (z_pred > 0)
-  return np.where(in_frame, depth[vi, ui], np.nan)
-
-
 def depth_gap(cam_data, points_3d, T_cam2world, t):
   u, v, z_pred = core.geometry.project_points(points_3d, cam_data["K"], T_cam2world)
-  return u, v, sample_depth(cam_data["raw_depth"][t], u, v, z_pred) - z_pred
+  return u, v, core.geometry.sample_depth(cam_data["raw_depth"][t], u, v, z_pred) - z_pred
 
 
 def sample_per_view(per_cam_vis, n_points):
@@ -225,8 +217,8 @@ def project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer, depth_tol
       tracks[t, :, 0] = u
       tracks[t, :, 1] = v
 
-      z_urdf = sample_depth(urdf_depth, u, v, z_pred)
-      z_sensor = sample_depth(cam_data["raw_depth"][t], u, v, z_pred)
+      z_urdf = core.geometry.sample_depth(urdf_depth, u, v, z_pred)
+      z_sensor = core.geometry.sample_depth(cam_data["raw_depth"][t], u, v, z_pred)
       facing_camera = (z_urdf > 0) & (z_pred <= z_urdf + depth_tolerance)
       occluded = (z_sensor > 0) & (z_pred > z_sensor + depth_tolerance)
       background_bleed = (z_sensor > 0) & (z_sensor > z_urdf + depth_tolerance)

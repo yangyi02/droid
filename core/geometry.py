@@ -32,6 +32,14 @@ def project_points(points_world, K, T_cam2world):
   return u, v, z_cam
 
 
+def sample_depth(depth, u, v, z):
+  height, width = depth.shape
+  ui = np.clip(np.round(u).astype(int), 0, width - 1)
+  vi = np.clip(np.round(v).astype(int), 0, height - 1)
+  in_frame = (u >= 0) & (u < width) & (v >= 0) & (v < height) & (z > 0)
+  return np.where(in_frame, depth[vi, ui], np.nan)
+
+
 def unproject_depth(depth, img_rgb, K, T_cam2world, max_depth=1.5):
   mask = (depth > 0) & (depth < max_depth)
   v, u = np.where(mask)
