@@ -411,15 +411,26 @@ def get_look_at_matrix(eye, target, up=(0, 0, 1)):
   return view_matrix
 
 
-def render_4d_orbit_with_tracks(episode, poses, tracks_3d=None, max_frames=None):
+def render_4d_orbit_with_tracks(
+  episode,
+  poses,
+  tracks_3d=None,
+  max_frames=None,
+  width=640,
+  height=360,
+  fov_y=60.0,
+  orbit_center=(0.4, 0.0, 0.0),
+  orbit_radius=1.2,
+  camera_height=0.5,
+  angle_start=np.pi / 2,
+  max_render_points=400000,
+  max_render_tracks=500,
+  track_history=5,
+  track_radius=0.008,
+  frustum_depth=0.15,
+  frustum_aspect=4.0 / 3.0,
+):
   device = "cuda" if torch.cuda.is_available() else "cpu"
-  width, height = 640, 360
-  fov_y = 60.0
-  orbit_center, orbit_radius, camera_height = (0.4, 0.0, 0.0), 1.2, 0.5
-  angle_start = np.pi / 2
-  max_render_points, max_render_tracks = 400000, 500
-  track_history, track_radius = 5, 0.008
-  frustum_depth, frustum_aspect = 0.15, 4.0 / 3.0
 
   cam_ids = sorted(episode["camera"].keys())
   n_frames = len(poses[cam_ids[0]]["extrinsics"])
