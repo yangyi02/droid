@@ -12,9 +12,11 @@ GPUS=$(nvidia-smi -L | wc -l)
 
 mkdir -p logs
 echo "compute_$STAGE.py | $GPUS GPU(s) | ${LIMIT:-all} episodes"
+echo "per-rank output: logs/$STAGE.rank<N>.log | exit codes: logs/$STAGE.log"
 
-seq 0 $((GPUS - 1)) | parallel -j "$GPUS" --ungroup --progress --joblog "logs/$STAGE.log" \
-    "CUDA_VISIBLE_DEVICES={} python compute_$STAGE.py \
+seq 0 $((GPUS - 1)) | parallel -j "$GPUS" --progress --joblog "logs/$STAGE.log" \
+    "CUDA_VISIBLE_DEVICES={} python -u compute_$STAGE.py \
         --config.runner.rank {} \
         --config.runner.world_size $GPUS \
-        ${LIMIT:+--config.runner.limit $LIMIT}"
+        ${LIMIT:+--config.runner.limit $LIMIT} \
+        > logs/$STAGE.rank{}.log 2>&1"
