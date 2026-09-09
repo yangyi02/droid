@@ -1,4 +1,5 @@
 import os
+import traceback
 
 
 def list_episode_dirs(root):
@@ -21,11 +22,17 @@ def run_episodes(episode_ids, process, rank, world_size, done, stage):
     f"Rank {rank}/{world_size}: {len(todo)} episodes to process" + (f" ({skipped} already done)" if skipped else "")
   )
 
-  succeeded = []
+  succeeded, failed = [], []
   for idx, episode_id in enumerate(todo):
     print(f"\n[{idx + 1}/{len(todo)}] Episode: {episode_id}")
-    process(episode_id)
-    succeeded.append(episode_id)
+    try:
+      process(episode_id)
+      succeeded.append(episode_id)
+    except Exception:
+      failed.append(episode_id)
+      traceback.print_exc()
 
   print(f"\n{stage} complete! {len(succeeded)}/{len(todo)} episodes succeeded.")
+  for episode_id in failed:
+    print(f"  FAILED {episode_id}")
   return succeeded
