@@ -80,13 +80,7 @@ def find_static_candidates(episode, poses, pb_renderer, match_radius):
 
     verified.append(points[n_agree >= 1])
 
-  all_points = np.concatenate(verified, axis=0)
-  voxels = np.floor(all_points / (match_radius * 2)).astype(np.int64)
-  _, inverse = np.unique(voxels, axis=0, return_inverse=True)
-  order = np.argsort(inverse, kind="stable")
-  cuts = np.cumsum(np.bincount(inverse))[:-1]
-
-  return np.array([np.median(g, axis=0) for g in np.split(all_points[order], cuts)], dtype=np.float32)
+  return np.concatenate(verified, axis=0).astype(np.float32)
 
 
 def project_static_tracks(static_points_3d, episode, poses, depth_tolerance):
@@ -168,9 +162,7 @@ def find_robot_candidates(episode, poses, pb_renderer):
     T_cam2world = poses[src_cam]["extrinsics"][0]
 
     obj_ids, link_ids, urdf_depth = pb_renderer.render_segmentation(T_cam2world, K, width, height)
-    on_robot = obj_ids == pb_renderer.robot_id
-
-    vs, us = np.where(on_robot)
+    vs, us = np.where(obj_ids == pb_renderer.robot_id)
 
     seeds.append(
       core.geometry.unproject_pixels(us.astype(np.float32), vs.astype(np.float32), urdf_depth[vs, us], K, T_cam2world)
@@ -181,7 +173,7 @@ def find_robot_candidates(episode, poses, pb_renderer):
   parts = np.concatenate(parts)
 
   local_points = {}
-  for part in {tuple(p) for p in parts}:
+  for part in map(tuple, np.unique(parts, axis=0).tolist()):
     on_part = (parts == part).all(axis=1)
     homogeneous = np.hstack([points_world[on_part], np.ones((on_part.sum(), 1))]).T
     local_points[part] = (on_part, np.linalg.inv(link_transform(*part)) @ homogeneous)
