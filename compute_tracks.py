@@ -59,9 +59,7 @@ def find_static_candidates(episode, poses, pb_renderer, match_radius):
   cam_ids = list(episode["camera"])
   robot = episode["robot"]
 
-  pb_renderer.update_robot_pose(
-    robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0]
-  )
+  pb_renderer.update_robot_pose(robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0])
 
   verified = []
   for src_cam in cam_ids:
@@ -69,9 +67,7 @@ def find_static_candidates(episode, poses, pb_renderer, match_radius):
     depth = cam_data["raw_depth"][0]
     height, width = depth.shape
 
-    robot_mask = pb_renderer.render_mask(
-      poses[src_cam]["extrinsics"][0], cam_data["K"], width, height
-    )
+    robot_mask = pb_renderer.render_mask(poses[src_cam]["extrinsics"][0], cam_data["K"], width, height)
     on_env = ~robot_mask & (depth > 0)
     vs, us = np.where(on_env)
 
@@ -98,9 +94,7 @@ def find_static_candidates(episode, poses, pb_renderer, match_radius):
   order = np.argsort(inverse, kind="stable")
   cuts = np.cumsum(np.bincount(inverse))[:-1]
 
-  return np.array(
-    [np.median(g, axis=0) for g in np.split(all_points[order], cuts)], dtype=np.float32
-  )
+  return np.array([np.median(g, axis=0) for g in np.split(all_points[order], cuts)], dtype=np.float32)
 
 
 def project_static_tracks(static_points_3d, episode, poses, depth_tolerance):
@@ -172,9 +166,7 @@ def find_robot_candidates(episode, poses, pb_renderer):
   robot = episode["robot"]
   n_frames = len(robot["joint_positions"])
 
-  pb_renderer.update_robot_pose(
-    robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0]
-  )
+  pb_renderer.update_robot_pose(robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0])
 
   seeds = []
   parts = []
@@ -189,9 +181,7 @@ def find_robot_candidates(episode, poses, pb_renderer):
     vs, us = np.where(on_robot)
 
     seeds.append(
-      core.geometry.unproject_pixels(
-        us.astype(np.float32), vs.astype(np.float32), urdf_depth[vs, us], K, T_cam2world
-      )
+      core.geometry.unproject_pixels(us.astype(np.float32), vs.astype(np.float32), urdf_depth[vs, us], K, T_cam2world)
     )
     parts.append(np.stack([obj_ids[vs, us], link_ids[vs, us]], axis=1))
 
@@ -206,9 +196,7 @@ def find_robot_candidates(episode, poses, pb_renderer):
 
   tracks_3d = np.zeros((n_frames, len(points_world), 3), dtype=np.float32)
   for t in range(n_frames):
-    pb_renderer.update_robot_pose(
-      robot["joint_positions"][t], gripper_state=robot["gripper_positions"][t]
-    )
+    pb_renderer.update_robot_pose(robot["joint_positions"][t], gripper_state=robot["gripper_positions"][t])
     for part, (on_part, homogeneous) in local_points.items():
       tracks_3d[t, on_part] = (link_transform(*part) @ homogeneous)[:3].T
 
@@ -230,9 +218,7 @@ def project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer, depth_tol
 
     for t in range(n_frames):
       T_cam2world = poses[cam_id]["extrinsics"][t]
-      pb_renderer.update_robot_pose(
-        robot["joint_positions"][t], gripper_state=robot["gripper_positions"][t]
-      )
+      pb_renderer.update_robot_pose(robot["joint_positions"][t], gripper_state=robot["gripper_positions"][t])
       urdf_depth = pb_renderer.render_depth(T_cam2world, K, width, height)
 
       u, v, z_pred = core.geometry.project_points(robot_tracks_3d[t], K, T_cam2world)
@@ -273,9 +259,7 @@ def sample_robot_tracks(robot_tracks_3d, per_cam_tracks_2d, per_cam_vis, n_point
   )
 
 
-def merge_tracks(
-  static_points_3d, static_tracks, static_vis, robot_tracks_3d, robot_tracks, robot_vis
-):
+def merge_tracks(static_points_3d, static_tracks, static_vis, robot_tracks_3d, robot_tracks, robot_vis):
   n_frames, n_robot, _ = robot_tracks_3d.shape
   n_static = len(static_points_3d)
   print(f"  Static: {n_static} | Robot: {n_robot} | Total: {n_static + n_robot}")
@@ -283,14 +267,8 @@ def merge_tracks(
   static_tracks_3d = np.broadcast_to(static_points_3d[None], (n_frames, n_static, 3))
   return (
     np.concatenate([static_tracks_3d, robot_tracks_3d], axis=1),
-    {
-      cam_id: np.concatenate([static_tracks[cam_id], robot_tracks[cam_id]], axis=1)
-      for cam_id in static_tracks
-    },
-    {
-      cam_id: np.concatenate([static_vis[cam_id], robot_vis[cam_id]], axis=1)
-      for cam_id in static_vis
-    },
+    {cam_id: np.concatenate([static_tracks[cam_id], robot_tracks[cam_id]], axis=1) for cam_id in static_tracks},
+    {cam_id: np.concatenate([static_vis[cam_id], robot_vis[cam_id]], axis=1) for cam_id in static_vis},
   )
 
 
@@ -311,9 +289,7 @@ def export_tracks(episode, poses, tracks_3d, per_cam_tracks_2d, per_cam_vis, n_s
 
     vis = per_cam_vis[cam_id]
     tracks_2d = np.where(vis[:, :, None], per_cam_tracks_2d[cam_id], -1000.0)
-    np.savez_compressed(
-      os.path.join(cam_dir, "tracks_2d.npz"), traj_2d=tracks_2d.astype(np.float32), vis_2d=vis
-    )
+    np.savez_compressed(os.path.join(cam_dir, "tracks_2d.npz"), traj_2d=tracks_2d.astype(np.float32), vis_2d=vis)
 
     K = cam_data["K"]
     np.save(
@@ -338,9 +314,7 @@ def process_episode(episode_id, pb_renderer, config):
   episode = core.io.load_depth_data(episode_id, config.paths.depth, load_video=None)
   poses = core.io.load_extrinsics(episode, config.paths.extrinsics)
 
-  static_points_3d = find_static_candidates(
-    episode, poses, pb_renderer, match_radius=config.tracks.match_radius
-  )
+  static_points_3d = find_static_candidates(episode, poses, pb_renderer, match_radius=config.tracks.match_radius)
   static_tracks, static_vis, static_gap = project_static_tracks(
     static_points_3d, episode, poses, depth_tolerance=config.tracks.depth_tolerance
   )
@@ -361,9 +335,7 @@ def process_episode(episode_id, pb_renderer, config):
   robot_tracks, robot_vis = project_robot_tracks(
     robot_tracks_3d, episode, poses, pb_renderer, config.tracks.depth_tolerance
   )
-  robot_tracks_3d, robot_tracks, robot_vis = filter_robot_tracks(
-    robot_tracks_3d, robot_tracks, robot_vis
-  )
+  robot_tracks_3d, robot_tracks, robot_vis = filter_robot_tracks(robot_tracks_3d, robot_tracks, robot_vis)
   robot_tracks_3d, robot_tracks, robot_vis = sample_robot_tracks(
     robot_tracks_3d, robot_tracks, robot_vis, n_points=config.tracks.num_robot_points_per_view
   )
@@ -393,11 +365,7 @@ def main(_):
     config.runner.limit,
   )
   export_abs = os.path.abspath(os.path.expanduser(config.paths.tracks))
-  done = {
-    episode_id
-    for episode_id in target
-    if os.path.exists(os.path.join(export_abs, episode_id, "tracks_3d.npz"))
-  }
+  done = {episode_id for episode_id in target if os.path.exists(os.path.join(export_abs, episode_id, "tracks_3d.npz"))}
 
   def run_one(episode_id):
     process_episode(episode_id, pb_renderer, config)

@@ -59,11 +59,7 @@ def load_depth_data(episode_id, depth_root, load_video="first_frame", inspection
   valid_indices = robot_data.get("valid_indices")
 
   _NON_DIR_NAMES = {"robot.npz"}
-  cam_dirs = [
-    d
-    for d in os.listdir(ep_dir)
-    if d not in _NON_DIR_NAMES and not d.endswith((".npz", ".json", ".txt"))
-  ]
+  cam_dirs = [d for d in os.listdir(ep_dir) if d not in _NON_DIR_NAMES and not d.endswith((".npz", ".json", ".txt"))]
 
   camera = {}
   for cam_id in sorted(cam_dirs):

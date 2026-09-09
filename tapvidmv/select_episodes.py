@@ -31,9 +31,7 @@ def ee_travel(row):
   return safe_float(row.get("ee_travel_m"), 0)
 
 
-def apply_quality_filter(
-  rows, max_chamfer, max_depth_residual, min_static_points, min_frames, min_ee_travel
-):
+def apply_quality_filter(rows, max_chamfer, max_depth_residual, min_static_points, min_frames, min_ee_travel):
   filtered = []
   n_frozen = 0
   for row in rows:
@@ -111,10 +109,7 @@ def sample_diverse(rows, n_target):
   per_scene = {}
   for r in selected:
     per_scene[scene_of(r)] = per_scene.get(scene_of(r), 0) + 1
-  print(
-    f"  {len(selected)} episodes over {len(per_scene)} scenes "
-    f"(max {max(per_scene.values())} from any one scene)"
-  )
+  print(f"  {len(selected)} episodes over {len(per_scene)} scenes (max {max(per_scene.values())} from any one scene)")
   return selected
 
 
@@ -139,9 +134,7 @@ def main():
     default=30.0,
     help="Max depth_residual_overall_median_mm threshold",
   )
-  parser.add_argument(
-    "--min_static_points", type=int, default=50, help="Min number of static track points"
-  )
+  parser.add_argument("--min_static_points", type=int, default=50, help="Min number of static track points")
   parser.add_argument("--min_frames", type=int, default=30, help="Min number of frames")
   parser.add_argument(
     "--min_ee_travel",
@@ -210,18 +203,12 @@ def main():
   chamfers = [safe_float(r.get("chamfer_mean")) for r in selected]
   chamfers = [c for c in chamfers if not np.isnan(c)]
   if chamfers:
-    print(
-      f"   Chamfer: median={np.median(chamfers):.4f}, "
-      f"range=[{min(chamfers):.4f}, {max(chamfers):.4f}]"
-    )
+    print(f"   Chamfer: median={np.median(chamfers):.4f}, range=[{min(chamfers):.4f}, {max(chamfers):.4f}]")
 
   travels = [safe_float(r.get("ee_travel_m")) for r in selected]
   travels = [t for t in travels if not np.isnan(t)]
   if travels:
-    print(
-      f"   EE travel: median={np.median(travels):.2f}m, "
-      f"range=[{min(travels):.2f}, {max(travels):.2f}]m"
-    )
+    print(f"   EE travel: median={np.median(travels):.2f}m, range=[{min(travels):.2f}, {max(travels):.2f}]m")
 
 
 if __name__ == "__main__":

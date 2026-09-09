@@ -30,9 +30,7 @@ def init_all_models():
   from s2m2.core.utils.model_utils import load_model, run_stereo_matching
   from segment_anything import SamPredictor, sam_model_registry
 
-  s2m2_model = torch.compile(
-    load_model(os.path.join(vendor_dir, "s2m2", "weights"), "XL", True, 3, device).eval()
-  )
+  s2m2_model = torch.compile(load_model(os.path.join(vendor_dir, "s2m2", "weights"), "XL", True, 3, device).eval())
   sam_ckpt = os.path.join(vendor_dir, "segment_anything", "weights", "sam_vit_h_4b8939.pth")
   sam = sam_model_registry["vit_h"](checkpoint=sam_ckpt).to(device)
 
@@ -49,9 +47,7 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
   valid_cams = sorted(set(cam_info.values()))
 
   base_prefix = "gs://xembodiment_data/r2d2/r2d2-data-full/"
-  episode_key = (
-    f"{base_prefix}{relative_path}/recordings/MP4--{base_prefix}{relative_path}/trajectory.h5"
-  )
+  episode_key = f"{base_prefix}{relative_path}/recordings/MP4--{base_prefix}{relative_path}/trajectory.h5"
 
   valid_indices = None
 
@@ -70,9 +66,7 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
       "valid_indices": valid_indices,
     },
     "robot": {},
-    "camera": {
-      cam_id: {"baseline": 0.063 if cam_id == wrist_cam_id else 0.120} for cam_id in valid_cams
-    },
+    "camera": {cam_id: {"baseline": 0.063 if cam_id == wrist_cam_id else 0.120} for cam_id in valid_cams},
   }
 
 
@@ -214,8 +208,7 @@ def parse_robot_kinematics(episode):
     "joint_positions": joint_poses,
     "gripper_positions": gripper_poses,
     "T_cam_ee_init": (
-      np.linalg.inv(core.geometry.pose_from_euler(ee_poses[0]))
-      @ core.geometry.pose_from_euler(wrist_ext)
+      np.linalg.inv(core.geometry.pose_from_euler(ee_poses[0])) @ core.geometry.pose_from_euler(wrist_ext)
     ),
     "T_ee_base_all": T_ee2base,
     "timestamps": timestamps,
@@ -262,9 +255,7 @@ def export_depth(episode, export_root):
         depth=(data["original_raw_depth"] * 1000).astype(np.uint16),
       )
     if "raw_depth" in data:
-      np.savez_compressed(
-        os.path.join(cam_dir, "raw_depth.npz"), depth=(data["raw_depth"] * 1000).astype(np.uint16)
-      )
+      np.savez_compressed(os.path.join(cam_dir, "raw_depth.npz"), depth=(data["raw_depth"] * 1000).astype(np.uint16))
 
     if "sam_real_masks" in data:
       np.savez_compressed(os.path.join(cam_dir, "gripper_mask.npz"), mask=data["sam_real_masks"])
@@ -319,9 +310,7 @@ def process_episode(episode_id, models, dbs, raw_root, config):
 
   episode = parse_robot_kinematics(episode)
   episode = align_temporal_streams(episode)
-  episode = core.depth.compute_stereo_depth(
-    episode, s2m2_model, run_stereo_matching, device, config.depth.conf_thresh
-  )
+  episode = core.depth.compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, config.depth.conf_thresh)
 
   wrist_data = episode["camera"][episode["meta"]["wrist_serial"]]
   wrist_data["original_raw_depth"] = wrist_data["raw_depth"].copy()
@@ -348,15 +337,9 @@ def main(_):
   serials_db, id_to_path, keep_ranges, _, valid_ids = core.io.load_metadata(config)
   raw_root = os.path.expanduser(config.paths.raw)
 
-  target = core.runner.shard_episodes(
-    valid_ids, config.runner.rank, config.runner.world_size, config.runner.limit
-  )
+  target = core.runner.shard_episodes(valid_ids, config.runner.rank, config.runner.world_size, config.runner.limit)
   export_abs = os.path.abspath(os.path.expanduser(config.paths.depth))
-  done = {
-    episode_id
-    for episode_id in target
-    if os.path.exists(os.path.join(export_abs, episode_id, "robot.npz"))
-  }
+  done = {episode_id for episode_id in target if os.path.exists(os.path.join(export_abs, episode_id, "robot.npz"))}
 
   def run_one(episode_id):
     process_episode(

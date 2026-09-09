@@ -13,9 +13,7 @@ def get_config():
   config.paths = ml_collections.ConfigDict()
   config.paths.meta = os.path.join(data, "meta", "1.0.1")
   config.paths.raw = os.path.join(data, "input", "robotics", "droid_raw", "1.0.1")
-  config.paths.urdf = os.path.join(
-    repo, "assets", "franka_description", "franka_panda_robotiq_2f85_og.urdf"
-  )
+  config.paths.urdf = os.path.join(repo, "assets", "franka_description", "franka_panda_robotiq_2f85_og.urdf")
   config.paths.depth = os.path.join(output, "depth")
   config.paths.extrinsics = os.path.join(output, "extrinsics")
   config.paths.tracks = os.path.join(output, "tracks")

@@ -19,13 +19,7 @@ config = get_config()
 def count_episodes_per_stage(depth_root, extrinsics_root, tracks_root):
   def list_episode_dirs(root):
     root = os.path.abspath(os.path.expanduser(root))
-    return sorted(
-      [
-        d
-        for d in os.listdir(root)
-        if os.path.isdir(os.path.join(root, d)) and not d.startswith(".")
-      ]
-    )
+    return sorted([d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)) and not d.startswith(".")])
 
   depth_eps = set(list_episode_dirs(depth_root))
   ext_eps = set(list_episode_dirs(extrinsics_root))
@@ -113,9 +107,7 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
     stats["avg_per_frame_displacement_mm"] = avg_disp * 1000
     stats["avg_total_displacement_mm"] = float(np.mean(total_disp)) * 1000
 
-  cam_dirs = sorted(
-    [d for d in os.listdir(tracks_dir) if os.path.isdir(os.path.join(tracks_dir, d))]
-  )
+  cam_dirs = sorted([d for d in os.listdir(tracks_dir) if os.path.isdir(os.path.join(tracks_dir, d))])
   stats["n_cameras"] = len(cam_dirs)
 
   cam_vis_list = []
@@ -174,12 +166,8 @@ def main():
     type=str,
     default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "stats_output"),
   )
-  parser.add_argument(
-    "--max_episodes", type=int, default=-1, help="Max episodes to analyze (-1 = all)"
-  )
-  parser.add_argument(
-    "--workers", type=int, default=0, help="Parallel workers (0 = auto = num CPUs)"
-  )
+  parser.add_argument("--max_episodes", type=int, default=-1, help="Max episodes to analyze (-1 = all)")
+  parser.add_argument("--workers", type=int, default=0, help="Parallel workers (0 = auto = num CPUs)")
   parser.add_argument(
     "--metrics_csv",
     type=str,
@@ -198,9 +186,7 @@ def main():
   print("DROID Pipeline: Dataset Statistics")
 
   print("\nPipeline coverage...")
-  coverage, episode_lists = count_episodes_per_stage(
-    args.depth_root, args.extrinsics_root, args.tracks_root
-  )
+  coverage, episode_lists = count_episodes_per_stage(args.depth_root, args.extrinsics_root, args.tracks_root)
   print(json.dumps(coverage, indent=2))
 
   completed_eps = episode_lists["all_completed"]
@@ -214,8 +200,7 @@ def main():
 
   with ProcessPoolExecutor(max_workers=args.workers) as pool:
     futures = {
-      pool.submit(_worker, episode_id, args.tracks_root, args.depth_root): episode_id
-      for episode_id in completed_eps
+      pool.submit(_worker, episode_id, args.tracks_root, args.depth_root): episode_id for episode_id in completed_eps
     }
 
     with tqdm(total=len(futures), desc="Computing stats") as pbar:
@@ -238,9 +223,7 @@ def main():
 
   summary = {"coverage": coverage}
 
-  numeric_keys = [
-    k for k in all_stats[0] if isinstance(all_stats[0][k], (int, float)) and k != "episode_id"
-  ]
+  numeric_keys = [k for k in all_stats[0] if isinstance(all_stats[0][k], (int, float)) and k != "episode_id"]
   agg = {}
   for k in numeric_keys:
     vals = [s[k] for s in all_stats if k in s and s[k] is not None]
@@ -255,9 +238,7 @@ def main():
   summary["track_stats"] = agg
 
   pcts = [s["pct_multi_view"] for s in all_stats if "pct_multi_view" in s]
-  avg_cams = [
-    s["avg_cameras_per_visible_obs"] for s in all_stats if "avg_cameras_per_visible_obs" in s
-  ]
+  avg_cams = [s["avg_cameras_per_visible_obs"] for s in all_stats if "avg_cameras_per_visible_obs" in s]
   if pcts:
     summary["multi_view_consistency"] = {
       "avg_pct_multi_view": round(float(np.mean(pcts)), 1),
@@ -265,9 +246,7 @@ def main():
       "n_episodes": len(pcts),
     }
 
-  metrics_csv_path = (
-    os.path.abspath(os.path.expanduser(args.metrics_csv)) if args.metrics_csv else ""
-  )
+  metrics_csv_path = os.path.abspath(os.path.expanduser(args.metrics_csv)) if args.metrics_csv else ""
   if metrics_csv_path and os.path.exists(metrics_csv_path):
     print(f"\nIntegrating metrics from {metrics_csv_path}...")
     with open(metrics_csv_path, "r") as f:
@@ -327,7 +306,7 @@ def main():
 
     csv_path = os.path.join(output_dir, "per_episode_stats.csv")
     with open(csv_path, "w", newline="") as f:
-      writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+      writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
       writer.writeheader()
       writer.writerows(all_stats)
     print(f"Per-episode stats -> {csv_path}")

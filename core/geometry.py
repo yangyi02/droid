@@ -12,9 +12,7 @@ def decode_disparity(disp, fx, baseline):
 
 def unproject_camera_frame(u, v, z, K):
   """Camera-frame points as a [4, N] homogeneous array, ready for a T_cam2world @ points."""
-  return np.stack(
-    [(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z, np.ones_like(z)], axis=0
-  )
+  return np.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z, np.ones_like(z)], axis=0)
 
 
 def unproject_pixels(u, v, z, K, T_cam2world):
@@ -53,7 +51,7 @@ def unproject_depth_torch(depth, img_rgb, K, T_cam2world, device, max_depth=1.5)
 
 def pose_from_euler(vec_6d):
   transform = np.eye(4)
-  transform[:3, :3] = R.from_euler('xyz', vec_6d[3:]).as_matrix()
+  transform[:3, :3] = R.from_euler("xyz", vec_6d[3:]).as_matrix()
   transform[:3, 3] = vec_6d[:3]
   return transform
 
@@ -66,9 +64,7 @@ def axis_angle_to_matrix(v):
   K = torch.zeros((3, 3), device=v.device)
   K[0, 1], K[0, 2], K[1, 0], K[1, 2], K[2, 0], K[2, 1] = -k[2], k[1], k[2], -k[0], -k[1], k[0]
 
-  R_exact = (
-    torch.eye(3, device=v.device) + torch.sin(theta) * K + (1 - torch.cos(theta)) * torch.mm(K, K)
-  )
+  R_exact = torch.eye(3, device=v.device) + torch.sin(theta) * K + (1 - torch.cos(theta)) * torch.mm(K, K)
 
   Ka = torch.zeros_like(K)
   Ka[0, 1], Ka[0, 2], Ka[1, 0], Ka[1, 2], Ka[2, 0], Ka[2, 1] = -v[2], v[1], v[2], -v[0], -v[1], v[0]

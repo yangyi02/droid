@@ -18,8 +18,7 @@ def run_episodes(episode_ids, process, rank, world_size, done, stage):
   todo = [episode_id for episode_id in episode_ids if episode_id not in done]
   skipped = len(episode_ids) - len(todo)
   print(
-    f"Rank {rank}/{world_size}: {len(todo)} episodes to process"
-    + (f" ({skipped} already done)" if skipped else "")
+    f"Rank {rank}/{world_size}: {len(todo)} episodes to process" + (f" ({skipped} already done)" if skipped else "")
   )
 
   succeeded = []

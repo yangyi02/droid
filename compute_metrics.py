@@ -25,14 +25,10 @@ def evaluate_extrinsics(episode, poses, device, pb_renderer, config):
   wrist_cam_id = episode["meta"]["wrist_serial"]
   cam_ids = [c for c in episode["camera"] if c != wrist_cam_id] + [wrist_cam_id]
   pairs = list(itertools.combinations(cam_ids, 2))
-  base = {
-    c: torch.tensor(poses[c]["base_extrinsic"], dtype=torch.float32, device=device) for c in cam_ids
-  }
+  base = {c: torch.tensor(poses[c]["base_extrinsic"], dtype=torch.float32, device=device) for c in cam_ids}
 
   n_points, max_depth = config.extrinsics.n_points, config.extrinsics.max_depth
-  robot_points, depth_batch, K = core.alignment.robot_clouds(
-    episode, poses, pb_renderer, device, n_points
-  )
+  robot_points, depth_batch, K = core.alignment.robot_clouds(episode, poses, pb_renderer, device, n_points)
   env, ee_poses = core.alignment.scene_clouds(episode, device, n_points, max_depth)
 
   chamfer, overlap = core.alignment.chamfer_overlap(
@@ -77,16 +73,8 @@ def depth_residual_per_camera(episode, poses, tracks_3d, per_cam_vis, n_static):
       ext = poses[cam_id]["extrinsics"][t]
       vis_t = per_cam_vis[cam_id][t]
 
-      cam_static.append(
-        depth_residual_mm(
-          tracks_3d[t, :n_static][vis_t[:n_static]], K, ext, raw_depth, width, height
-        )
-      )
-      cam_robot.append(
-        depth_residual_mm(
-          tracks_3d[t, n_static:][vis_t[n_static:]], K, ext, raw_depth, width, height
-        )
-      )
+      cam_static.append(depth_residual_mm(tracks_3d[t, :n_static][vis_t[:n_static]], K, ext, raw_depth, width, height))
+      cam_robot.append(depth_residual_mm(tracks_3d[t, n_static:][vis_t[n_static:]], K, ext, raw_depth, width, height))
 
     per_camera[cam_id] = {"static": np.concatenate(cam_static), "robot": np.concatenate(cam_robot)}
 
@@ -129,9 +117,7 @@ def scene_metadata(episode):
 
 def robot_coverage(episode, poses, pb_renderer):
   robot = episode["robot"]
-  pb_renderer.update_robot_pose(
-    robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0]
-  )
+  pb_renderer.update_robot_pose(robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0])
 
   coverage = {}
   for cam_id, cam_data in episode["camera"].items():
@@ -142,9 +128,7 @@ def robot_coverage(episode, poses, pb_renderer):
   return coverage
 
 
-def episode_metrics(
-  episode, poses, device, tracks_3d, per_cam_vis, n_static, n_robot, pb_renderer, config
-):
+def episode_metrics(episode, poses, device, tracks_3d, per_cam_vis, n_static, n_robot, pb_renderer, config):
   metrics = {"episode_id": episode["meta"]["episode_id"]}
   metrics.update(scene_metadata(episode))
   metrics.update(robot_coverage(episode, poses, pb_renderer))
@@ -159,16 +143,12 @@ def episode_metrics(
   per_camera = depth_residual_per_camera(episode, poses, tracks_3d, per_cam_vis, n_static)
   metrics.update(
     {
-      f"depth_residual_{kind}_mean_mm_{cam_id[:8]}": (
-        float(v[kind].mean()) if len(v[kind]) else float("nan")
-      )
+      f"depth_residual_{kind}_mean_mm_{cam_id[:8]}": (float(v[kind].mean()) if len(v[kind]) else float("nan"))
       for cam_id, v in per_camera.items()
       for kind in ("static", "robot")
     }
   )
-  metrics.update(
-    {f"vis_percent_{cam_id[:8]}": float(vis.mean() * 100) for cam_id, vis in per_cam_vis.items()}
-  )
+  metrics.update({f"vis_percent_{cam_id[:8]}": float(vis.mean() * 100) for cam_id, vis in per_cam_vis.items()})
 
   return metrics
 
@@ -260,9 +240,7 @@ def main(_):
     process_episode(episode_id, device, pb_renderer, csv_path, config)
 
   core.runner.run_episodes(
-    core.runner.shard_episodes(
-      available, config.runner.rank, config.runner.world_size, config.runner.limit
-    ),
+    core.runner.shard_episodes(available, config.runner.rank, config.runner.world_size, config.runner.limit),
     run_one,
     rank=config.runner.rank,
     world_size=config.runner.world_size,

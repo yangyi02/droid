@@ -11,9 +11,7 @@ def get_s2m2_disparity(img_left, img_right, s2m2_model, run_stereo_matching, dev
   left_torch = torch.from_numpy(img_left).permute(2, 0, 1).unsqueeze(0).to(device)
   right_torch = torch.from_numpy(img_right).permute(2, 0, 1).unsqueeze(0).to(device)
 
-  pred_disp, _, pred_conf, _, _ = run_stereo_matching(
-    s2m2_model, left_torch, right_torch, device, N_repeat=3
-  )
+  pred_disp, _, pred_conf, _, _ = run_stereo_matching(s2m2_model, left_torch, right_torch, device, N_repeat=3)
 
   disp = pred_disp.cpu().numpy().squeeze()
   conf = pred_conf.cpu().numpy().squeeze()
@@ -31,12 +29,8 @@ def compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, conf_
     left_seq, right_seq = cam_data["video_rgb"], cam_data["video_right"]
 
     disp_frames = [
-      get_s2m2_disparity(
-        left_img, right_img, s2m2_model, run_stereo_matching, device=device, conf_thresh=conf_thresh
-      )
-      for left_img, right_img in tqdm(
-        zip(left_seq, right_seq), total=len(left_seq), desc=f"Depth [{cam_id}]"
-      )
+      get_s2m2_disparity(left_img, right_img, s2m2_model, run_stereo_matching, device=device, conf_thresh=conf_thresh)
+      for left_img, right_img in tqdm(zip(left_seq, right_seq), total=len(left_seq), desc=f"Depth [{cam_id}]")
     ]
     raw_disp = np.stack(disp_frames)
 
@@ -64,9 +58,7 @@ def extract_single_frame_mask(img_rgb, predictor, mask_area_min, mask_area_max):
   bbox = np.array([0, height // 2, width, height])
 
   predictor.set_image(img_rgb)
-  masks, scores, _ = predictor.predict(
-    point_coords=points, point_labels=labels, box=bbox, multimask_output=True
-  )
+  masks, scores, _ = predictor.predict(point_coords=points, point_labels=labels, box=bbox, multimask_output=True)
 
   valid_masks, valid_scores = [], []
   for m, s in zip(masks, scores):
@@ -148,8 +140,6 @@ def inject_gripper_depth(episode, gripper_closed_thresh):
   closed_indices = np.where(gripper_states < gripper_closed_thresh)[0]
   valid_mask = empirical_depth > 0
 
-  cam_data["raw_depth"][closed_indices] = np.where(
-    valid_mask, empirical_depth, cam_data["raw_depth"][closed_indices]
-  )
+  cam_data["raw_depth"][closed_indices] = np.where(valid_mask, empirical_depth, cam_data["raw_depth"][closed_indices])
 
   return episode

@@ -33,18 +33,14 @@ class PyBulletRenderer:
     pybullet.connect(pybullet.DIRECT)
 
     if not pybullet.isNumpyEnabled():
-      raise RuntimeError(
-        "pybullet was built without NumPy: getCameraImage is 2x slower. Rerun bash setup.sh"
-      )
+      raise RuntimeError("pybullet was built without NumPy: getCameraImage is 2x slower. Rerun bash setup.sh")
 
     self.gpu = bool(gpu) and _load_egl()
     if gpu and not self.gpu:
       raise RuntimeError("EGL requested but the plugin did not load. --config.render.gpu=False")
     self.render_mode = pybullet.ER_BULLET_HARDWARE_OPENGL if self.gpu else pybullet.ER_TINY_RENDERER
 
-    self.robot_id = pybullet.loadURDF(
-      urdf, useFixedBase=True, flags=pybullet.URDF_IGNORE_COLLISION_SHAPES
-    )
+    self.robot_id = pybullet.loadURDF(urdf, useFixedBase=True, flags=pybullet.URDF_IGNORE_COLLISION_SHAPES)
 
     self.arm_joints = []
     self.gripper_joints = []

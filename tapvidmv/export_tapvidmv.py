@@ -205,16 +205,12 @@ if __name__ == "__main__":
     "everything. Pass 'all' to export every episode "
     "that has tracks instead",
   )
-  parser.add_argument(
-    "--output_root", type=str, default=config.paths.tapvidmv, help="Root output directory"
-  )
+  parser.add_argument("--output_root", type=str, default=config.paths.tapvidmv, help="Root output directory")
   parser.add_argument("--depth_root", type=str, default=config.paths.depth)
   parser.add_argument("--extrinsics_root", type=str, default=config.paths.extrinsics)
   parser.add_argument("--tracks_root", type=str, default=config.paths.tracks)
   parser.add_argument("--no_depth", action="store_true", help="Skip depth.npy export")
-  parser.add_argument(
-    "--no_foreground_mask", action="store_true", help="Skip foreground_mask.npy export"
-  )
+  parser.add_argument("--no_foreground_mask", action="store_true", help="Skip foreground_mask.npy export")
   parser.add_argument("--jpeg_quality", type=int, default=95)
   args = parser.parse_args()
 
