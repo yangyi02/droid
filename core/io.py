@@ -1,3 +1,4 @@
+import glob
 import json
 import os
 
@@ -135,3 +136,25 @@ def load_extrinsics(episode, extrinsics_root):
     }
 
   return poses
+
+
+def load_track_data(episode_id, tracks_root):
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(tracks_root, episode_id)))
+
+  tracks_data = np.load(os.path.join(ep_dir, "tracks_3d.npz"))
+  meta_data = np.load(os.path.join(ep_dir, "track_metadata.npz"))
+
+  per_cam_tracks_2d, per_cam_vis = {}, {}
+  for tracks_path in sorted(glob.glob(os.path.join(ep_dir, "*", "tracks_2d.npz"))):
+    cam_id = os.path.basename(os.path.dirname(tracks_path))
+    cam_data = np.load(tracks_path)
+    per_cam_tracks_2d[cam_id] = cam_data["tracks_2d"]
+    per_cam_vis[cam_id] = cam_data["vis_2d"]
+
+  return {
+    "tracks_3d": tracks_data["tracks_3d"],
+    "per_cam_tracks_2d": per_cam_tracks_2d,
+    "per_cam_vis": per_cam_vis,
+    "n_static": int(meta_data["n_static"]),
+    "n_robot": int(meta_data["n_robot"]),
+  }
