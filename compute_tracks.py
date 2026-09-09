@@ -269,11 +269,7 @@ def export_tracks(episode, poses, tracks_3d, per_cam_tracks_2d, per_cam_vis, n_s
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode_id)))
   os.makedirs(ep_dir, exist_ok=True)
 
-  np.savez_compressed(
-    os.path.join(ep_dir, "tracks_3d.npz"),
-    traj_3d=tracks_3d.astype(np.float32),
-    vis_global=np.logical_or.reduce(list(per_cam_vis.values())),
-  )
+  np.savez_compressed(os.path.join(ep_dir, "tracks_3d.npz"), tracks_3d=tracks_3d.astype(np.float32))
 
   for cam_id, cam_data in episode["camera"].items():
     cam_dir = os.path.join(ep_dir, cam_id)
@@ -281,7 +277,7 @@ def export_tracks(episode, poses, tracks_3d, per_cam_tracks_2d, per_cam_vis, n_s
 
     vis = per_cam_vis[cam_id]
     tracks_2d = np.where(vis[:, :, None], per_cam_tracks_2d[cam_id], -1000.0)
-    np.savez_compressed(os.path.join(cam_dir, "tracks_2d.npz"), traj_2d=tracks_2d.astype(np.float32), vis_2d=vis)
+    np.savez_compressed(os.path.join(cam_dir, "tracks_2d.npz"), tracks_2d=tracks_2d.astype(np.float32), vis_2d=vis)
 
     K = cam_data["K"]
     np.save(
@@ -298,7 +294,6 @@ def export_tracks(episode, poses, tracks_3d, per_cam_tracks_2d, per_cam_vis, n_s
     os.path.join(ep_dir, "track_metadata.npz"),
     n_static=np.array(n_static),
     n_robot=np.array(n_robot),
-    point_type=np.array([0] * n_static + [1] * n_robot, dtype=np.uint8),
   )
 
 
