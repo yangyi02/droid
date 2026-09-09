@@ -339,7 +339,8 @@ def main(_):
 
   target = core.runner.shard_episodes(valid_ids, config.runner.rank, config.runner.world_size, config.runner.limit)
   export_abs = os.path.abspath(os.path.expanduser(config.paths.depth))
-  done = {episode_id for episode_id in target if os.path.exists(os.path.join(export_abs, episode_id, "robot.npz"))}
+  exported = core.runner.list_episode_dirs(config.paths.depth)
+  done = {e for e in target if e in exported and os.path.exists(os.path.join(export_abs, e, "robot.npz"))}
 
   def run_one(episode_id):
     process_episode(

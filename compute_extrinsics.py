@@ -238,7 +238,8 @@ def main(_):
     config.runner.limit,
   )
   export_abs = os.path.abspath(os.path.expanduser(config.paths.extrinsics))
-  done = {episode_id for episode_id in target if _has_final_extrinsics(os.path.join(export_abs, episode_id))}
+  exported = core.runner.list_episode_dirs(config.paths.extrinsics)
+  done = {e for e in target if e in exported and _has_final_extrinsics(os.path.join(export_abs, e))}
 
   def run_one(episode_id):
     process_episode(episode_id, pb_renderer, extrinsics_db, device, config)

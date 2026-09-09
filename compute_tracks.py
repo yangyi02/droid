@@ -365,7 +365,8 @@ def main(_):
     config.runner.limit,
   )
   export_abs = os.path.abspath(os.path.expanduser(config.paths.tracks))
-  done = {episode_id for episode_id in target if os.path.exists(os.path.join(export_abs, episode_id, "tracks_3d.npz"))}
+  exported = core.runner.list_episode_dirs(config.paths.tracks)
+  done = {e for e in target if e in exported and os.path.exists(os.path.join(export_abs, e, "tracks_3d.npz"))}
 
   def run_one(episode_id):
     process_episode(episode_id, pb_renderer, config)
