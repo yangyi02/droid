@@ -161,14 +161,14 @@ def process_episode(episode_id, args):
 
   tracks_dir = os.path.abspath(os.path.expanduser(os.path.join(args.tracks_root, episode_id)))
   data_3d = np.load(os.path.join(tracks_dir, "tracks_3d.npz"))
-  tracks_3d = data_3d["traj_3d"]
+  tracks_3d = data_3d["tracks_3d"]
 
   cam_ids = sorted(episode["camera"].keys())
   per_cam_tracks_2d = {}
   per_cam_vis = {}
   for cam_id in cam_ids:
     d = np.load(os.path.join(tracks_dir, cam_id, "tracks_2d.npz"))
-    per_cam_tracks_2d[cam_id] = d["traj_2d"]
+    per_cam_tracks_2d[cam_id] = d["tracks_2d"]
     per_cam_vis[cam_id] = d["vis_2d"]
 
   export_to_tapvid3d(

@@ -110,10 +110,10 @@ each view, drawn from what that view sees in frame 0.
 
 **Output** (`data/output/droid/tracks/<episode_id>/`):
 ```
-tracks_3d.npz                  # traj_3d, vis_global
+tracks_3d.npz                  # tracks_3d
 track_metadata.npz             # n_static, n_robot
 <cam_serial>/
-  tracks_2d.npz                # per-camera 2D tracks (traj_2d) + visibility (vis_2d)
+  tracks_2d.npz                # per-camera 2D tracks (tracks_2d) + visibility (vis_2d)
 ```
 
 ## Naming Conventions
@@ -241,15 +241,20 @@ bash run_parallel.sh metrics
 
 Auto-detects GPUs and runs `compute_metrics.py` in parallel across all of them.
 
-Outputs `metrics.csv` (shared across all ranks via file locking) with 30+ quality columns per episode:
+Outputs `<metrics>/<episode_id>/metrics.json`, one file per episode like every other stage, so
+ranks never share a file and a crash costs only its own episode. Columns are keyed by camera
+serial, the same names the depth, extrinsics and tracks directories already use:
 
 | Category | Metrics |
 |---|---|
 | Extrinsics | `chamfer_*`, `overlap_*` and `robot_loss_*` per camera pair and camera — stage 2's own objective, read at the pose it converged to |
-| Track consistency | `depth_residual_{static,robot}_{median,mean}_mm` |
-| Motion | End-effector travel distance, joint range, gripper range |
+| Track consistency | `depth_residual_{static,robot}_mm_<cam>` per camera, and `cross_view_px_<cam>_<cam>` — what two cameras disagree by, in the pixels the benchmark is scored in |
+| Motion | End-effector travel distance, joint range, gripper range, `track_jitter_mm` |
 | Coverage | `vis_percent_<cam>` per camera, and `robot_percent_<cam>` — the share of each view's first frame the arm covers, for picking eval episodes |
-| Metadata | Site, robot ID, camera count, frame count |
+| Metadata | Site, scene, camera count, frame count |
+
+Nothing is reduced to a single "worst camera" number here: the metrics store every view, and
+`tapvidmv/select_episodes.py` is where the worst of them condemns an episode.
 
 ### Step 2: Select
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import glob
 import json
 import os
 import sys
@@ -59,9 +60,8 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
     return None
 
   data_3d = np.load(tracks_3d_path)
-  traj_3d = data_3d["traj_3d"]
-  vis_global = data_3d["vis_global"]
-  T, N, _ = traj_3d.shape
+  tracks_3d = data_3d["tracks_3d"]
+  T, N, _ = tracks_3d.shape
 
   stats = {"episode_id": episode_id}
   stats["n_frames"] = int(T)
@@ -76,6 +76,18 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
     stats["n_env_points"] = N
     stats["n_robot_points"] = 0
 
+  cam_dirs = sorted([d for d in os.listdir(tracks_dir) if os.path.isdir(os.path.join(tracks_dir, d))])
+  stats["n_cameras"] = len(cam_dirs)
+
+  cam_vis_list = []
+  for cam_dir_name in cam_dirs:
+    tracks_2d_path = os.path.join(tracks_dir, cam_dir_name, "tracks_2d.npz")
+    if os.path.exists(tracks_2d_path):
+      cam_vis_list.append(np.load(tracks_2d_path)["vis_2d"])
+
+  vis_stack = np.stack(cam_vis_list, axis=0) if cam_vis_list else np.zeros((0, T, N), dtype=bool)
+  vis_global = vis_stack.any(axis=0)
+
   vis_per_point = vis_global.sum(axis=0)
   vis_per_frame = vis_global.sum(axis=1)
 
@@ -89,7 +101,7 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
   stats["max_points_per_frame"] = int(np.max(vis_per_frame))
 
   if vis_global.any():
-    visible_pts = traj_3d[vis_global]
+    visible_pts = tracks_3d[vis_global]
     bbox_min = visible_pts.min(axis=0)
     bbox_max = visible_pts.max(axis=0)
     bbox_size = bbox_max - bbox_min
@@ -98,7 +110,7 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
     stats["scene_bbox_y_m"] = float(bbox_size[1])
     stats["scene_bbox_z_m"] = float(bbox_size[2])
 
-  deltas = np.diff(traj_3d, axis=0)
+  deltas = np.diff(tracks_3d, axis=0)
   delta_norms = np.linalg.norm(deltas, axis=2)
   vis_transitions = vis_global[:-1] & vis_global[1:]
   if vis_transitions.any():
@@ -107,24 +119,7 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
     stats["avg_per_frame_displacement_mm"] = avg_disp * 1000
     stats["avg_total_displacement_mm"] = float(np.mean(total_disp)) * 1000
 
-  cam_dirs = sorted([d for d in os.listdir(tracks_dir) if os.path.isdir(os.path.join(tracks_dir, d))])
-  stats["n_cameras"] = len(cam_dirs)
-
-  cam_vis_list = []
-
-  for cam_dir_name in cam_dirs:
-    cam_dir = os.path.join(tracks_dir, cam_dir_name)
-    tracks_2d_path = os.path.join(cam_dir, "tracks_2d.npz")
-
-    if not os.path.exists(tracks_2d_path):
-      continue
-
-    cam_data = np.load(tracks_2d_path)
-    vis_2d = cam_data["vis_2d"]
-    cam_vis_list.append(vis_2d)
-
   if cam_vis_list:
-    vis_stack = np.stack(cam_vis_list, axis=0)
     cams_per_obs = vis_stack.sum(axis=0)
 
     cam_ever_sees = vis_stack.sum(axis=1) > 0
@@ -169,10 +164,10 @@ def main():
   parser.add_argument("--max_episodes", type=int, default=-1, help="Max episodes to analyze (-1 = all)")
   parser.add_argument("--workers", type=int, default=0, help="Parallel workers (0 = auto = num CPUs)")
   parser.add_argument(
-    "--metrics_csv",
+    "--metrics_dir",
     type=str,
     default="",
-    help="Optional path to metrics.csv from compute_metrics.py "
+    help="Optional directory of per-episode metrics.json from compute_metrics.py "
     "to integrate depth residual and extrinsics quality into summary.",
   )
   args = parser.parse_args()
@@ -246,27 +241,24 @@ def main():
       "n_episodes": len(pcts),
     }
 
-  metrics_csv_path = os.path.abspath(os.path.expanduser(args.metrics_csv)) if args.metrics_csv else ""
-  if metrics_csv_path and os.path.exists(metrics_csv_path):
-    print(f"\nIntegrating metrics from {metrics_csv_path}...")
-    with open(metrics_csv_path, "r") as f:
-      reader = csv.DictReader(f)
-      metric_rows = list(reader)
+  metrics_dir = os.path.abspath(os.path.expanduser(args.metrics_dir)) if args.metrics_dir else ""
+  if metrics_dir and os.path.isdir(metrics_dir):
+    print(f"\nIntegrating metrics from {metrics_dir}/*/metrics.json...")
+    metric_rows = []
+    for path in sorted(glob.glob(os.path.join(metrics_dir, "*", "metrics.json"))):
+      with open(path) as f:
+        metric_rows.append(json.load(f))
 
     def _extract_metric(key):
-      vals = []
-      for r in metric_rows:
-        v = r.get(key, "")
-        if v and v != "nan":
-          vals.append(float(v))
-      return vals
+      return [r[key] for r in metric_rows if isinstance(r.get(key), (int, float)) and np.isfinite(r[key])]
 
-    def _extract_per_camera(kind):
-      cols = [c for c in reader.fieldnames or [] if c.startswith(f"depth_residual_{kind}_mean_mm_")]
-      return [v for col in cols for v in _extract_metric(col)]
+    def _extract_family(prefix):
+      """The metrics write one column per camera or camera pair; the summary pools all of them."""
+      keys = sorted({k for r in metric_rows for k in r if k.startswith(f"{prefix}_")})
+      return [v for key in keys for v in _extract_metric(key)]
 
-    static_means = _extract_per_camera("static")
-    robot_means = _extract_per_camera("robot")
+    static_means = _extract_family("depth_residual_static_mm")
+    robot_means = _extract_family("depth_residual_robot_mm")
 
     if static_means or robot_means:
       summary["depth_residual_mm"] = {
@@ -276,8 +268,8 @@ def main():
         "n_episodes": len(metric_rows),
       }
 
-    chamfer = _extract_metric("chamfer_mean")
-    overlap = _extract_metric("overlap_mean")
+    chamfer = _extract_family("chamfer")
+    overlap = _extract_family("overlap")
     if chamfer:
       summary["extrinsics_quality"] = {
         "mean_chamfer": round(float(np.mean(chamfer)), 4),
