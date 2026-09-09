@@ -54,10 +54,10 @@ def init_camera_states(episode, extrinsics_db):
   return poses
 
 
-def per_camera_alignment(
-  episode, pb_renderer, prev_poses, device, outer_steps=5, inner_steps=100, lr=0.001
-):
+def per_camera_alignment(episode, pb_renderer, prev_poses, device, config):
   print("\nUnified camera-robot alignment (external + wrist)...")
+  outer_steps, inner_steps = config.extrinsics.outer_steps, config.extrinsics.inner_steps
+  n_points, max_depth = config.extrinsics.n_points, config.extrinsics.max_depth
   wrist_cam_id = episode['meta']['wrist_serial']
   poses = copy.deepcopy(prev_poses)
   T_ee_base_all = episode['robot']['T_ee_base_all']
@@ -77,7 +77,7 @@ def per_camera_alignment(
       np.asarray(cam_data['raw_depth'], dtype=np.float32), device=device
     ).unsqueeze(1)
     delta = torch.zeros(6, requires_grad=True, device=device)
-    optimizer = optim.Adam([delta], lr=lr)
+    optimizer = optim.Adam([delta], lr=config.extrinsics.lr)
     loss_rob = None
 
     print(f"      {outer_steps} x {inner_steps} steps, re-rendering the cloud between them...")
@@ -87,7 +87,7 @@ def per_camera_alignment(
           (T_cam2mount_init @ core.geometry.pose_from_axis_angle(delta, device)).cpu().numpy()
         )
       robot_points, depth_batch = core.alignment.extract_robot_clouds(
-        cam_id, episode, pb_renderer, T_cam2mount, device, depth_full
+        cam_id, episode, pb_renderer, T_cam2mount, device, depth_full, n_points
       )
       for _ in range(inner_steps):
         optimizer.zero_grad()
@@ -96,6 +96,7 @@ def per_camera_alignment(
           T_cam2mount_init @ core.geometry.pose_from_axis_angle(delta, device),
           K,
           depth_batch,
+          max_depth,
         )
         loss_rob.backward()
         optimizer.step()
@@ -129,19 +130,11 @@ def per_camera_alignment(
   return poses
 
 
-def global_joint_alignment(
-  episode,
-  prev_poses,
-  pb_renderer,
-  device,
-  lr=0.001,
-  n_steps=500,
-  chamfer_weight=1.0,
-  robot_weight=1.0,
-  chamfer_n_points=2000,
-  max_depth=1.5,
-  match_radius=0.05,
-):
+def global_joint_alignment(episode, prev_poses, pb_renderer, device, config):
+  lr, n_steps = config.extrinsics.lr, config.extrinsics.n_steps
+  n_points, max_depth = config.extrinsics.n_points, config.extrinsics.max_depth
+  match_radius = config.extrinsics.chamfer_match_radius
+
   print(f"\nGlobal joint optimization (Chamfer + Robot + Wrist, lr={lr})...")
   wrist_cam_id = episode['meta']['wrist_serial']
   cam_ids = [c for c in episode['camera'] if c != wrist_cam_id] + [wrist_cam_id]
@@ -152,9 +145,9 @@ def global_joint_alignment(
   }
 
   robot_points, depth_batch, K = core.alignment.robot_clouds(
-    episode, prev_poses, pb_renderer, device
+    episode, prev_poses, pb_renderer, device, n_points
   )
-  env, ee_poses = core.alignment.scene_clouds(episode, device, chamfer_n_points, max_depth)
+  env, ee_poses = core.alignment.scene_clouds(episode, device, n_points, max_depth)
 
   fixed_cam_ids = [c for c in cam_ids if c != wrist_cam_id]
   label = {c: str(i + 1) for i, c in enumerate(fixed_cam_ids)} | {wrist_cam_id: "W"}
@@ -175,7 +168,7 @@ def global_joint_alignment(
     )
     robot = core.alignment.robot_depth_loss(robot_points, depth_batch, K, pose, max_depth)
 
-    loss_total = chamfer_weight * sum(chamfer.values()) + robot_weight * sum(robot.values())
+    loss_total = sum(chamfer.values()) + sum(robot.values())
     loss_total.backward()
     optimizer.step()
 
@@ -249,27 +242,8 @@ def process_episode(episode_id, pb_renderer, extrinsics_db, device, config):
 
   init_state = init_camera_states(episode, extrinsics_db)
 
-  aligned_state = per_camera_alignment(
-    episode,
-    pb_renderer,
-    init_state,
-    device,
-    outer_steps=config.extrinsics.outer_steps,
-    inner_steps=config.extrinsics.inner_steps,
-    lr=config.extrinsics.lr,
-  )
-
-  joint_state = global_joint_alignment(
-    episode,
-    aligned_state,
-    pb_renderer,
-    device,
-    lr=config.extrinsics.lr,
-    n_steps=config.extrinsics.n_steps,
-    chamfer_n_points=config.extrinsics.chamfer_n_points,
-    max_depth=config.extrinsics.max_depth,
-    match_radius=config.extrinsics.chamfer_match_radius,
-  )
+  aligned_state = per_camera_alignment(episode, pb_renderer, init_state, device, config)
+  joint_state = global_joint_alignment(episode, aligned_state, pb_renderer, device, config)
 
   export_extrinsics(episode, joint_state, export_root=config.paths.extrinsics)
 

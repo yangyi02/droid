@@ -41,13 +41,14 @@ def get_config():
   config.depth.gripper_closed_thresh = 0.05
   config.depth.mask_area_min = 0.02
   config.depth.mask_area_max = 0.45
+  config.depth.consensus_thresh = 0.5
 
   config.extrinsics = ml_collections.ConfigDict()
   config.extrinsics.outer_steps = 5
   config.extrinsics.inner_steps = 100
   config.extrinsics.lr = 0.001
   config.extrinsics.n_steps = 500
-  config.extrinsics.chamfer_n_points = 2000
+  config.extrinsics.n_points = 2000
   config.extrinsics.chamfer_match_radius = 0.05
   config.extrinsics.max_depth = 1.5
 

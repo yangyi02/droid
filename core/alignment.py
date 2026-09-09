@@ -16,7 +16,7 @@ def sample_camera_points(mask, z, K, n_points):
   return core.geometry.unproject_camera_frame(u, v, z[v, u], K)
 
 
-def foreground_points(T_cam2world, K, height, width, pb_renderer, n_points=2000, links=None):
+def foreground_points(T_cam2world, K, height, width, pb_renderer, n_points, links=None):
   """Robot surface the camera sees, in camera coordinates. links=None takes every link."""
   _, link_ids, metric = pb_renderer.render_segmentation(T_cam2world, K, width, height)
 
@@ -27,7 +27,7 @@ def foreground_points(T_cam2world, K, height, width, pb_renderer, n_points=2000,
   return sample_camera_points(visible, metric, K, n_points)
 
 
-def extract_robot_clouds(cam_id, episode, pb_renderer, base_extrinsic, device, depth_batch):
+def extract_robot_clouds(cam_id, episode, pb_renderer, base_extrinsic, device, depth_batch, n_points):
   is_wrist = cam_id == episode['meta']['wrist_serial']
   T_ee_base_all = episode['robot']['T_ee_base_all']
   cam_data = episode['camera'][cam_id]
@@ -43,7 +43,7 @@ def extract_robot_clouds(cam_id, episode, pb_renderer, base_extrinsic, device, d
 
     T_cam2world = T_ee_base_all[t] @ base_extrinsic if is_wrist else base_extrinsic
     links = pb_renderer.gripper_links if is_wrist else None
-    points_cam = foreground_points(T_cam2world, K, height, width, pb_renderer, links=links)
+    points_cam = foreground_points(T_cam2world, K, height, width, pb_renderer, n_points, links)
     if points_cam is None:
       continue
 
@@ -55,7 +55,7 @@ def extract_robot_clouds(cam_id, episode, pb_renderer, base_extrinsic, device, d
   return torch.stack(cache_X), depth_batch[kept]
 
 
-def robot_clouds(episode, poses, pb_renderer, device):
+def robot_clouds(episode, poses, pb_renderer, device, n_points):
   """Robot surface per camera, rendered at the given extrinsics, with the depth it is scored on."""
   robot_points, depth_batch, K = {}, {}, {}
   for cam_id, cam_data in episode['camera'].items():
@@ -66,19 +66,20 @@ def robot_clouds(episode, poses, pb_renderer, device):
       poses[cam_id]['base_extrinsic'],
       device,
       torch.tensor(np.asarray(cam_data['raw_depth'], dtype=np.float32), device=device).unsqueeze(1),
+      n_points,
     )
     K[cam_id] = torch.tensor(cam_data['K'], dtype=torch.float32, device=device)
 
   return robot_points, depth_batch, K
 
 
-def camera_frame_points(t, cam_data, n_points=2000, max_depth=1.5):
+def camera_frame_points(t, cam_data, n_points, max_depth):
   depth = cam_data['raw_depth'][t].astype(np.float32)
   mask = (depth > 0.0) & (depth < max_depth)
   return sample_camera_points(mask, depth, cam_data['K'], n_points)
 
 
-def scene_clouds(episode, device, n_points=2000, max_depth=1.5):
+def scene_clouds(episode, device, n_points, max_depth):
   """Scene clouds in camera frame, on the frames every camera sees enough of. Pose-independent."""
   cameras = episode['camera']
   T_ee2base = episode['robot']['T_ee_base_all']
@@ -98,7 +99,7 @@ def scene_clouds(episode, device, n_points=2000, max_depth=1.5):
   return {cam_id: torch.stack(clouds) for cam_id, clouds in cache.items()}, torch.stack(cache_ee)
 
 
-def batched_chamfer_distance(p1, p2, match_radius=0.05):
+def batched_chamfer_distance(p1, p2, match_radius):
   dist = torch.cdist(p1, p2)
   near_12 = dist.min(dim=2)[0]
   near_21 = dist.min(dim=1)[0]
@@ -112,7 +113,7 @@ def batched_chamfer_distance(p1, p2, match_radius=0.05):
   return loss, overlap
 
 
-def depth_loss_batched(points, T_cam2world, K, depth_batch, max_depth=1.5):
+def depth_loss_batched(points, T_cam2world, K, depth_batch, max_depth):
   _, _, height, width = depth_batch.shape
 
   P_c = (points - T_cam2world[:3, 3]) @ T_cam2world[:3, :3]
@@ -143,7 +144,7 @@ def depth_loss_batched(points, T_cam2world, K, depth_batch, max_depth=1.5):
   return torch.nan_to_num(torch.abs(z_obs[valid] - z_pred[valid]).mean(), nan=0.0)
 
 
-def chamfer_overlap(env, ee_poses, pose, wrist_cam_id, pairs, match_radius=0.05):
+def chamfer_overlap(env, ee_poses, pose, wrist_cam_id, pairs, match_radius):
   """Chamfer and overlap per camera pair, at one pose."""
   world = {}
   for cam_id, cloud in env.items():
@@ -157,7 +158,7 @@ def chamfer_overlap(env, ee_poses, pose, wrist_cam_id, pairs, match_radius=0.05)
   return chamfer, overlap
 
 
-def robot_depth_loss(robot_points, depth_batch, K, pose, max_depth=1.5):
+def robot_depth_loss(robot_points, depth_batch, K, pose, max_depth):
   """Robot depth loss per camera, at one pose."""
   return {
     cam_id: depth_loss_batched(points, pose[cam_id], K[cam_id], depth_batch[cam_id], max_depth)

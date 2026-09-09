@@ -7,9 +7,7 @@ import core.geometry
 
 
 @torch.inference_mode()
-def get_s2m2_disparity(
-  img_left, img_right, s2m2_model, run_stereo_matching, device, conf_thresh=0.95
-):
+def get_s2m2_disparity(img_left, img_right, s2m2_model, run_stereo_matching, device, conf_thresh):
   left_torch = torch.from_numpy(img_left).permute(2, 0, 1).unsqueeze(0).to(device)
   right_torch = torch.from_numpy(img_right).permute(2, 0, 1).unsqueeze(0).to(device)
 
@@ -26,7 +24,7 @@ def get_s2m2_disparity(
   return disp
 
 
-def compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, conf_thresh=0.95):
+def compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, conf_thresh):
 
   for cam_id in episode["camera"]:
     cam_data = episode["camera"][cam_id]
@@ -49,7 +47,7 @@ def compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, conf_
   return episode
 
 
-def extract_single_frame_mask(img_rgb, predictor, mask_area_min=0.02, mask_area_max=0.45):
+def extract_single_frame_mask(img_rgb, predictor, mask_area_min, mask_area_max):
   height, width = img_rgb.shape[:2]
 
   points = np.array(
@@ -85,7 +83,7 @@ def extract_single_frame_mask(img_rgb, predictor, mask_area_min=0.02, mask_area_
   return best_mask
 
 
-def compute_consensus_mask(masks_list, consensus_thresh=0.5):
+def compute_consensus_mask(masks_list, consensus_thresh):
   vote_map = np.mean(masks_list, axis=0)
   consensus_mask = vote_map >= consensus_thresh
 
@@ -98,12 +96,7 @@ def compute_consensus_mask(masks_list, consensus_thresh=0.5):
 
 
 def build_universal_gripper_mask(
-  episode,
-  sam_predictor,
-  consensus_thresh=0.5,
-  gripper_closed_thresh=0.05,
-  mask_area_min=0.02,
-  mask_area_max=0.45,
+  episode, sam_predictor, consensus_thresh, gripper_closed_thresh, mask_area_min, mask_area_max
 ):
   cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
   gripper_states = episode["robot"]["gripper_positions"]
@@ -115,7 +108,7 @@ def build_universal_gripper_mask(
     mask = extract_single_frame_mask(img, sam_predictor, mask_area_min, mask_area_max)
     masks_list.append(mask)
 
-  final_mask = compute_consensus_mask(masks_list, consensus_thresh=consensus_thresh)
+  final_mask = compute_consensus_mask(masks_list, consensus_thresh)
 
   n_frames = len(gripper_states)
   cam_data["sam_real_masks"] = np.zeros((n_frames, *final_mask.shape), dtype=bool)
@@ -124,7 +117,7 @@ def build_universal_gripper_mask(
   return episode
 
 
-def distill_empirical_gripper_depth(episode, max_depth_thresh=0.15, gripper_closed_thresh=0.05):
+def distill_empirical_gripper_depth(episode, max_depth_thresh, gripper_closed_thresh):
   cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
   gripper_states = episode["robot"]["gripper_positions"]
   closed_indices = np.where(gripper_states < gripper_closed_thresh)[0]
@@ -147,7 +140,7 @@ def distill_empirical_gripper_depth(episode, max_depth_thresh=0.15, gripper_clos
   return episode
 
 
-def inject_gripper_depth(episode, gripper_closed_thresh=0.05):
+def inject_gripper_depth(episode, gripper_closed_thresh):
   cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
   gripper_states = episode["robot"]["gripper_positions"]
   empirical_depth = cam_data["empirical_gripper_depth"]

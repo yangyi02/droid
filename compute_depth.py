@@ -76,7 +76,7 @@ def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
   }
 
 
-def extract_svo_video(episode, min_frames=0, max_frames=250):
+def extract_svo_video(episode, min_frames, max_frames):
   import pyzed.sl as sl
 
   episode_path = episode["meta"]["episode_path"]
@@ -313,16 +313,14 @@ def process_episode(episode_id, models, dbs, raw_root, config):
   id_to_path, serials_db, keep_ranges = dbs
 
   episode = init_episode(episode_id, raw_root, id_to_path, serials_db, keep_ranges)
-  episode = extract_svo_video(
-    episode, min_frames=config.depth.min_frames, max_frames=config.depth.max_frames
-  )
+  episode = extract_svo_video(episode, config.depth.min_frames, config.depth.max_frames)
   if episode is None:
     return
 
   episode = parse_robot_kinematics(episode)
   episode = align_temporal_streams(episode)
   episode = core.depth.compute_stereo_depth(
-    episode, s2m2_model, run_stereo_matching, device, conf_thresh=config.depth.conf_thresh
+    episode, s2m2_model, run_stereo_matching, device, config.depth.conf_thresh
   )
 
   wrist_data = episode["camera"][episode["meta"]["wrist_serial"]]
@@ -331,18 +329,15 @@ def process_episode(episode_id, models, dbs, raw_root, config):
   episode = core.depth.build_universal_gripper_mask(
     episode,
     sam_predictor,
-    gripper_closed_thresh=config.depth.gripper_closed_thresh,
-    mask_area_min=config.depth.mask_area_min,
-    mask_area_max=config.depth.mask_area_max,
+    config.depth.consensus_thresh,
+    config.depth.gripper_closed_thresh,
+    config.depth.mask_area_min,
+    config.depth.mask_area_max,
   )
   episode = core.depth.distill_empirical_gripper_depth(
-    episode,
-    max_depth_thresh=config.depth.max_depth_thresh,
-    gripper_closed_thresh=config.depth.gripper_closed_thresh,
+    episode, config.depth.max_depth_thresh, config.depth.gripper_closed_thresh
   )
-  episode = core.depth.inject_gripper_depth(
-    episode, gripper_closed_thresh=config.depth.gripper_closed_thresh
-  )
+  episode = core.depth.inject_gripper_depth(episode, config.depth.gripper_closed_thresh)
   export_depth(episode, export_root=config.paths.depth)
 
 

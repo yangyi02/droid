@@ -6,14 +6,14 @@ def list_episode_dirs(root):
   return set(os.listdir(root)) if os.path.isdir(root) else set()
 
 
-def shard_episodes(episode_ids, rank, world_size, limit=-1):
+def shard_episodes(episode_ids, rank, world_size, limit):
   episode_ids = sorted(episode_ids)
   if limit > 0:
     episode_ids = episode_ids[:limit]
   return episode_ids[rank::world_size]
 
 
-def run_episodes(episode_ids, process, rank=0, world_size=1, done=(), stage="Pipeline"):
+def run_episodes(episode_ids, process, rank, world_size, done, stage):
   done = set(done)
   todo = [episode_id for episode_id in episode_ids if episode_id not in done]
   skipped = len(episode_ids) - len(todo)

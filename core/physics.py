@@ -27,7 +27,7 @@ def _load_egl():
 
 
 class PyBulletRenderer:
-  def __init__(self, urdf, gpu=False):
+  def __init__(self, urdf, gpu):
     if pybullet.isConnected():
       pybullet.disconnect()
     pybullet.connect(pybullet.DIRECT)

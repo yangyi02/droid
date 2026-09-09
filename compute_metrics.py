@@ -20,7 +20,7 @@ import core.runner
 
 
 @torch.no_grad()
-def evaluate_extrinsics(episode, poses, device, pb_renderer):
+def evaluate_extrinsics(episode, poses, device, pb_renderer, config):
   """Stage 2's own objective, read once at the extrinsics it converged to."""
   wrist_cam_id = episode["meta"]["wrist_serial"]
   cam_ids = [c for c in episode["camera"] if c != wrist_cam_id] + [wrist_cam_id]
@@ -29,11 +29,16 @@ def evaluate_extrinsics(episode, poses, device, pb_renderer):
     c: torch.tensor(poses[c]["base_extrinsic"], dtype=torch.float32, device=device) for c in cam_ids
   }
 
-  robot_points, depth_batch, K = core.alignment.robot_clouds(episode, poses, pb_renderer, device)
-  env, ee_poses = core.alignment.scene_clouds(episode, device)
+  n_points, max_depth = config.extrinsics.n_points, config.extrinsics.max_depth
+  robot_points, depth_batch, K = core.alignment.robot_clouds(
+    episode, poses, pb_renderer, device, n_points
+  )
+  env, ee_poses = core.alignment.scene_clouds(episode, device, n_points, max_depth)
 
-  chamfer, overlap = core.alignment.chamfer_overlap(env, ee_poses, base, wrist_cam_id, pairs)
-  robot = core.alignment.robot_depth_loss(robot_points, depth_batch, K, base)
+  chamfer, overlap = core.alignment.chamfer_overlap(
+    env, ee_poses, base, wrist_cam_id, pairs, config.extrinsics.chamfer_match_radius
+  )
+  robot = core.alignment.robot_depth_loss(robot_points, depth_batch, K, base, max_depth)
 
   fixed_cam_ids = [c for c in cam_ids if c != wrist_cam_id]
   label = {c: str(i + 1) for i, c in enumerate(fixed_cam_ids)} | {wrist_cam_id: "w"}
@@ -137,12 +142,14 @@ def robot_coverage(episode, poses, pb_renderer):
   return coverage
 
 
-def episode_metrics(episode, poses, device, tracks_3d, per_cam_vis, n_static, n_robot, pb_renderer):
+def episode_metrics(
+  episode, poses, device, tracks_3d, per_cam_vis, n_static, n_robot, pb_renderer, config
+):
   metrics = {"episode_id": episode["meta"]["episode_id"]}
   metrics.update(scene_metadata(episode))
   metrics.update(robot_coverage(episode, poses, pb_renderer))
   metrics.update(motion_stats(episode))
-  metrics.update(evaluate_extrinsics(episode, poses, device, pb_renderer))
+  metrics.update(evaluate_extrinsics(episode, poses, device, pb_renderer, config))
 
   metrics["n_static"] = n_static
   metrics["n_robot"] = n_robot
@@ -203,6 +210,7 @@ def process_episode(episode_id, device, pb_renderer, csv_path, config):
     tracks["n_static"],
     tracks["n_robot"],
     pb_renderer,
+    config,
   )
   _append_row(csv_path, metrics)
 

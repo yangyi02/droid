@@ -26,13 +26,13 @@ def depth_gap(cam_data, points_3d, T_cam2world, t):
   return u, v, sample_depth(cam_data["raw_depth"][t], u, v, z_pred) - z_pred
 
 
-def sample_per_view(per_cam_vis, n_points=None):
+def sample_per_view(per_cam_vis, n_points):
   rng = np.random.default_rng()
   keep = np.zeros(0, dtype=int)
   per_view = []
   for vis in per_cam_vis.values():
     queryable = np.setdiff1d(np.flatnonzero(vis[0]), keep)
-    if n_points is not None and len(queryable) > n_points:
+    if len(queryable) > n_points:
       queryable = rng.choice(queryable, n_points, replace=False)
     per_view.append(queryable)
     keep = np.concatenate([keep, queryable])
@@ -55,7 +55,7 @@ def link_transform(obj_id, link_id):
   return T_link2world
 
 
-def find_static_candidates(episode, poses, pb_renderer, match_radius=0.005):
+def find_static_candidates(episode, poses, pb_renderer, match_radius):
   cam_ids = list(episode["camera"])
   robot = episode["robot"]
 
@@ -103,7 +103,7 @@ def find_static_candidates(episode, poses, pb_renderer, match_radius=0.005):
   )
 
 
-def project_static_tracks(static_points_3d, episode, poses, depth_tolerance=0.05):
+def project_static_tracks(static_points_3d, episode, poses, depth_tolerance):
   per_cam_tracks_2d = {}
   per_cam_vis = {}
   per_cam_gap = {}
@@ -131,9 +131,9 @@ def filter_static_tracks(
   per_cam_tracks_2d,
   per_cam_vis,
   per_cam_gap,
-  depth_tolerance=0.02,
-  min_run_frames=30,
-  flicker=0.10,
+  depth_tolerance,
+  min_run_frames,
+  flicker,
 ):
   vis = np.stack(list(per_cam_vis.values()))
   gap = np.stack(list(per_cam_gap.values()))
@@ -158,7 +158,7 @@ def filter_static_tracks(
   )
 
 
-def sample_static_tracks(static_points_3d, per_cam_tracks_2d, per_cam_vis, n_points=None):
+def sample_static_tracks(static_points_3d, per_cam_tracks_2d, per_cam_vis, n_points):
   keep, per_view = sample_per_view(per_cam_vis, n_points)
   print(f"  Static: {' + '.join(str(len(v)) for v in per_view)} points sampled per query view")
   return (
@@ -215,7 +215,7 @@ def find_robot_candidates(episode, poses, pb_renderer):
   return tracks_3d
 
 
-def project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer, depth_tolerance=0.02):
+def project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer, depth_tolerance):
   robot = episode["robot"]
   n_frames, n_points, _ = robot_tracks_3d.shape
 
@@ -263,7 +263,7 @@ def filter_robot_tracks(robot_tracks_3d, per_cam_tracks_2d, per_cam_vis):
   )
 
 
-def sample_robot_tracks(robot_tracks_3d, per_cam_tracks_2d, per_cam_vis, n_points=None):
+def sample_robot_tracks(robot_tracks_3d, per_cam_tracks_2d, per_cam_vis, n_points):
   keep, per_view = sample_per_view(per_cam_vis, n_points)
   print(f"  Robot: {' + '.join(str(len(v)) for v in per_view)} points sampled per query view")
   return (
@@ -358,7 +358,9 @@ def process_episode(episode_id, pb_renderer, config):
   )
 
   robot_tracks_3d = find_robot_candidates(episode, poses, pb_renderer)
-  robot_tracks, robot_vis = project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer)
+  robot_tracks, robot_vis = project_robot_tracks(
+    robot_tracks_3d, episode, poses, pb_renderer, config.tracks.depth_tolerance
+  )
   robot_tracks_3d, robot_tracks, robot_vis = filter_robot_tracks(
     robot_tracks_3d, robot_tracks, robot_vis
   )
