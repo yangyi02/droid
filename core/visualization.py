@@ -10,7 +10,6 @@ import core.geometry
 
 
 def draw_label(img, text, org, scale, colour, thickness, outline):
-  """Text with a dark outline, so it stays legible over whatever the frame happens to show."""
   cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), outline)
   cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, colour, thickness)
 
@@ -131,59 +130,29 @@ def show_distilled_gripper_3d(median_depth, K, img_rgb):
 
 
 def show_gripper_refinement(episode, t=0):
-  wrist_cam_id = episode["meta"].get("wrist_serial")
+  wrist_cam_id = episode["meta"]["wrist_serial"]
   cam_data = episode["camera"][wrist_cam_id]
   rgb = cam_data["video_rgb"][t]
 
-  orig_depth = cam_data.get("original_raw_depth")
-  raw_depth = cam_data.get("raw_depth")
-  gripper_mask = cam_data.get("sam_real_masks")
-  emp_depth = cam_data.get("empirical_gripper_depth")
+  overlay = rgb.copy()
+  overlay[cam_data["sam_real_masks"][t] > 0] = [255, 0, 128]
 
-  d_orig = orig_depth[t] if orig_depth is not None and len(orig_depth) > t else None
-  d_final = raw_depth[t] if raw_depth is not None and len(raw_depth) > t else None
+  _, axes = plt.subplots(1, 4, figsize=(20, 4.5))
+  axes[0].imshow(cv2.addWeighted(rgb, 0.6, overlay, 0.4, 0))
+  axes[0].set_title("RGB + SAM Gripper Mask", fontsize=11)
 
-  if gripper_mask is not None:
-    mask_vis = gripper_mask[min(t, len(gripper_mask) - 1)] if gripper_mask.ndim == 3 else gripper_mask
-  else:
-    mask_vis = None
+  panels = [
+    (cam_data["original_raw_depth"][t], "Original Sensor Depth"),
+    (cam_data["empirical_gripper_depth"], "Distilled Gripper Surface Depth"),
+    (cam_data["raw_depth"][t], "Final Refined Depth (Injected)"),
+  ]
+  for ax, (depth, title) in zip(axes[1:], panels, strict=True):
+    im = ax.imshow(np.where(depth > 0, depth, np.nan), cmap="viridis", vmin=0.1, vmax=1.2)
+    ax.set_title(title, fontsize=11)
+    plt.colorbar(im, ax=ax, fraction=0.046)
 
-  fig, axes = plt.subplots(1, 4, figsize=(20, 4.5))
-
-  axes[0].imshow(rgb)
-  if mask_vis is not None:
-    overlay = rgb.copy()
-    overlay[mask_vis > 0] = [255, 0, 128]
-    blended = cv2.addWeighted(rgb, 0.6, overlay, 0.4, 0)
-    axes[0].imshow(blended)
-    axes[0].set_title("RGB + SAM Gripper Mask", fontsize=11)
-  else:
-    axes[0].set_title("RGB (No Mask)", fontsize=11)
-  axes[0].axis("off")
-
-  if d_orig is not None:
-    im1 = axes[1].imshow(np.where(d_orig > 0, d_orig, np.nan), cmap="viridis", vmin=0.1, vmax=1.2)
-    axes[1].set_title("Original Sensor Depth", fontsize=11)
-    plt.colorbar(im1, ax=axes[1], fraction=0.046)
-  else:
-    axes[1].set_title("Original Depth N/A", fontsize=11)
-  axes[1].axis("off")
-
-  if emp_depth is not None:
-    im2 = axes[2].imshow(np.where(emp_depth > 0, emp_depth, np.nan), cmap="viridis", vmin=0.1, vmax=1.2)
-    axes[2].set_title("Distilled Gripper Surface Depth", fontsize=11)
-    plt.colorbar(im2, ax=axes[2], fraction=0.046)
-  else:
-    axes[2].set_title("Distilled Gripper Depth N/A", fontsize=11)
-  axes[2].axis("off")
-
-  if d_final is not None:
-    im3 = axes[3].imshow(np.where(d_final > 0, d_final, np.nan), cmap="viridis", vmin=0.1, vmax=1.2)
-    axes[3].set_title("Final Refined Depth (Injected)", fontsize=11)
-    plt.colorbar(im3, ax=axes[3], fraction=0.046)
-  else:
-    axes[3].set_title("Final Depth N/A", fontsize=11)
-  axes[3].axis("off")
+  for ax in axes:
+    ax.axis("off")
 
   plt.suptitle(
     f"Wrist Camera [{wrist_cam_id[:8]}] Gripper Refinement Inspection (Frame {t})",

@@ -26,76 +26,33 @@ def _encode_jpeg(rgb_frame, quality=95):
   return np.frombuffer(buf, dtype=np.uint8).copy()
 
 
-def _sample_queries(per_cam_vis, per_cam_tracks_2d, view_index_map):
-  cam_ids = list(view_index_map.keys())
-  P = per_cam_vis[cam_ids[0]].shape[1]
-  rng = np.random.default_rng()
-
-  queries = np.zeros((P, 4), dtype=np.float32)
-
-  for p in range(P):
-    candidates = []
-    for cam_id in cam_ids:
-      vis_p = per_cam_vis[cam_id][:, p]
-      visible_frames = np.where(vis_p)[0]
-      v_idx = view_index_map[cam_id]
-      for t in visible_frames:
-        candidates.append((t, v_idx, cam_id))
-
-    if len(candidates) == 0:
-      queries[p] = [-1, -1, 0, 0]
-      continue
-
-    chosen = candidates[rng.integers(len(candidates))]
-    t, v_idx, cam_id = chosen
-    x, y = per_cam_tracks_2d[cam_id][t, p]
-    queries[p] = [x, y, float(t), float(v_idx)]
-
-  return queries
-
-
-def _filter_always_invisible_tracks(tracks_3d, per_cam_tracks_2d, per_cam_vis, cam_ids):
-  F, P, _ = tracks_3d.shape
-  any_visible = np.zeros(P, dtype=bool)
-  for cam_id in cam_ids:
-    any_visible |= per_cam_vis[cam_id].any(axis=0)
-
-  if any_visible.all():
-    return tracks_3d, per_cam_tracks_2d, per_cam_vis, any_visible
-
-  n_kept = any_visible.sum()
-  print(f"  Filtering tracks: {P} → {n_kept} ({P - n_kept} never-visible tracks removed)")
-  filtered_traj = tracks_3d[:, any_visible, :]
-  filtered_tracks = {c: per_cam_tracks_2d[c][:, any_visible, :] for c in cam_ids}
-  filtered_vis = {c: per_cam_vis[c][:, any_visible] for c in cam_ids}
-  return filtered_traj, filtered_tracks, filtered_vis, any_visible
+def _build_queries(uv, query_view):
+  """Each point is queried at t=0 in the view that seeded it, on that view's exact pixel."""
+  xy = np.round(uv[query_view, 0, np.arange(uv.shape[2])])
+  t = np.zeros((len(xy), 1), dtype=np.float32)
+  return np.concatenate([xy, t, query_view[:, None]], axis=1).astype(np.float32)
 
 
 def export_to_tapvid3d(
   episode,
   poses,
   tracks_3d,
-  per_cam_tracks_2d,
-  per_cam_vis,
+  uv,
+  vis,
+  query_view,
   output_root=config.paths.tapvidmv,
   include_depth=True,
   include_foreground_mask=True,
   jpeg_quality=95,
 ):
   episode_id = episode["meta"]["episode_id"]
-  wrist_cam_id = episode["meta"].get("wrist_serial")
-  cam_ids = sorted(episode["camera"].keys())
+  wrist_cam_id = episode["meta"]["wrist_serial"]
+  cam_ids = list(episode["camera"])
   F = tracks_3d.shape[0]
 
-  view_index_map = {cam_id: i for i, cam_id in enumerate(cam_ids)}
-
   print(f"\nExporting episode [{episode_id}] to TAPVid-3D format")
-  print(f"  Views: {len(cam_ids)} | Frames: {F} | Points: {tracks_3d.shape[1]}")
-  print(f"  View index map: {view_index_map}")
+  print(f"  Views: {cam_ids} | Frames: {F} | Points: {tracks_3d.shape[1]}")
 
-  tracks_3d, cam_tracks, cam_vis, _ = _filter_always_invisible_tracks(
-    tracks_3d, per_cam_tracks_2d, per_cam_vis, cam_ids
-  )
   P = tracks_3d.shape[1]
 
   seq_dir = os.path.abspath(os.path.expanduser(os.path.join(output_root, episode_id)))
@@ -104,12 +61,12 @@ def export_to_tapvid3d(
   np.save(os.path.join(seq_dir, "tracks_xyz.npy"), tracks_3d.astype(np.float32))
   print(f"  tracks_xyz.npy: ({F}, {P}, 3)")
 
-  queries = _sample_queries(cam_vis, cam_tracks, view_index_map)
+  queries = _build_queries(uv, query_view)
   np.save(os.path.join(seq_dir, "queries_xytv.npy"), queries)
   print(f"  queries_xytv.npy: ({P}, 4)")
 
-  for cam_id in cam_ids:
-    view_id = str(view_index_map[cam_id])
+  for view, cam_id in enumerate(cam_ids):
+    view_id = str(view)
     view_dir = os.path.join(seq_dir, view_id)
     os.makedirs(view_dir, exist_ok=True)
 
@@ -131,14 +88,14 @@ def export_to_tapvid3d(
     w2c = np.linalg.inv(c2w).astype(np.float32)
     np.save(os.path.join(view_dir, "extrinsics_w2c.npy"), w2c)
 
-    np.save(os.path.join(view_dir, "visibility.npy"), cam_vis[cam_id].astype(bool))
+    np.save(os.path.join(view_dir, "visibility.npy"), vis[view].astype(bool))
 
     if include_depth and "raw_depth" in cam_data:
       depth = cam_data["raw_depth"].astype(np.float32)
       depth[~np.isfinite(depth)] = 0.0
       np.save(os.path.join(view_dir, "depth.npy"), depth)
 
-    if include_foreground_mask and cam_id == wrist_cam_id and "sam_real_masks" in cam_data:
+    if include_foreground_mask and cam_id == wrist_cam_id:
       mask = cam_data["sam_real_masks"].astype(bool)
       np.save(os.path.join(view_dir, "foreground_mask.npy"), mask)
 
@@ -146,7 +103,7 @@ def export_to_tapvid3d(
     parts = [f"  view {view_id} [{cam_id}]: imgs({F},JPEG) intr(4,) extr({F},4,4) vis({F},{P})"]
     if include_depth and "raw_depth" in cam_data:
       parts.append(f" depth({F},{H},{W})")
-    if include_foreground_mask and cam_id == wrist_cam_id and "sam_real_masks" in cam_data:
+    if include_foreground_mask and cam_id == wrist_cam_id:
       parts.append(f" fg_mask({F},{H},{W})")
     print("".join(parts))
 
@@ -156,27 +113,18 @@ def export_to_tapvid3d(
 
 def process_episode(episode_id, args):
   print(f"\nLoading pipeline outputs for [{episode_id}]...")
-  episode = core.io.load_depth_data(episode_id, args.depth_root, load_video="full")
+  episode = core.io.load_depth_data(episode_id, args.depth_root, load_video=True)
   poses = core.io.load_extrinsics(episode, args.extrinsics_root)
 
-  tracks_dir = os.path.abspath(os.path.expanduser(os.path.join(args.tracks_root, episode_id)))
-  data_3d = np.load(os.path.join(tracks_dir, "tracks_3d.npz"))
-  tracks_3d = data_3d["tracks_3d"]
-
-  cam_ids = sorted(episode["camera"].keys())
-  per_cam_tracks_2d = {}
-  per_cam_vis = {}
-  for cam_id in cam_ids:
-    d = np.load(os.path.join(tracks_dir, cam_id, "tracks_2d.npz"))
-    per_cam_tracks_2d[cam_id] = d["tracks_2d"]
-    per_cam_vis[cam_id] = d["vis_2d"]
+  tracks = core.io.load_track_data(episode_id, args.tracks_root)
 
   export_to_tapvid3d(
     episode=episode,
     poses=poses,
-    tracks_3d=tracks_3d,
-    per_cam_tracks_2d=per_cam_tracks_2d,
-    per_cam_vis=per_cam_vis,
+    tracks_3d=tracks["tracks_3d"],
+    uv=tracks["uv"],
+    vis=tracks["vis"],
+    query_view=tracks["query_view"],
     output_root=args.output_root,
     include_depth=not args.no_depth,
     include_foreground_mask=not args.no_foreground_mask,

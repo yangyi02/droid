@@ -21,11 +21,9 @@ import core.runner
 
 
 def init_all_models():
-  device = core.io.get_accelerator()
-  vendor_dir = os.path.join(core.io.REPO_ROOT, "third_party")
-  s2m2_src = os.path.join(vendor_dir, "s2m2", "src")
-  if s2m2_src not in sys.path:
-    sys.path.append(s2m2_src)
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party")
+  sys.path.append(os.path.join(vendor_dir, "s2m2", "src"))
 
   from s2m2.core.utils.model_utils import load_model, run_stereo_matching
   from segment_anything import SamPredictor, sam_model_registry
@@ -37,36 +35,32 @@ def init_all_models():
   return s2m2_model, SamPredictor(sam), run_stereo_matching
 
 
-def init_episode(episode_id, root_path, id_to_path, serials_db, keep_ranges_db):
-  relative_path = id_to_path[episode_id]
-  episode_path = os.path.join(root_path, relative_path)
+def stereo_intrinsics(params):
+  def camera_matrix(cam):
+    return np.array([[cam.fx, 0, cam.cx], [0, cam.fy, cam.cy], [0, 0, 1]], dtype=np.float32)
 
+  return {
+    "K": camera_matrix(params.left_cam),
+    "disto": np.array(params.left_cam.disto, dtype=np.float32),
+    "K_right": camera_matrix(params.right_cam),
+    "disto_right": np.array(params.right_cam.disto, dtype=np.float32),
+  }
+
+
+def init_episode(episode_id, root_path, id_to_path, serials_db):
   cam_info = serials_db[episode_id]
-  wrist_cam_id = cam_info.get("wrist_cam_serial")
-
-  valid_cams = sorted(set(cam_info.values()))
-
-  base_prefix = "gs://xembodiment_data/r2d2/r2d2-data-full/"
-  episode_key = f"{base_prefix}{relative_path}/recordings/MP4--{base_prefix}{relative_path}/trajectory.h5"
-
-  valid_indices = None
-
-  if episode_key in keep_ranges_db:
-    ranges = keep_ranges_db[episode_key]
-    indices = []
-    for start, end in ranges:
-      indices.extend(range(start, end))
-    valid_indices = np.array(indices)
+  wrist_cam_id = cam_info["wrist_cam_serial"]
 
   return {
     "meta": {
       "episode_id": episode_id,
-      "episode_path": episode_path,
+      "episode_path": os.path.join(root_path, id_to_path[episode_id]),
       "wrist_serial": wrist_cam_id,
-      "valid_indices": valid_indices,
     },
     "robot": {},
-    "camera": {cam_id: {"baseline": 0.063 if cam_id == wrist_cam_id else 0.120} for cam_id in valid_cams},
+    "camera": {
+      cam_id: {"baseline": 0.063 if cam_id == wrist_cam_id else 0.120} for cam_id in sorted(set(cam_info.values()))
+    },
   }
 
 
@@ -76,109 +70,48 @@ def extract_svo_video(episode, min_frames, max_frames):
   episode_path = episode["meta"]["episode_path"]
 
   for cam_id in episode["camera"]:
-    svo_files = glob.glob(os.path.join(episode_path, f"**/{cam_id}.svo"), recursive=True)
-    if not svo_files:
-      return None
+    svo_file = glob.glob(os.path.join(episode_path, f"**/{cam_id}.svo"), recursive=True)[0]
 
     zed, init_params = sl.Camera(), sl.InitParameters()
-    init_params.set_from_svo_file(svo_files[0])
+    init_params.set_from_svo_file(svo_file)
     init_params.svo_real_time_mode = False
     zed.open(init_params)
 
     n_svo_frames = zed.get_svo_number_of_frames() - 2
     if not min_frames <= n_svo_frames <= max_frames:
       zed.close()
-      return None
+      raise core.runner.SkipEpisode(f"{cam_id}: {n_svo_frames} frames outside [{min_frames}, {max_frames}]")
 
     cam_info = zed.get_camera_information()
+    configuration = cam_info.camera_configuration
 
-    calib = cam_info.camera_configuration.calibration_parameters
-    K_calib_left = np.array(
-      [
-        [calib.left_cam.fx, 0, calib.left_cam.cx],
-        [0, calib.left_cam.fy, calib.left_cam.cy],
-        [0, 0, 1],
-      ],
-      dtype=np.float32,
-    )
-    disto_calib_left = np.array(calib.left_cam.disto, dtype=np.float32)
+    views = {
+      "video_rgb": sl.VIEW.LEFT,
+      "video_right": sl.VIEW.RIGHT,
+      "video_raw_rgb": sl.VIEW.LEFT_UNRECTIFIED,
+      "video_raw_right": sl.VIEW.RIGHT_UNRECTIFIED,
+    }
+    mats = {key: sl.Mat() for key in views}
+    frames = {key: [] for key in views}
+    timestamps = []
 
-    K_calib_right = np.array(
-      [
-        [calib.right_cam.fx, 0, calib.right_cam.cx],
-        [0, calib.right_cam.fy, calib.right_cam.cy],
-        [0, 0, 1],
-      ],
-      dtype=np.float32,
-    )
-    disto_calib_right = np.array(calib.right_cam.disto, dtype=np.float32)
+    for _ in tqdm(range(n_svo_frames + 2), desc=f"Decoding {cam_id}"):
+      if zed.grab() != sl.ERROR_CODE.SUCCESS:
+        continue
 
-    calib_raw = cam_info.camera_configuration.calibration_parameters_raw
-    K_raw_left = np.array(
-      [
-        [calib_raw.left_cam.fx, 0, calib_raw.left_cam.cx],
-        [0, calib_raw.left_cam.fy, calib_raw.left_cam.cy],
-        [0, 0, 1],
-      ],
-      dtype=np.float32,
-    )
-    disto_raw_left = np.array(calib_raw.left_cam.disto, dtype=np.float32)
-
-    K_raw_right = np.array(
-      [
-        [calib_raw.right_cam.fx, 0, calib_raw.right_cam.cx],
-        [0, calib_raw.right_cam.fy, calib_raw.right_cam.cy],
-        [0, 0, 1],
-      ],
-      dtype=np.float32,
-    )
-    disto_raw_right = np.array(calib_raw.right_cam.disto, dtype=np.float32)
-
-    all_left, all_right, all_left_raw, all_right_raw = [], [], [], []
-    all_timestamps = []
-    left_mat, right_mat = sl.Mat(), sl.Mat()
-    left_raw_mat, right_raw_mat = sl.Mat(), sl.Mat()
-
-    for _ in tqdm(range(zed.get_svo_number_of_frames()), desc=f"Decoding {cam_id}"):
-      if zed.grab() == sl.ERROR_CODE.SUCCESS:
-        timestamp_ms = zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_milliseconds()
-        all_timestamps.append(timestamp_ms)
-
-        zed.retrieve_image(left_mat, sl.VIEW.LEFT)
-        zed.retrieve_image(right_mat, sl.VIEW.RIGHT)
-        zed.retrieve_image(left_raw_mat, sl.VIEW.LEFT_UNRECTIFIED)
-        zed.retrieve_image(right_raw_mat, sl.VIEW.RIGHT_UNRECTIFIED)
-
-        all_left.append(cv2.cvtColor(left_mat.get_data(), cv2.COLOR_BGRA2RGB))
-        all_right.append(cv2.cvtColor(right_mat.get_data(), cv2.COLOR_BGRA2RGB))
-        all_left_raw.append(cv2.cvtColor(left_raw_mat.get_data(), cv2.COLOR_BGRA2RGB))
-        all_right_raw.append(cv2.cvtColor(right_raw_mat.get_data(), cv2.COLOR_BGRA2RGB))
+      timestamps.append(zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_milliseconds())
+      for key, view in views.items():
+        zed.retrieve_image(mats[key], view)
+        frames[key].append(cv2.cvtColor(mats[key].get_data(), cv2.COLOR_BGRA2RGB))
 
     zed.close()
 
+    calibrated = stereo_intrinsics(configuration.calibration_parameters)
     episode["camera"][cam_id].update(
-      {
-        "K": K_calib_left,
-        "zed_calibration": {
-          "calibrated": {
-            "K": K_calib_left,
-            "disto": disto_calib_left,
-            "K_right": K_calib_right,
-            "disto_right": disto_calib_right,
-          },
-          "raw": {
-            "K": K_raw_left,
-            "disto": disto_raw_left,
-            "K_right": K_raw_right,
-            "disto_right": disto_raw_right,
-          },
-        },
-        "video_rgb": np.stack(all_left),
-        "video_right": np.stack(all_right),
-        "video_raw_rgb": np.stack(all_left_raw),
-        "video_raw_right": np.stack(all_right_raw),
-        "timestamps": np.array(all_timestamps),
-      }
+      {key: np.stack(images) for key, images in frames.items()},
+      K=calibrated["K"],
+      zed_calibration={"calibrated": calibrated, "raw": stereo_intrinsics(configuration.calibration_parameters_raw)},
+      timestamps=np.array(timestamps),
     )
 
   return episode
@@ -196,7 +129,6 @@ def parse_robot_kinematics(episode):
 
   with open(glob.glob(f"{ep_path}/metadata_*.json")[0]) as jf:
     wrist_ext = json.load(jf)["wrist_cam_extrinsics"]
-    wrist_ext = wrist_ext.get("extrinsics", wrist_ext) if isinstance(wrist_ext, dict) else wrist_ext
 
   total_frames = len(ee_poses)
 
@@ -231,83 +163,65 @@ def align_temporal_streams(episode):
 
 
 def export_depth(episode, export_root):
-  episode_id = episode["meta"]["episode_id"]
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode_id)))
+  wrist_cam_id = episode["meta"]["wrist_serial"]
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode["meta"]["episode_id"])))
   os.makedirs(ep_dir, exist_ok=True)
 
   for cam_id, data in episode["camera"].items():
     cam_dir = os.path.join(ep_dir, str(cam_id))
     os.makedirs(cam_dir, exist_ok=True)
 
-    video_keys = {
-      "video_rgb": "video_left.mp4",
-      "video_right": "video_right.mp4",
-      "video_raw_rgb": "video_left_raw.mp4",
-      "video_raw_right": "video_right_raw.mp4",
-    }
-    for key, filename in video_keys.items():
-      if key in data and len(data[key]) > 0:
-        media.write_video(os.path.join(cam_dir, filename), data[key], fps=10)
+    for key, filename in [
+      ("video_rgb", "video_left.mp4"),
+      ("video_right", "video_right.mp4"),
+      ("video_raw_rgb", "video_left_raw.mp4"),
+      ("video_raw_right", "video_right_raw.mp4"),
+    ]:
+      media.write_video(os.path.join(cam_dir, filename), data[key], fps=10)
 
-    if "original_raw_depth" in data:
-      np.savez_compressed(
-        os.path.join(cam_dir, "original_raw_depth.npz"),
-        depth=(data["original_raw_depth"] * 1000).astype(np.uint16),
-      )
-    if "raw_depth" in data:
-      np.savez_compressed(os.path.join(cam_dir, "raw_depth.npz"), depth=(data["raw_depth"] * 1000).astype(np.uint16))
+    np.savez_compressed(os.path.join(cam_dir, "raw_depth.npz"), depth=(data["raw_depth"] * 1000).astype(np.uint16))
 
-    if "sam_real_masks" in data:
+    calibrated, raw = data["zed_calibration"]["calibrated"], data["zed_calibration"]["raw"]
+    np.savez(
+      os.path.join(cam_dir, "calibration.npz"),
+      K_calib_left=calibrated["K"],
+      K_calib_right=calibrated["K_right"],
+      disto_calib_left=calibrated["disto"],
+      disto_calib_right=calibrated["disto_right"],
+      K_raw_left=raw["K"],
+      K_raw_right=raw["K_right"],
+      disto_raw_left=raw["disto"],
+      disto_raw_right=raw["disto_right"],
+      baseline=np.array(data["baseline"], dtype=np.float32),
+    )
+
+    if cam_id == wrist_cam_id:
       np.savez_compressed(os.path.join(cam_dir, "gripper_mask.npz"), mask=data["sam_real_masks"])
-    if "empirical_gripper_depth" in data:
-      gripper_uint16 = (data["empirical_gripper_depth"] * 1000).astype(np.uint16)
-      np.savez_compressed(os.path.join(cam_dir, "gripper_depth.npz"), depth=gripper_uint16)
-
-    if "zed_calibration" in data:
-      calibrated, raw = data["zed_calibration"]["calibrated"], data["zed_calibration"]["raw"]
-      np.savez(
-        os.path.join(cam_dir, "calibration.npz"),
-        K_calib_left=calibrated["K"],
-        K_calib_right=calibrated["K_right"],
-        disto_calib_left=calibrated["disto"],
-        disto_calib_right=calibrated["disto_right"],
-        K_raw_left=raw["K"],
-        K_raw_right=raw["K_right"],
-        disto_raw_left=raw["disto"],
-        disto_raw_right=raw["disto_right"],
-        baseline=np.array(data["baseline"], dtype=np.float32),
-      )
+      for key, filename in [
+        ("original_raw_depth", "original_raw_depth.npz"),
+        ("empirical_gripper_depth", "gripper_depth.npz"),
+      ]:
+        np.savez_compressed(os.path.join(cam_dir, filename), depth=(data[key] * 1000).astype(np.uint16))
 
   robot = episode["robot"]
-  if robot:
-    robot_save = {}
-    if "joint_positions" in robot:
-      robot_save["joint_positions"] = robot["joint_positions"].astype(np.float32)
-    if "gripper_positions" in robot:
-      robot_save["gripper_positions"] = robot["gripper_positions"].astype(np.float32)
-    if "T_ee_base_all" in robot:
-      robot_save["T_ee_base_all"] = robot["T_ee_base_all"].astype(np.float32)
-    if "T_cam_ee_init" in robot:
-      robot_save["T_cam_ee_init"] = robot["T_cam_ee_init"].astype(np.float32)
-    meta = episode["meta"]
-    if meta.get("valid_indices") is not None:
-      robot_save["valid_indices"] = meta["valid_indices"]
-    if meta.get("wrist_serial") is not None:
-      robot_save["wrist_serial"] = np.array(meta["wrist_serial"])
-    np.savez_compressed(os.path.join(ep_dir, "robot.npz"), **robot_save)
+  np.savez_compressed(
+    os.path.join(ep_dir, "robot.npz"),
+    wrist_serial=np.array(wrist_cam_id),
+    joint_positions=robot["joint_positions"].astype(np.float32),
+    gripper_positions=robot["gripper_positions"].astype(np.float32),
+    T_ee_base_all=robot["T_ee_base_all"].astype(np.float32),
+    T_cam_ee_init=robot["T_cam_ee_init"].astype(np.float32),
+  )
 
   return ep_dir
 
 
 def process_episode(episode_id, models, dbs, raw_root, config):
   s2m2_model, sam_predictor, run_stereo_matching, device = models
-  id_to_path, serials_db, keep_ranges = dbs
+  id_to_path, serials_db = dbs
 
-  episode = init_episode(episode_id, raw_root, id_to_path, serials_db, keep_ranges)
+  episode = init_episode(episode_id, raw_root, id_to_path, serials_db)
   episode = extract_svo_video(episode, config.depth.min_frames, config.depth.max_frames)
-  if episode is None:
-    return
-
   episode = parse_robot_kinematics(episode)
   episode = align_temporal_streams(episode)
   episode = core.depth.compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, config.depth.conf_thresh)
@@ -332,21 +246,20 @@ def process_episode(episode_id, models, dbs, raw_root, config):
 
 def main(_):
   config = config_flag.value
-  device = core.io.get_accelerator()
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
   s2m2_model, sam_predictor, run_stereo_matching = init_all_models()
-  serials_db, id_to_path, keep_ranges, _, valid_ids = core.io.load_metadata(config)
+  serials_db, id_to_path, _, valid_ids = core.io.load_metadata(config)
   raw_root = os.path.expanduser(config.paths.raw)
 
   target = core.runner.shard_episodes(valid_ids, config.runner.rank, config.runner.world_size, config.runner.limit)
-  export_abs = os.path.abspath(os.path.expanduser(config.paths.depth))
-  exported = core.runner.list_episode_dirs(config.paths.depth)
-  done = {e for e in target if e in exported and os.path.exists(os.path.join(export_abs, e, "robot.npz"))}
+  export_root = os.path.abspath(os.path.expanduser(config.paths.depth))
+  done = {e for e in target if os.path.exists(os.path.join(export_root, e, "robot.npz"))}
 
   def run_one(episode_id):
     process_episode(
       episode_id,
       (s2m2_model, sam_predictor, run_stereo_matching, device),
-      (id_to_path, serials_db, keep_ranges),
+      (id_to_path, serials_db),
       raw_root,
       config,
     )

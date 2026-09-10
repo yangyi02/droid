@@ -11,7 +11,6 @@ def decode_disparity(disp, fx, baseline):
 
 
 def unproject_camera_frame(u, v, z, K):
-  """Camera-frame points as a [4, N] homogeneous array, ready for a T_cam2world @ points."""
   return np.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z, np.ones_like(z)], axis=0)
 
 

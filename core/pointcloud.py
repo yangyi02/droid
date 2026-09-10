@@ -6,7 +6,6 @@ import core.geometry
 
 
 def sample_camera_points(mask, z, K, n_points):
-  """n_points camera-frame points from the masked pixels, or None if the mask is too thin."""
   v, u = np.where(mask)
   if len(u) < n_points:
     return None
@@ -17,7 +16,6 @@ def sample_camera_points(mask, z, K, n_points):
 
 
 def foreground_points(T_cam2world, K, height, width, pb_renderer, n_points, links=None):
-  """Robot surface the camera sees, in camera coordinates. links=None takes every link."""
   _, link_ids, metric = pb_renderer.render_segmentation(T_cam2world, K, width, height)
 
   visible = metric > 0
@@ -52,7 +50,6 @@ def extract_robot_clouds(cam_id, episode, pb_renderer, base_extrinsic, device, d
 
 
 def robot_clouds(episode, poses, pb_renderer, device, n_points):
-  """Robot surface per camera, rendered at the given extrinsics, with the depth it is scored on."""
   robot_points, depth_batch, K = {}, {}, {}
   for cam_id, cam_data in episode["camera"].items():
     base_extrinsic = poses[cam_id]["base_extrinsic"]
@@ -72,7 +69,6 @@ def camera_frame_points(t, cam_data, n_points, max_depth):
 
 
 def scene_clouds(episode, device, n_points, max_depth):
-  """Scene clouds in camera frame, on the frames every camera sees enough of. Pose-independent."""
   cameras = episode["camera"]
   T_ee2base = episode["robot"]["T_ee_base_all"]
 
@@ -121,11 +117,10 @@ def depth_loss_batched(points, T_cam2world, K, depth_batch, max_depth):
   uv_in_frame = (u >= 0) & (u < width - 1) & (v >= 0) & (v < height - 1)
   valid = depth_in_range & uv_in_frame
 
-  return torch.nan_to_num(torch.abs(z_obs[valid] - z_pred[valid]).mean(), nan=0.0)
+  return torch.abs(z_obs[valid] - z_pred[valid]).mean()
 
 
 def chamfer_overlap(env, ee_poses, pose, wrist_cam_id, pairs, match_radius):
-  """Chamfer and overlap per camera pair, at one pose."""
   world = {}
   for cam_id, cloud in env.items():
     to_world = ee_poses @ pose[cam_id] if cam_id == wrist_cam_id else pose[cam_id]
@@ -139,7 +134,6 @@ def chamfer_overlap(env, ee_poses, pose, wrist_cam_id, pairs, match_radius):
 
 
 def robot_depth_loss(robot_points, depth_batch, K, pose, max_depth):
-  """Robot depth loss per camera, at one pose."""
   return {
     cam_id: depth_loss_batched(points, pose[cam_id], K[cam_id], depth_batch[cam_id], max_depth)
     for cam_id, points in robot_points.items()

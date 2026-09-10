@@ -74,7 +74,6 @@ class PyBulletRenderer:
         pybullet.resetJointState(self.robot_id, i, angle * sign)
 
   def _get_projection_matrix(self, K, width, height):
-    """OpenGL perspective matrix, flattened in the column-major order pybullet expects."""
     near, far = NEAR_PLANE, FAR_PLANE
     fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
     columns = [

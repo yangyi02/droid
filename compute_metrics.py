@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import itertools
 import json
 import os
@@ -10,7 +9,7 @@ from absl import app
 from ml_collections import config_flags
 
 import config
-import core.alignment
+import core.pointcloud
 import core.geometry
 import core.io
 import core.physics
@@ -25,13 +24,13 @@ def evaluate_extrinsics(episode, poses, device, pb_renderer, config):
   base = {c: torch.tensor(poses[c]["base_extrinsic"], dtype=torch.float32, device=device) for c in cam_ids}
 
   n_points, max_depth = config.extrinsics.n_points, config.extrinsics.max_depth
-  robot_points, depth_batch, K = core.alignment.robot_clouds(episode, poses, pb_renderer, device, n_points)
-  env, ee_poses = core.alignment.scene_clouds(episode, device, n_points, max_depth)
+  robot_points, depth_batch, K = core.pointcloud.robot_clouds(episode, poses, pb_renderer, device, n_points)
+  env, ee_poses = core.pointcloud.scene_clouds(episode, device, n_points, max_depth)
 
-  chamfer, overlap = core.alignment.chamfer_overlap(
+  chamfer, overlap = core.pointcloud.chamfer_overlap(
     env, ee_poses, base, wrist_cam_id, pairs, config.extrinsics.chamfer_match_radius
   )
-  robot = core.alignment.robot_depth_loss(robot_points, depth_batch, K, base, max_depth)
+  robot = core.pointcloud.robot_depth_loss(robot_points, depth_batch, K, base, max_depth)
 
   return (
     {f"chamfer_{a}_{b}": chamfer[a, b].item() for a, b in pairs}
@@ -48,7 +47,8 @@ def depth_residual_mm(points_3d, cam_data, extrinsics, t):
 
 
 def depth_residual(episode, poses, tracks):
-  tracks_3d, per_cam_vis, n_static = tracks["tracks_3d"], tracks["per_cam_vis"], tracks["n_static"]
+  tracks_3d, n_static = tracks["tracks_3d"], tracks["n_static"]
+  per_cam_vis = dict(zip(episode["camera"], tracks["vis"], strict=True))
 
   residual = {}
   for cam_id, cam_data in episode["camera"].items():
@@ -77,7 +77,8 @@ def seen_surface(cam_data, extrinsics, points_3d, t):
 
 
 def cross_view_px(episode, poses, tracks):
-  tracks_3d, per_cam_vis = tracks["tracks_3d"], tracks["per_cam_vis"]
+  tracks_3d = tracks["tracks_3d"]
+  per_cam_vis = dict(zip(episode["camera"], tracks["vis"], strict=True))
   wrist_cam_id = episode["meta"]["wrist_serial"]
 
   error = {}
@@ -103,7 +104,8 @@ def cross_view_px(episode, poses, tracks):
 
 
 def track_stats(tracks):
-  tracks_3d, n_static, n_robot = tracks["tracks_3d"], tracks["n_static"], tracks["n_robot"]
+  tracks_3d, n_static = tracks["tracks_3d"], tracks["n_static"]
+  n_robot = tracks_3d.shape[1] - n_static
   accel = np.diff(tracks_3d[:, n_static:], n=2, axis=0)
   jitter = np.percentile(np.linalg.norm(accel, axis=-1), 95) * 1000.0 if accel.size else float("nan")
 
@@ -116,8 +118,11 @@ def track_stats(tracks):
   }
 
 
-def track_visibility(tracks):
-  return {f"vis_percent_{cam_id}": float(vis.mean() * 100) for cam_id, vis in tracks["per_cam_vis"].items()}
+def track_visibility(episode, tracks):
+  return {
+    f"vis_percent_{cam_id}": float(vis.mean() * 100)
+    for cam_id, vis in zip(episode["camera"], tracks["vis"], strict=True)
+  }
 
 
 def motion_stats(episode):
@@ -173,7 +178,7 @@ def episode_metrics(episode, poses, device, tracks, pb_renderer, config):
     | scene_metadata(episode)
     | motion_stats(episode)
     | track_stats(tracks)
-    | track_visibility(tracks)
+    | track_visibility(episode, tracks)
     | robot_coverage(episode, poses, pb_renderer)
     | evaluate_extrinsics(episode, poses, device, pb_renderer, config)
     | mean_residual(depth_residual(episode, poses, tracks))
@@ -183,7 +188,7 @@ def episode_metrics(episode, poses, device, tracks, pb_renderer, config):
 
 def process_episode(episode_id, device, pb_renderer, config):
   t0 = time.time()
-  episode = core.io.load_depth_data(episode_id, config.paths.depth, load_video=None)
+  episode = core.io.load_depth_data(episode_id, config.paths.depth)
   poses = core.io.load_extrinsics(episode, config.paths.extrinsics)
   tracks = core.io.load_track_data(episode_id, config.paths.tracks)
 
@@ -200,19 +205,18 @@ def process_episode(episode_id, device, pb_renderer, config):
 
 def main(_):
   config = config_flag.value
-  export_abs = os.path.abspath(os.path.expanduser(config.paths.metrics))
+  export_root = os.path.abspath(os.path.expanduser(config.paths.metrics))
 
   available = core.runner.list_episode_dirs(config.paths.tracks)
 
-  device = core.io.get_accelerator()
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
   pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=config.render.gpu)
 
   def run_one(episode_id):
     process_episode(episode_id, device, pb_renderer, config)
 
   target = core.runner.shard_episodes(available, config.runner.rank, config.runner.world_size, config.runner.limit)
-  exported = core.runner.list_episode_dirs(config.paths.metrics)
-  done = {e for e in target if e in exported and os.path.exists(os.path.join(export_abs, e, "metrics.json"))}
+  done = {e for e in target if os.path.exists(os.path.join(export_root, e, "metrics.json"))}
 
   core.runner.run_episodes(
     target,

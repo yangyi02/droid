@@ -2,121 +2,71 @@ import glob
 import json
 import os
 
-import cv2
 import mediapy as media
 import numpy as np
-import torch
-
-
-def get_accelerator():
-  return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def load_metadata(config):
   root_path = os.path.expanduser(config.paths.meta)
   os.makedirs(root_path, exist_ok=True)
 
-  base_url = config.urls.meta
-  files = [
-    "camera_serials.json",
-    "episode_id_to_path.json",
-    "keep_ranges_1_0_1.json",
-    "cam2base_extrinsic_superset.json",
-  ]
-
-  for f in files:
-    dest = os.path.join(root_path, f)
-    if not os.path.exists(dest):
-      os.system(f"wget -q -nc -P {root_path} {base_url}/{f}")
-
-  def _load(name):
+  def fetch(name):
+    os.system(f"wget -q -nc -P {root_path} {config.urls.meta}/{name}")
     with open(os.path.join(root_path, name), "r") as fh:
       return json.load(fh)
 
-  serials_db = _load("camera_serials.json")
-  id_to_path = _load("episode_id_to_path.json")
-  keep_ranges = _load("keep_ranges_1_0_1.json")
-  extrinsics_db = _load("cam2base_extrinsic_superset.json")
+  serials_db = fetch("camera_serials.json")
+  id_to_path = fetch("episode_id_to_path.json")
+  extrinsics_db = fetch("cam2base_extrinsic_superset.json")
 
-  valid_ids = sorted(set(serials_db.keys()) & set(id_to_path.keys()) & set(extrinsics_db.keys()))
-  return serials_db, id_to_path, keep_ranges, extrinsics_db, valid_ids
+  valid_ids = []
+  for episode_id in sorted(set(serials_db) & set(id_to_path) & set(extrinsics_db)):
+    cam_info = serials_db[episode_id]
+    external_cams = set(cam_info.values()) - {cam_info["wrist_cam_serial"]}
+    calibrated_cams = {cam_id for cam_id, entry in extrinsics_db[episode_id].items() if isinstance(entry, list)}
+    if external_cams == calibrated_cams:
+      valid_ids.append(episode_id)
+
+  return serials_db, id_to_path, extrinsics_db, valid_ids
 
 
-def load_depth_data(episode_id, depth_root, load_video="first_frame", inspection=False):
+def load_depth_data(episode_id, depth_root, load_video=False):
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(depth_root, episode_id)))
 
-  robot_data = np.load(os.path.join(ep_dir, "robot.npz"), allow_pickle=True)
-  wrist_cam_id = str(robot_data["wrist_serial"]) if "wrist_serial" in robot_data else None
-
-  robot = {
-    "joint_positions": robot_data["joint_positions"].astype(np.float32),
-    "gripper_positions": robot_data["gripper_positions"].astype(np.float32),
-  }
-  if "T_ee_base_all" in robot_data:
-    robot["T_ee_base_all"] = robot_data["T_ee_base_all"].astype(np.float32)
-  if "T_cam_ee_init" in robot_data:
-    robot["T_cam_ee_init"] = robot_data["T_cam_ee_init"].astype(np.float32)
-
-  valid_indices = robot_data.get("valid_indices")
-
-  _NON_DIR_NAMES = {"robot.npz"}
-  cam_dirs = [d for d in os.listdir(ep_dir) if d not in _NON_DIR_NAMES and not d.endswith((".npz", ".json", ".txt"))]
+  robot_data = np.load(os.path.join(ep_dir, "robot.npz"))
+  wrist_cam_id = str(robot_data["wrist_serial"])
+  robot_keys = ("joint_positions", "gripper_positions", "T_ee_base_all", "T_cam_ee_init")
 
   camera = {}
-  for cam_id in sorted(cam_dirs):
+  for cam_id in sorted(d for d in os.listdir(ep_dir) if os.path.isdir(os.path.join(ep_dir, d))):
     cam_path = os.path.join(ep_dir, cam_id)
-    cam_data = {}
+    calib = np.load(os.path.join(cam_path, "calibration.npz"))
 
-    calib_path = os.path.join(cam_path, "calibration.npz")
-    if os.path.exists(calib_path):
-      calib = np.load(calib_path)
-      cam_data["K"] = calib["K_calib_left"].astype(np.float32)
-      if "baseline" in calib:
-        cam_data["baseline"] = float(calib["baseline"])
+    cam_data = {
+      "K": calib["K_calib_left"].astype(np.float32),
+      "baseline": float(calib["baseline"]),
+      "raw_depth": np.load(os.path.join(cam_path, "raw_depth.npz"))["depth"].astype(np.float32) / 1000.0,
+    }
 
-    depth_path = os.path.join(cam_path, "raw_depth.npz")
-    if os.path.exists(depth_path):
-      depth_uint16 = np.load(depth_path)["depth"]
-      cam_data["raw_depth"] = depth_uint16.astype(np.float32) / 1000.0
+    if load_video:
+      cam_data["video_rgb"] = media.read_video(os.path.join(cam_path, "video_left.mp4"))
+      cam_data["video_right"] = media.read_video(os.path.join(cam_path, "video_right.mp4"))
 
-    mask_path = os.path.join(cam_path, "gripper_mask.npz")
-    if os.path.exists(mask_path):
-      cam_data["sam_real_masks"] = np.load(mask_path)["mask"]
-
-    if inspection:
-      for fname, key in [
+    if cam_id == wrist_cam_id:
+      cam_data["sam_real_masks"] = np.load(os.path.join(cam_path, "gripper_mask.npz"))["mask"]
+      for filename, key in [
         ("original_raw_depth.npz", "original_raw_depth"),
         ("gripper_depth.npz", "empirical_gripper_depth"),
       ]:
-        path = os.path.join(cam_path, fname)
-        if os.path.exists(path):
-          cam_data[key] = np.load(path)["depth"].astype(np.float32) / 1000.0
-
-    video_path = os.path.join(cam_path, "video_left.mp4")
-    if load_video == "first_frame":
-      cap = cv2.VideoCapture(video_path)
-      ret, frame = cap.read()
-      cap.release()
-      if ret:
-        cam_data["first_frame_rgb"] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    elif load_video == "full":
-      cam_data["video_rgb"] = media.read_video(video_path)
-      if inspection:
-        cam_data["video_right"] = media.read_video(os.path.join(cam_path, "video_right.mp4"))
+        cam_data[key] = np.load(os.path.join(cam_path, filename))["depth"].astype(np.float32) / 1000.0
 
     camera[cam_id] = cam_data
 
-  episode = {
-    "meta": {
-      "episode_id": episode_id,
-      "wrist_serial": wrist_cam_id,
-      "valid_indices": valid_indices,
-    },
-    "robot": robot,
+  return {
+    "meta": {"episode_id": episode_id, "wrist_serial": wrist_cam_id},
+    "robot": {key: robot_data[key].astype(np.float32) for key in robot_keys},
     "camera": camera,
   }
-
-  return episode
 
 
 def load_extrinsics(episode, extrinsics_root):
@@ -125,9 +75,7 @@ def load_extrinsics(episode, extrinsics_root):
 
   poses = {}
   for cam_id in episode["camera"]:
-    cam_ext_path = os.path.join(ep_dir, cam_id, "extrinsics.json")
-
-    with open(cam_ext_path, "r") as f:
+    with open(os.path.join(ep_dir, cam_id, "extrinsics.json"), "r") as f:
       payload = json.load(f)
 
     poses[cam_id] = {
@@ -140,21 +88,18 @@ def load_extrinsics(episode, extrinsics_root):
 
 def load_track_data(episode_id, tracks_root):
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(tracks_root, episode_id)))
-
-  tracks_data = np.load(os.path.join(ep_dir, "tracks_3d.npz"))
   meta_data = np.load(os.path.join(ep_dir, "track_metadata.npz"))
 
-  per_cam_tracks_2d, per_cam_vis = {}, {}
+  uv, vis = [], []
   for tracks_path in sorted(glob.glob(os.path.join(ep_dir, "*", "tracks_2d.npz"))):
-    cam_id = os.path.basename(os.path.dirname(tracks_path))
     cam_data = np.load(tracks_path)
-    per_cam_tracks_2d[cam_id] = cam_data["tracks_2d"]
-    per_cam_vis[cam_id] = cam_data["vis_2d"]
+    uv.append(cam_data["tracks_2d"])
+    vis.append(cam_data["vis_2d"])
 
   return {
-    "tracks_3d": tracks_data["tracks_3d"],
-    "per_cam_tracks_2d": per_cam_tracks_2d,
-    "per_cam_vis": per_cam_vis,
+    "tracks_3d": np.load(os.path.join(ep_dir, "tracks_3d.npz"))["tracks_3d"],
+    "uv": np.stack(uv),
+    "vis": np.stack(vis),
+    "query_view": meta_data["query_view"],
     "n_static": int(meta_data["n_static"]),
-    "n_robot": int(meta_data["n_robot"]),
   }
