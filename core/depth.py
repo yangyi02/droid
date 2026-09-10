@@ -102,8 +102,7 @@ def build_universal_gripper_mask(
 
   final_mask = compute_consensus_mask(masks_list, consensus_thresh)
 
-  n_frames = len(gripper_states)
-  cam_data["sam_real_masks"] = np.zeros((n_frames, *final_mask.shape), dtype=bool)
+  cam_data["sam_real_masks"] = np.zeros((len(gripper_states), *final_mask.shape), dtype=bool)
   cam_data["sam_real_masks"][closed_indices] = final_mask
 
   return episode
@@ -114,9 +113,7 @@ def distill_empirical_gripper_depth(episode, max_depth_thresh, gripper_closed_th
   gripper_states = episode["robot"]["gripper_positions"]
   closed_indices = np.where(gripper_states < gripper_closed_thresh)[0]
   height, width = cam_data["video_rgb"][0].shape[:2]
-  n_frames = len(closed_indices)
-
-  depth_bank = np.full((n_frames, height, width), np.nan, dtype=np.float32)
+  depth_bank = np.full((len(closed_indices), height, width), np.nan, dtype=np.float32)
 
   for i, idx in enumerate(tqdm(closed_indices, desc="Depth collect")):
     raw_depth = cam_data["raw_depth"][idx].astype(np.float32)

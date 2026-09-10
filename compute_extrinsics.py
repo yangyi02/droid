@@ -54,7 +54,6 @@ def per_camera_alignment(episode, pb_renderer, prev_poses, device, config):
   wrist_cam_id = episode["meta"]["wrist_serial"]
   poses = copy.deepcopy(prev_poses)
   T_ee_base_all = episode["robot"]["T_ee_base_all"]
-  n_frames = len(episode["robot"]["joint_positions"])
 
   for cam_id in episode["camera"].keys():
     is_wrist = cam_id == wrist_cam_id
