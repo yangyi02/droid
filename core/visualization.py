@@ -28,14 +28,16 @@ def inspect_dict_structure(data, name="episode", indent=0):
     print(f"{prefix}{name}: {type(data).__name__} = {str(data)[:50]}")
 
 
-def fuse_cameras(episode, poses, t, device="cpu"):
+def fuse_cameras(episode, poses, t, device="cpu", max_depth=None):
   """Every camera's depth map at frame t, unprojected into one world-frame cloud."""
-  clouds = [
-    core.geometry.unproject_depth_torch(
-      cam["raw_depth"][t], cam["video_rgb"][t], cam["K"], poses[cam_id]["extrinsics"][t], device
+  clouds = []
+  for cam_id, cam in sorted(episode["camera"].items()):
+    depth = cam["raw_depth"][t]
+    if max_depth is not None:
+      depth = np.where(depth < max_depth, depth, 0)
+    clouds.append(
+      core.geometry.unproject_depth_torch(depth, cam["video_rgb"][t], cam["K"], poses[cam_id]["extrinsics"][t], device)
     )
-    for cam_id, cam in sorted(episode["camera"].items())
-  ]
   points, colors = zip(*clouds, strict=True)
   return torch.cat(points), torch.cat(colors)
 
@@ -64,8 +66,8 @@ def show_point_cloud(points, colors, title, eye, up=(0, 0, 1), size=1.5, max_poi
   ).show()
 
 
-def show_fused_point_cloud(episode, poses, t=0, height=600, width=1000):
-  points, colors = fuse_cameras(episode, poses, t)
+def show_fused_point_cloud(episode, poses, t=0, max_depth=None, height=600, width=1000):
+  points, colors = fuse_cameras(episode, poses, t, max_depth=max_depth)
   show_point_cloud(
     points.numpy(),
     colors.numpy(),
@@ -344,6 +346,7 @@ def render_4d_orbit_with_tracks(
   orbit_radius=1.2,
   camera_height=0.5,
   angle_start=np.pi / 2,
+  max_depth=None,
   max_render_points=400000,
   max_render_tracks=500,
   track_history=5,
@@ -374,7 +377,7 @@ def render_4d_orbit_with_tracks(
 
   video_frames = []
   for t in tqdm(range(n_frames), desc="Rendering 4D orbit"):
-    cloud, cloud_colors = fuse_cameras(episode, poses, t, device)
+    cloud, cloud_colors = fuse_cameras(episode, poses, t, device, max_depth)
     if len(cloud) > max_render_points:
       keep = torch.randperm(len(cloud), device=device)[:max_render_points]
       cloud, cloud_colors = cloud[keep], cloud_colors[keep]

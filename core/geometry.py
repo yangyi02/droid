@@ -39,15 +39,9 @@ def sample_depth(depth, u, v, z):
   return np.where(in_frame, depth[vi, ui], np.nan)
 
 
-def unproject_depth(depth, img_rgb, K, T_cam2world, max_depth=1.5):
-  mask = (depth > 0) & (depth < max_depth)
-  v, u = np.where(mask)
-  return unproject_pixels(u, v, depth[mask], K, T_cam2world), img_rgb[mask]
-
-
-def unproject_depth_torch(depth, img_rgb, K, T_cam2world, device, max_depth=1.5):
+def unproject_depth_torch(depth, img_rgb, K, T_cam2world, device):
   depth = torch.as_tensor(depth, device=device)
-  v, u = torch.nonzero((depth > 0) & (depth < max_depth), as_tuple=True)
+  v, u = torch.nonzero(depth > 0, as_tuple=True)
   z = depth[v, u]
   K = torch.as_tensor(K, dtype=torch.float32, device=device)
   points_cam = torch.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z], dim=1)
