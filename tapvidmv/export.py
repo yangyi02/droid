@@ -8,6 +8,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import get_config
+import release
 import core.io
 import core.runner
 
@@ -59,11 +60,11 @@ def export_to_tapvid3d(
   seq_dir = os.path.abspath(os.path.expanduser(os.path.join(output_root, episode_id)))
   os.makedirs(seq_dir, exist_ok=True)
 
-  np.save(os.path.join(seq_dir, "tracks_xyz.npy"), tracks_3d.astype(np.float32))
+  np.save(os.path.join(seq_dir, release.TRACKS), tracks_3d.astype(np.float32))
   print(f"  tracks_xyz.npy: ({F}, {P}, 3)")
 
   queries = _build_queries(uv, query_view)
-  np.save(os.path.join(seq_dir, "queries_xytv.npy"), queries)
+  np.save(os.path.join(seq_dir, release.QUERIES), queries)
   print(f"  queries_xytv.npy: ({P}, 4)")
 
   for view, cam_id in enumerate(cam_ids):
@@ -79,26 +80,26 @@ def export_to_tapvid3d(
       jpeg_list.append(_encode_jpeg(video[t], quality=jpeg_quality))
     jpeg_arr = np.empty(F, dtype=object)
     jpeg_arr[:] = jpeg_list
-    np.save(os.path.join(view_dir, "images_jpeg_bytes.npy"), jpeg_arr)
+    np.save(os.path.join(view_dir, release.IMAGES), jpeg_arr)
 
     K = cam_data["K"]
     intrinsics = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]], dtype=np.float32)
-    np.save(os.path.join(view_dir, "intrinsics.npy"), intrinsics)
+    np.save(os.path.join(view_dir, release.INTRINSICS), intrinsics)
 
     c2w = poses[cam_id]["extrinsics"]
     w2c = np.linalg.inv(c2w).astype(np.float32)
-    np.save(os.path.join(view_dir, "extrinsics_w2c.npy"), w2c)
+    np.save(os.path.join(view_dir, release.EXTRINSICS), w2c)
 
-    np.save(os.path.join(view_dir, "visibility.npy"), vis[view].astype(bool))
+    np.save(os.path.join(view_dir, release.VISIBILITY), vis[view].astype(bool))
 
     if include_depth and "raw_depth" in cam_data:
       depth = cam_data["raw_depth"].astype(np.float32)
       depth[~np.isfinite(depth)] = 0.0
-      np.save(os.path.join(view_dir, "depth.npy"), depth)
+      np.save(os.path.join(view_dir, release.DEPTH), depth)
 
     if include_foreground_mask and cam_id == wrist_cam_id:
       mask = cam_data["sam_real_masks"].astype(bool)
-      np.save(os.path.join(view_dir, "foreground_mask.npy"), mask)
+      np.save(os.path.join(view_dir, release.MASK), mask)
 
     H, W = video[0].shape[:2]
     parts = [f"  view {view_id} [{cam_id}]: imgs({F},JPEG) intr(4,) extr({F},4,4) vis({F},{P})"]

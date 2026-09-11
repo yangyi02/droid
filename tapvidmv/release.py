@@ -7,6 +7,15 @@ import numpy as np
 
 MAX_DEPTH_M = 2.0
 
+TRACKS = "tracks_xyz.npy"
+QUERIES = "queries_xytv.npy"
+IMAGES = "images_jpeg_bytes.npy"
+INTRINSICS = "intrinsics.npy"
+EXTRINSICS = "extrinsics_w2c.npy"
+VISIBILITY = "visibility.npy"
+DEPTH = "depth.npy"
+MASK = "foreground_mask.npy"
+
 
 def find_dataset():
   here = Path.cwd()
@@ -18,7 +27,7 @@ def find_dataset():
 def episode_names(root):
   root = Path(root)
   assert root.is_dir(), f"no export at {root}"
-  return sorted(p.name for p in root.iterdir() if p.is_dir() and (p / "tracks_xyz.npy").exists())
+  return sorted(p.name for p in root.iterdir() if p.is_dir() and (p / TRACKS).exists())
 
 
 def decode_jpeg(raw):
@@ -71,13 +80,13 @@ class View:
     return decode_jpeg(self.jpegs[int(frame)])
 
   def depth(self, frame):
-    path = self.path / "depth.npy"
+    path = self.path / DEPTH
     if not path.exists():
       return None
     return np.asarray(np.load(path, mmap_mode="r")[int(frame)], dtype=np.float32)
 
   def foreground_mask(self, frame):
-    path = self.path / "foreground_mask.npy"
+    path = self.path / MASK
     if not path.exists():
       return None
     return np.asarray(np.load(path, mmap_mode="r")[int(frame)])
@@ -142,16 +151,16 @@ def load_episode(name, root=None):
     views.append(
       View(
         index=index,
-        intrinsics=np.load(path / "intrinsics.npy").astype(np.float32),
-        extrinsics_w2c=np.load(path / "extrinsics_w2c.npy").astype(np.float32),
-        visibility=np.load(path / "visibility.npy"),
-        jpegs=np.load(path / "images_jpeg_bytes.npy", allow_pickle=True),
+        intrinsics=np.load(path / INTRINSICS).astype(np.float32),
+        extrinsics_w2c=np.load(path / EXTRINSICS).astype(np.float32),
+        visibility=np.load(path / VISIBILITY),
+        jpegs=np.load(path / IMAGES, allow_pickle=True),
         path=path,
       )
     )
   return Episode(
     name=name,
-    tracks_xyz=np.load(episode_dir / "tracks_xyz.npy"),
-    queries_xytv=np.load(episode_dir / "queries_xytv.npy"),
+    tracks_xyz=np.load(episode_dir / TRACKS),
+    queries_xytv=np.load(episode_dir / QUERIES),
     views=views,
   )
