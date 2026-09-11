@@ -74,19 +74,11 @@ def project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer, depth_tol
 
       z_urdf = core.geometry.sample_depth(urdf_depth, u, v, z_pred)
       z_sensor = core.geometry.sample_depth(cam_data["raw_depth"][t], u, v, z_pred)
-      facing_camera = (z_urdf > 0) & (z_pred <= z_urdf + depth_tolerance)
-      occluded = (z_sensor > 0) & (z_pred > z_sensor + depth_tolerance)
-      background_bleed = (z_sensor > 0) & (z_sensor > z_urdf + depth_tolerance)
-      vis[view, t] = facing_camera & ~occluded & ~background_bleed
+      measured = np.stack([z_urdf, z_sensor])
+      gap = np.where(measured == 0, np.inf, measured).min(axis=0) - z_pred
+      vis[view, t] = gap >= -depth_tolerance
 
   return uv, vis
-
-
-def filter_robot_tracks(vis, flicker):
-  jitters = (vis[:, 1:] != vis[:, :-1]).mean(axis=1) > flicker
-  keep = vis.any(axis=(0, 1)) & ~jitters.any(axis=0)
-  print(f"  Robot: {keep.sum()} of {vis.shape[2]} candidates survive visible/jitter")
-  return keep
 
 
 def find_static_candidates(episode, poses, pb_renderer, match_radius, max_depth):
@@ -129,32 +121,34 @@ def project_static_tracks(static_points_3d, episode, poses, depth_tolerance):
   n_views, n_points = len(episode["camera"]), len(static_points_3d)
 
   uv = np.zeros((n_views, n_frames, n_points, 2), dtype=np.float32)
+  vis = np.zeros((n_views, n_frames, n_points), dtype=bool)
   gap = np.zeros((n_views, n_frames, n_points), dtype=np.float32)
 
   for view, (cam_id, cam_data) in enumerate(episode["camera"].items()):
     for t in range(n_frames):
-      u, v, z = core.geometry.project_points(static_points_3d, cam_data["K"], poses[cam_id]["extrinsics"][t])
+      u, v, z_pred = core.geometry.project_points(static_points_3d, cam_data["K"], poses[cam_id]["extrinsics"][t])
       uv[view, t] = np.stack([u, v], axis=1)
-      gap[view, t] = core.geometry.sample_depth(cam_data["raw_depth"][t], u, v, z) - z
 
-  return uv, gap >= -depth_tolerance, gap
+      measured = core.geometry.sample_depth(cam_data["raw_depth"][t], u, v, z_pred)
+      gap[view, t] = np.where(measured == 0, np.inf, measured) - z_pred
+      vis[view, t] = gap[view, t] >= -depth_tolerance
+
+  return uv, vis, gap
 
 
 def filter_static_tracks(vis, gap, depth_tolerance, min_run_fraction, flicker):
-  n_views, n_frames, n_points = vis.shape
-  min_run_frames = int(min_run_fraction * n_frames)
+  _, n_frames, n_points = vis.shape
+  min_frames = int(min_run_fraction * n_frames)
 
-  run = np.zeros((n_views, n_points), dtype=np.int32)
-  streak = np.zeros((n_views, n_points), dtype=np.int32)
-  for t in range(n_frames):
-    run = np.where(gap[:, t] > depth_tolerance, run + 1, 0)
-    streak = np.maximum(streak, run)
+  seen_through = np.isfinite(gap) & (gap > depth_tolerance)
+  windows = np.lib.stride_tricks.sliding_window_view(seen_through, min_frames, axis=1)
 
-  gone = (streak >= min_run_frames) & vis[:, 0]
+  gone = windows.all(axis=-1).any(axis=1) & vis[:, 0]
+  blind = np.isinf(gap).sum(axis=1) >= min_frames
   jitters = (vis[:, 1:] != vis[:, :-1]).mean(axis=1) > flicker
 
-  keep = ~(gone | jitters).any(axis=0)
-  print(f"  Static: {keep.sum()} of {n_points} candidates survive gone/jitter")
+  keep = ~(gone | blind | jitters).any(axis=0)
+  print(f"  Static: {keep.sum()} of {n_points} candidates survive gone/blind/jitter")
   return keep
 
 
@@ -217,7 +211,7 @@ def process_episode(episode_id, pb_renderer, config):
 
   robot_xyz, robot_view = find_robot_candidates(episode, poses, pb_renderer)
   robot_uv, robot_vis = project_robot_tracks(robot_xyz, episode, poses, pb_renderer, config.tracks.depth_tolerance)
-  robot_keep = filter_robot_tracks(robot_vis, config.tracks.flicker)
+  robot_keep = np.ones(len(robot_view), dtype=bool)
   robot = sample_tracks(
     robot_keep, robot_xyz, robot_uv, robot_vis, robot_view, config.tracks.num_robot_points_per_view
   )
