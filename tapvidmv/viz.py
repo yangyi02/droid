@@ -31,6 +31,29 @@ def pick_tracks(vis, count=24, *, frame=None, require_views=2, seed=7):
   return np.sort(np.random.default_rng(seed).choice(candidates, count, replace=False))
 
 
+def view_color(view):
+  palette = np.array([[228, 92, 74], [74, 160, 228], [96, 200, 110], [220, 170, 60]])
+  return palette[view % len(palette)]
+
+
+def header_panel(image, text, *, bar=26):
+  canvas = np.ascontiguousarray(image)
+  scale = max(0.42, canvas.shape[1] / 1100.0)
+  bar = max(bar, int(30 * scale))
+  strip = np.full((bar, canvas.shape[1], 3), 22, dtype=np.uint8)
+  cv2.putText(
+    strip,
+    ascii_only(text),
+    (int(8 * scale), int(bar * 0.72)),
+    cv2.FONT_HERSHEY_SIMPLEX,
+    0.55 * scale,
+    (235, 235, 235),
+    max(1, int(1.4 * scale)),
+    cv2.LINE_AA,
+  )
+  return np.vstack([strip, canvas])
+
+
 def draw_points(image, xy, *, visible=None, colors=None, radius=4):
   canvas = np.ascontiguousarray(image.copy())
   height, width = canvas.shape[:2]

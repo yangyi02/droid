@@ -3,12 +3,14 @@
 Everything that turns the pipeline's output into the released evaluation set.
 
 The pipeline produces depth, extrinsics, tracks and metrics for every episode it
-can. This directory decides **which fifty of them are the benchmark**, and writes
-those fifty in the release layout.
+can. This directory decides **which fifty of them are the benchmark**, writes
+those fifty in the release layout, and checks that what it wrote is right.
 
-Nothing in the repository root knows about this directory. It reads the pipeline's
-outputs through `config.paths`, and owns everything downstream of them — including
-where the release lands (`RELEASE_ROOT` in `export_tapvidmv.py`, not `config.py`).
+Nothing in the repository root knows about this directory. It reads the
+pipeline's outputs through `config.paths` and owns everything downstream —
+including where the release lands (`RELEASE_ROOT` in `export.py`, not
+`config.py`) and everything it generates (`data/`, `previews/`, `logs/`, all
+gitignored).
 
 ## Prerequisites
 
@@ -21,29 +23,26 @@ bash run_parallel.sh tracks
 bash run_parallel.sh metrics
 ```
 
-Step 1 below reads `<metrics>/<episode_id>/metrics.json`; steps 3 and 4 read the
-depth videos and the tracks.
-
 ## The four steps
 
 ```
-metrics ──▶ 1. calibrate the cuts  ─┐
-                                    ├─ select_episodes.ipynb ──▶ episodes_eval100.txt
-            2. draw the pool  ──────┘
-                                        │
-                                        ▼
-            3. pick by eye ──── pick_episodes.ipynb ─────────▶ episodes_eval50.txt
-                                        │
-                                        ▼
-            4. export ────────── run_export.sh ──────────────▶ data/release/tapvidmv/
-                                        │
-                                        ▼
-                          visualize_tracks_groundtruth.ipynb
+metrics ──▶ 1. calibrate the cuts ─┐
+                                   ├─ shortlist.ipynb ─▶ episodes_eval100.txt
+            2. draw the pool ──────┘
+                                       │
+                                       ▼
+            3. pick by eye ─── review.ipynb ──────────▶ episodes_eval50.txt
+                                       │
+                                       ▼
+            4. export ─────── export.py ────────────▶ tapvidmv/data/
+                                       │
+                                       ▼
+                            verify.ipynb
 ```
 
 ---
 
-### Steps 1 & 2 — [`select_episodes.ipynb`](select_episodes.ipynb)
+### Steps 1 & 2 — [`shortlist.ipynb`](shortlist.ipynb)
 
 Two decisions off one table of numbers, which is why they share a notebook: the
 sampling in step 2 runs on whatever step 1 leaves behind, so moving a threshold
@@ -55,8 +54,9 @@ both in total and *alone*. The second number is the one that matters: it is
 exactly how many episodes relaxing that threshold buys back. A cut that rejects
 nothing, or nothing another cut has already caught, is doing no work.
 
-The thresholds in `CUTS` have never been calibrated against a full metrics run —
-they were set from eight episodes that looked fine, with headroom. Calibrating
+The thresholds in `CUTS` were set from eight episodes that looked fine, with
+headroom, and have never been calibrated against a full metrics run. Across the
+first 40 real episodes, seven of the eight rejected nothing at all. Calibrating
 them is what the notebook is for.
 
 **2. Which survivors go in the pool.** Quotas are equal per *scene* — the middle
@@ -70,7 +70,7 @@ Writes `episodes_eval100.txt` and `episodes_eval100_details.csv`. The command
 line reproduces whatever you settle on:
 
 ```bash
-python tapvidmv/select_episodes.py --n 100 --cut cross_view_px=8.0
+python tapvidmv/shortlist.py --n 100 --cut cross_view_px=8.0
 ```
 
 | Flag | Default | Description |
@@ -80,7 +80,7 @@ python tapvidmv/select_episodes.py --n 100 --cut cross_view_px=8.0
 | `--input` | `config.paths.metrics` | Directory of per-episode metrics |
 | `--output_dir` | this directory | Where the list and CSV are written |
 
-### Step 3 — [`pick_episodes.ipynb`](pick_episodes.ipynb)
+### Step 3 — [`review.ipynb`](review.ipynb)
 
 Work through the pool by eye. Each candidate plays as a three-view clip with the
 **ground-truth tracks drawn on it** — filled where that view calls a point
@@ -94,32 +94,39 @@ ground truth is wrong in a self-consistent way passes all of them. Nor can the
 metrics see whether the manipulation is interesting, or whether two candidates
 from different scenes are doing the same thing anyway.
 
-Clips are cached under `previews/` (gitignored) and rendered a few ahead of the
-one on screen, so the picker does not wait on video decoding.
+Clips are cached under `previews/` and rendered a few ahead of the one on screen,
+so the picker does not wait on video decoding.
 
-### Step 4 — [`run_export.sh`](run_export.sh)
+### Step 4 — [`export.py`](export.py)
 
 ```bash
-bash tapvidmv/run_export.sh                              # episodes_eval50.txt
-bash tapvidmv/run_export.sh --list episodes_eval100.txt  # a different set
-bash tapvidmv/run_export.sh --list all                   # everything with tracks
+python tapvidmv/export.py                                     # episodes_eval50.txt
+python tapvidmv/export.py --episode_list episodes_eval100.txt
+python tapvidmv/export.py --episode_id AUTOLab+5d05c5aa+2023-10-14-21h-59m-22s
 ```
 
-Converts the selected episodes into the release layout under
-**`data/release/tapvidmv/`** — local disk, not the gcsfuse mount the pipeline
-writes to. The export re-encodes every frame to JPEG and writes the depth maps,
-which is far too many bytes to push through fuse, and publishing is a separate,
-deliberate step.
+Writes the release layout into **`tapvidmv/data/`** — local disk, not the gcsfuse
+mount the pipeline writes to. The export re-encodes every frame to JPEG and
+writes the depth maps, which is far too many bytes to push through fuse, and
+publishing is a separate step done by hand.
 
-This runs *after* selection: exporting first would mean paying that cost over
-thousands of episodes to keep fifty. It is CPU-only, so it sizes itself to the
-core count rather than the GPU count — which is why it is a separate runner from
-`run_parallel.sh` rather than another pipeline stage.
+It runs after selection, not before: exporting first would mean paying that cost
+over thousands of episodes to keep fifty. Fifty run fine serially; it skips
+episodes already present, so an interrupted run resumes.
 
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--list` | `-f` | `episodes_eval50.txt` | Episode list to export, or `all` |
-| `--limit` | `-l` | all | Max episodes to export |
+**Budget the disk.** `depth.npy` is float32 metres, twice the size of the uint16
+millimetres on disk, so one episode is ~1.9 GB at the median 170 frames and
+**fifty come to roughly 95 GB**. Check `df -h` first, or export in batches and
+upload as you go.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--episode_list` | `episodes_eval50.txt` | List to export, or `all` for everything with tracks |
+| `--episode_id` | — | A single episode, overriding the list |
+| `--limit` | all | Max episodes |
+| `--output_root` | `tapvidmv/data` | Where the release is written |
+| `--no_depth` | off | Skip `depth.npy` — much smaller, for checking the flow |
+| `--jpeg_quality` | 95 | |
 
 Per episode the layout is:
 
@@ -136,45 +143,39 @@ Per episode the layout is:
     └── foreground_mask.npy     (frames, height, width)   wrist view only
 ```
 
-### Verify the export
+### Verify — [`verify.ipynb`](verify.ipynb)
 
-Open [`visualize_tracks_groundtruth.ipynb`](visualize_tracks_groundtruth.ipynb).
-It finds `data/release/tapvidmv/` on its own and draws the 3D tracks and the 2D
-tracks they project to in each view — one episode closely, then a sweep over all
-fifty. This reads the *released* files, so it checks the export itself, not the
-pipeline's intermediate state.
+Reads the **exported** files, so it checks the thing that ships rather than the
+pipeline's intermediate state. It finds `tapvidmv/data/` on its own.
+
+The questions sharpen as you go down: is the rig what we think it is (one camera
+on the wrist, two fixed) → do the 2D tracks stay glued to their surfaces → do the
+3D tracks lie *on* the depth cloud or float above it → do the views agree about
+what is visible and where the queries live → is the depth sane inside the 2 m
+workspace and does the wrist mask fit → read a point's depth in one view and
+reproject it into another, how far off → all fifty at once, which need opening.
+
+That last reprojection check is the sharpest one, and it is the same quantity
+`compute_metrics.py` scores as `cross_view_px`.
 
 ## Publishing
 
-Uploading the export is done by hand, outside this repository. The public layout
-that [`download_episodes.sh`](download_episodes.sh) and
-[`visualize_groundtruth_colab.ipynb`](visualize_groundtruth_colab.ipynb) expect
-is:
+Uploading is done by hand, outside this repository. The public layout is:
 
 ```
 gs://dm-tapnet/mv-tap/droid/tapvidmv/<episode_id>/...
 ```
 
-Those two, plus [`verify_downloads.sh`](verify_downloads.sh), are tools for
-*consumers* of the released dataset rather than steps in the pipeline — they
-fetch from that public path and check what arrived. `visualize_groundtruth_colab.ipynb`
-carries its own hard-coded list of the released episodes, so it needs updating
-whenever the release set changes.
-
 ## Files
 
 | File | Role |
 |---|---|
-| `select_episodes.py` | Quality cuts (`CUTS`, `judge`), scene-stratified sampling, list + CSV writing |
-| `select_episodes.ipynb` | Steps 1 & 2 — calibrate the cuts, draw the pool |
-| `pick_episodes.ipynb` | Step 3 — the human pass, ground truth drawn on every clip |
-| `viz.py` | Track-drawing primitives shared by the notebooks: points, trails, montage, frame reading |
-| `export_tapvidmv.py` | Step 4 — pipeline outputs → release layout; owns `RELEASE_ROOT` |
-| `run_export.sh` | Parallel runner for the export, sized to the core count |
-| `episodes_eval100.txt` | The candidate pool (step 2) |
-| `episodes_eval50.txt` | The release set (step 3) |
-| `visualize_tracks_groundtruth.ipynb` | 3D/2D ground-truth inspection of the export |
-| `visualize_groundtruth_colab.ipynb` | Self-contained viewer for consumers, reads the public bucket |
-| `download_episodes.sh` | Fetch the released episodes from the public bucket |
-| `verify_downloads.sh` | Size-check those downloads, delete corrupt files |
-| `archive/` | Superseded episode lists, kept for provenance — see `archive/README.md` |
+| `shortlist.py` | Quality cuts (`CUTS`, `judge`), scene-stratified sampling, list + CSV writing |
+| `shortlist.ipynb` | Steps 1 & 2 — calibrate the cuts, draw the pool |
+| `review.ipynb` | Step 3 — the human pass, ground truth drawn on every clip |
+| `export.py` | Step 4 — pipeline outputs → release layout; owns `RELEASE_ROOT` |
+| `verify.ipynb` | Verification — reads the export, seven ways of asking whether it is right |
+| `release.py` | Reads the release layout: `View`/`Episode`, projection, unprojection |
+| `viz.py` | Drawing primitives: points, trails, montage, frame reading |
+| `data/` | The export (gitignored) |
+| `previews/` | Cached picker clips (gitignored) |

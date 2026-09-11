@@ -13,7 +13,7 @@ import core.runner
 
 config = get_config()
 
-RELEASE_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "release", "tapvidmv")
+RELEASE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
 def read_episode_list(path):
