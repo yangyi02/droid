@@ -60,16 +60,14 @@ first 40 real episodes, seven of the eight rejected nothing at all. Calibrating
 them is what the notebook is for.
 
 **2. Which survivors go in the pool.** Quotas are equal per *scene* — the middle
-field of the episode id, 62 of them against 13 sites — filled round-robin, taking
-each scene's episodes in an order spread over end-effector travel. Scene rather
+field of the episode id, 62 of them against 13 sites — filled round-robin. Scene rather
 than site, so the pool spreads over camera placements and tabletops rather than
-over labs. The notebook then shows the coverage that came out: sites, scenes, and
-the motion spread the diversity is sampled along.
+over labs. The notebook then shows the coverage that came out: sites and scenes.
 
 Writes `episodes_eval100.txt`. The command line reproduces whatever you settle on:
 
 ```bash
-python tapvidmv/shortlist.py --n 100 --cut cross_view_px=8.0
+python tapvidmv/shortlist.py --n 100 --cut depth_residual_static_mm=5.0
 ```
 
 | Flag | Default | Description |
@@ -154,8 +152,7 @@ what is visible and where the queries live → is the depth sane inside the 2 m
 workspace and does the wrist mask fit → read a point's depth in one view and
 reproject it into another, how far off → all fifty at once, which need opening.
 
-That last reprojection check is the sharpest one, and it is the same quantity
-`compute_metrics.py` scores as `cross_view_px`.
+That last reprojection check is the sharpest one.
 
 ## Publishing
 

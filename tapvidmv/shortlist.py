@@ -19,18 +19,14 @@ METRICS_FILE = "metrics.json"
 OPS = {"<=": operator.le, ">=": operator.ge}
 
 EXTRINSICS = ("chamfer", "overlap", "robot_loss")
-TRACKS = ("depth_residual_static_mm", "depth_residual_robot_mm", "cross_view_px", "cross_view_wrist_px")
-MOTION = ("ee_travel_m",)
+TRACKS = ("depth_residual_static_mm", "depth_residual_robot_mm")
 
 CUTS = {
-  "chamfer": ("<=", 0.060),
-  "overlap": (">=", 25.0),
-  "robot_loss": ("<=", 0.050),
-  "depth_residual_static_mm": ("<=", 15.0),
-  "depth_residual_robot_mm": ("<=", 6.0),
-  "cross_view_px": ("<=", 5.0),
-  "cross_view_wrist_px": ("<=", 20.0),
-  "ee_travel_m": (">=", 0.5),
+  "chamfer": ("<=", 0.050),
+  "overlap": (">=", 40.0),
+  "robot_loss": ("<=", 0.020),
+  "depth_residual_static_mm": ("<=", 6.0),
+  "depth_residual_robot_mm": ("<=", 5.0),
 }
 
 
@@ -91,10 +87,6 @@ def _spread_order(n):
   return order
 
 
-def ee_travel(row):
-  return safe_float(row.get("ee_travel_m"))
-
-
 def sample_diverse(rows, n_target):
   by_scene = {}
   for row in rows:
@@ -102,7 +94,7 @@ def sample_diverse(rows, n_target):
 
   ordered = {}
   for scene, scene_rows in by_scene.items():
-    scene_rows.sort(key=ee_travel)
+    scene_rows.sort(key=lambda r: r["episode_id"])
     ordered[scene] = [scene_rows[i] for i in _spread_order(len(scene_rows))]
 
   scenes = [scene for _, scene in sorted((-len(rows), scene) for scene, rows in ordered.items())]
@@ -149,7 +141,7 @@ def load_pool(list_path, metrics_root):
 def report(selected):
   print(f"\nSelected {len(selected)} episodes")
   print(f"  Sites: {dict(sorted(Counter(row['site'] for row in selected).items()))}")
-  for column in ("cross_view_px", "cross_view_wrist_px", "depth_residual_static_mm", "ee_travel_m"):
+  for column in ("depth_residual_static_mm", "depth_residual_robot_mm"):
     values = [v for v in (cut_value(row, column, CUTS[column][0]) for row in selected) if not np.isnan(v)]
     if values:
       print(f"  {column}: median={np.median(values):.3f}, range=[{min(values):.3f}, {max(values):.3f}]")
@@ -164,7 +156,7 @@ def main():
     action="append",
     default=[],
     metavar="COLUMN=VALUE",
-    help=f"Move one threshold, e.g. --cut cross_view_px=2.0. Columns: {', '.join(CUTS)}",
+    help=f"Move one threshold, e.g. --cut depth_residual_static_mm=5.0. Columns: {', '.join(CUTS)}",
   )
   parser.add_argument(
     "--output_dir",

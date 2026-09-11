@@ -70,8 +70,8 @@ def compute_all_episode_stats(episode_id, tracks_root, depth_root):
   meta_path = os.path.join(tracks_dir, "track_metadata.npz")
   if os.path.exists(meta_path):
     meta = np.load(meta_path)
+    stats["n_robot_points"] = int(meta["n_robot"])
     stats["n_env_points"] = int(meta["n_static"])
-    stats["n_robot_points"] = N - stats["n_env_points"]
   else:
     stats["n_env_points"] = N
     stats["n_robot_points"] = 0
