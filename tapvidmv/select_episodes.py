@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import argparse
 import csv
 import glob
@@ -16,17 +15,10 @@ from config import get_config
 
 config = get_config()
 
-# Written by compute_metrics.py, one per episode, the way every other stage writes its output.
 METRICS_FILE = "metrics.json"
 
 OPS = {"<=": operator.le, ">=": operator.ge}
 
-# A cut is a metrics column, or the prefix of the one-per-camera columns it is judged on: the
-# metrics store every view and this is where the worst of them condemns an episode, because a
-# benchmark is only as good as its worst view. The quality numbers are half again the worst of
-# eight episodes that looked fine, so they pass those with headroom rather than mean anything
-# yet: calibrate against a full metrics run, using the rejection counts this prints to see which
-# one binds. The counts below them are floors, not thresholds to tune.
 CUTS = {
   "cross_view_px": ("<=", 25.0),
   "cross_view_wrist_px": ("<=", 250.0),
@@ -50,16 +42,10 @@ def load_metrics(metrics_root):
 
 
 def safe_float(value):
-  """A missing or unwritten column reads as nan, and nan fails every comparison, so it fails the cut."""
   return float("nan") if value in (None, "", "nan") else float(value)
 
 
 def cut_value(row, column, op):
-  """The column itself, or the worst camera when the metrics wrote one column per camera.
-
-  The op says which end is worst: a ceiling is failed by the largest value, a floor by the
-  smallest. A family with nothing finite in it reads as nan, so it fails the cut.
-  """
   if column in row:
     return safe_float(row[column])
 
@@ -69,19 +55,19 @@ def cut_value(row, column, op):
   return min(values) if op == ">=" else max(values)
 
 
-def apply_cuts(rows, cuts):
-  """Drop what the metrics can already condemn, and say which threshold did it.
-
-  An episode is counted against every cut it fails, so the counts do not sum to the number
-  dropped. They are here to show which threshold is binding before you go and move one.
-  """
-  rejected = Counter()
-  kept = []
+def judge(rows, cuts):
+  judged = []
   for row in rows:
-    failing = [column for column, (op, limit) in cuts.items() if not OPS[op](cut_value(row, column, op), limit)]
-    rejected.update(failing)
-    if not failing:
-      kept.append(row)
+    values = {column: cut_value(row, column, op) for column, (op, _) in cuts.items()}
+    failing = [column for column, (op, limit) in cuts.items() if not OPS[op](values[column], limit)]
+    judged.append({"row": row, "values": values, "failing": failing})
+  return judged
+
+
+def apply_cuts(rows, cuts):
+  judged = judge(rows, cuts)
+  rejected = Counter(column for verdict in judged for column in verdict["failing"])
+  kept = [verdict["row"] for verdict in judged if not verdict["failing"]]
 
   print(f"  {len(kept)}/{len(rows)} episodes pass the quality cuts")
   for column, count in rejected.most_common():
@@ -139,6 +125,23 @@ def sample_diverse(rows, n_target):
   return selected
 
 
+def write_selection(selected, output_dir, n):
+  output_dir = os.path.expanduser(output_dir)
+  os.makedirs(output_dir, exist_ok=True)
+
+  list_path = os.path.join(output_dir, f"episodes_eval{n}.txt")
+  with open(list_path, "w") as f:
+    f.writelines(row["episode_id"] + "\n" for row in selected)
+
+  csv_path = os.path.join(output_dir, f"episodes_eval{n}_details.csv")
+  with open(csv_path, "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=sorted({key for row in selected for key in row}), restval="")
+    writer.writeheader()
+    writer.writerows(selected)
+
+  return list_path, csv_path
+
+
 def report(selected):
   print(f"\nSelected {len(selected)} episodes")
   print(f"  Sites: {dict(sorted(Counter(row['site'] for row in selected).items()))}")
@@ -174,18 +177,7 @@ def main():
   rows = load_metrics(os.path.expanduser(args.input))
   selected = sample_diverse(apply_cuts(rows, cuts), args.n)
 
-  output_dir = os.path.expanduser(args.output_dir)
-  os.makedirs(output_dir, exist_ok=True)
-
-  list_path = os.path.join(output_dir, f"episodes_eval{args.n}.txt")
-  with open(list_path, "w") as f:
-    f.writelines(row["episode_id"] + "\n" for row in selected)
-
-  csv_path = os.path.join(output_dir, f"episodes_eval{args.n}_details.csv")
-  with open(csv_path, "w", newline="") as f:
-    writer = csv.DictWriter(f, fieldnames=sorted({key for row in selected for key in row}), restval="")
-    writer.writeheader()
-    writer.writerows(selected)
+  list_path, csv_path = write_selection(selected, args.output_dir, args.n)
 
   report(selected)
   print(f"\nEpisode list: {list_path}\nDetailed CSV: {csv_path}")

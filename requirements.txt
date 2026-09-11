@@ -8,3 +8,5 @@ ml-collections
 tqdm
 mediapy
 plotly
+pandas
+ipywidgets

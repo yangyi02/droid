@@ -22,10 +22,11 @@ bash setup.sh --no-depth   # skip s2m2, Segment Anything, the ZED SDK and the we
 # 4. Mount GCS input/output buckets
 bash mount_gcs.sh
 
-# 5. Run pipeline (3 stages)
+# 5. Run pipeline (4 stages)
 bash run_parallel.sh depth        # Stage 1: depth
 bash run_parallel.sh extrinsics   # Stage 2: extrinsics
 bash run_parallel.sh tracks       # Stage 3: tracks
+bash run_parallel.sh metrics      # Stage 4: quality metrics
 ```
 
 Every path, threshold and optimizer setting lives in `config.py`. The stage
@@ -49,6 +50,7 @@ python compute_tracks.py --config.render.gpu=False  # CPU rasteriser, for a box 
 | 1. Depth | `compute_depth.py` | `core.depth` | SVO decode → S2M2 stereo depth → SAM gripper mask → depth distillation |
 | 2. Extrinsics | `compute_extrinsics.py` | `core.physics` | Dataset extrinsics → rendered robot alignment → global joint optimization |
 | 3. Tracks | `compute_tracks.py` | `core.geometry`, `core.physics` | Static background depth consensus + URDF FK robot tracks (model-free) |
+| 4. Metrics | `compute_metrics.py` | `core.pointcloud`, `core.geometry` | Per-episode quality numbers: extrinsics objective, cross-view agreement, depth residuals, motion |
 
 ### Stage 1 — `compute_depth.py`
 
@@ -116,6 +118,24 @@ track_metadata.npz             # n_static, n_robot
   tracks_2d.npz                # per-camera 2D tracks (tracks_2d) + visibility (vis_2d)
 ```
 
+### Stage 4 — `compute_metrics.py`
+
+Quality numbers for one episode, written as `<metrics>/<episode_id>/metrics.json` — one
+file per episode like every other stage, so ranks never share a file and a crash costs
+only its own episode. Columns are keyed by camera serial, the same names the depth,
+extrinsics and tracks directories already use:
+
+| Category | Metrics |
+|---|---|
+| Extrinsics | `chamfer_*`, `overlap_*` and `robot_loss_*` per camera pair and camera — stage 2's own objective, read at the pose it converged to |
+| Track consistency | `depth_residual_{static,robot}_mm_<cam>` per camera, and `cross_view_px_<cam>_<cam>` — what two cameras disagree by, in the pixels a benchmark is scored in |
+| Motion | End-effector travel distance, joint range, gripper range |
+| Coverage | `robot_percent_<cam>` — the share of each view's first frame the arm covers |
+| Metadata | Site, scene, camera count, frame count |
+
+Nothing is reduced to a single "worst camera" number: the metrics keep every view, and
+leave it to whatever reads them to decide which view condemns an episode.
+
 ## Naming Conventions
 
 One concept, one spelling, repo-wide. The pipeline files and the notebooks all follow these.
@@ -162,19 +182,9 @@ droid/
 │   ├── io.py                  #   Data loading: get_accelerator, load_depth/extrinsics
 │   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
 │   ├── physics.py             #   PyBulletRenderer + robot point clouds and depth losses
+│   ├── pointcloud.py          #   Robot/scene clouds, chamfer + overlap, robot depth loss
 │   ├── runner.py              #   Episode sharding + resume-aware batch loop
-│   ├── tracking.py            #   URDFKinematicsTracker (FK propagation + visibility)
 │   └── visualization.py       #   Visualization helpers (point clouds, tracking videos, 4D orbit)
-├── tapvidmv/                  # Everything specific to the TAPVid-MV release
-│   ├── export_tapvidmv.py     #   Pipeline outputs → TAPVid-MV release format
-│   ├── run_export.sh          #   Parallel runner for the export
-│   ├── select_episodes.py     #   Scene-stratified candidate pool from metrics CSV
-│   ├── pick_episodes.ipynb    #   Visual picker: candidate pool → release set
-│   ├── episodes_eval50.txt    #   The 50 selected evaluation episodes
-│   ├── download_episodes.sh   #   Fetch the released episodes
-│   ├── verify_downloads.sh    #   Size-check downloads, delete corrupt files
-│   ├── visualize_groundtruth_colab.ipynb   # Self-contained ground-truth viewer
-│   └── visualize_tracks_groundtruth.ipynb  # 3D/2D track inspection, all episodes
 ├── notebooks/                 # Interactive notebooks (run from anywhere in the checkout)
 │   ├── filter_points.ipynb    #   Dropping background points carried away by the gripper
 │   ├── pybullet_numpy_benchmark.ipynb  # Why PyBullet must be built with NumPy support
@@ -228,82 +238,6 @@ bash run_parallel.sh depth 32      # depth, first 32 episodes
 | limit | integer | all | Max episodes to process |
 
 One worker per GPU detected by `nvidia-smi`, episodes sharded by rank.
-
-## Episode Evaluation & Selection
-
-After running all 3 stages, compute quality metrics across episodes and select a diverse evaluation set:
-
-### Step 1: Batch Metrics (on GCP)
-
-```bash
-bash run_parallel.sh metrics
-```
-
-Auto-detects GPUs and runs `compute_metrics.py` in parallel across all of them.
-
-Outputs `<metrics>/<episode_id>/metrics.json`, one file per episode like every other stage, so
-ranks never share a file and a crash costs only its own episode. Columns are keyed by camera
-serial, the same names the depth, extrinsics and tracks directories already use:
-
-| Category | Metrics |
-|---|---|
-| Extrinsics | `chamfer_*`, `overlap_*` and `robot_loss_*` per camera pair and camera — stage 2's own objective, read at the pose it converged to |
-| Track consistency | `depth_residual_{static,robot}_mm_<cam>` per camera, and `cross_view_px_<cam>_<cam>` — what two cameras disagree by, in the pixels the benchmark is scored in |
-| Motion | End-effector travel distance, joint range, gripper range, `track_jitter_mm` |
-| Coverage | `vis_percent_<cam>` per camera, and `robot_percent_<cam>` — the share of each view's first frame the arm covers, for picking eval episodes |
-| Metadata | Site, scene, camera count, frame count |
-
-Nothing is reduced to a single "worst camera" number here: the metrics store every view, and
-`tapvidmv/select_episodes.py` is where the worst of them condemns an episode.
-
-### Step 2: Select
-
-```bash
-# Select 50 episodes (stratified by site + motion diversity)
-python tapvidmv/select_episodes.py --n 50
-```
-
-Selection applies quality filtering (chamfer, depth residual thresholds),
-site-proportional quotas, and within-site motion diversity (evenly spaced by EE travel).
-
-Selection is deterministic: quotas are equal per *scene* (the middle field of
-the episode id, 62 of them against 13 sites) and filled round-robin, and
-`--min_ee_travel` drops episodes where the arm barely moves. Those pass every
-quality threshold — a frozen arm has nothing to blur and no FK error to
-accumulate — while being worth nothing to a tracking benchmark.
-
-Run it with a larger `--n` than the release needs: it produces a candidate
-pool, not the final set.
-
-### Step 3: Pick
-
-Open [`tapvidmv/pick_episodes.ipynb`](tapvidmv/pick_episodes.ipynb) and work
-through the pool by eye. Each candidate is shown as one row per camera and
-eight frames across the episode, beside its metrics; **Keep** / **Skip** /
-**Back** build the set, and the last cell writes `episodes_eval50.txt`.
-
-What the metrics cannot see is whether the manipulation is interesting, or
-whether two candidates from different scenes are doing the same thing anyway.
-
-### Step 4: Export
-
-```bash
-bash tapvidmv/run_export.sh                             # episodes_eval50.txt
-bash tapvidmv/run_export.sh --list episodes_eval150.txt # a different set
-bash tapvidmv/run_export.sh --list all                  # everything with tracks
-```
-
-Converts the selected episodes into the TAPVid-MV release layout. This runs
-*after* selection: it re-encodes every frame to JPEG and writes the depth
-maps, so exporting first and selecting second meant paying that over thousands
-of episodes to keep fifty. CPU-only, so it sizes itself to the core count
-rather than the GPU count — which is why it is a separate runner from
-`run_parallel.sh` rather than another stage.
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--list` | `-f` | `episodes_eval50.txt` | Episode list to export, or `all` |
-| `--limit` | `-l` | all | Max episodes to export |
 
 ## Interactive Notebook
 

@@ -18,7 +18,6 @@ def get_config():
   config.paths.extrinsics = os.path.join(output, "extrinsics")
   config.paths.tracks = os.path.join(output, "tracks")
   config.paths.metrics = os.path.join(output, "metrics")
-  config.paths.tapvidmv = os.path.join(output, "tapvidmv")
 
   config.urls = ml_collections.ConfigDict()
   config.urls.meta = "https://huggingface.co/KarlP/droid/resolve/main"

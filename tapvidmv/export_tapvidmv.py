@@ -13,6 +13,8 @@ import core.runner
 
 config = get_config()
 
+RELEASE_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "release", "tapvidmv")
+
 
 def read_episode_list(path):
   path = os.path.abspath(os.path.expanduser(path))
@@ -27,7 +29,6 @@ def _encode_jpeg(rgb_frame, quality=95):
 
 
 def _build_queries(uv, query_view):
-  """Each point is queried at t=0 in the view that seeded it, on that view's exact pixel."""
   xy = np.round(uv[query_view, 0, np.arange(uv.shape[2])])
   t = np.zeros((len(xy), 1), dtype=np.float32)
   return np.concatenate([xy, t, query_view[:, None]], axis=1).astype(np.float32)
@@ -40,7 +41,7 @@ def export_to_tapvid3d(
   uv,
   vis,
   query_view,
-  output_root=config.paths.tapvidmv,
+  output_root=RELEASE_ROOT,
   include_depth=True,
   include_foreground_mask=True,
   jpeg_quality=95,
@@ -153,7 +154,7 @@ if __name__ == "__main__":
     "everything. Pass 'all' to export every episode "
     "that has tracks instead",
   )
-  parser.add_argument("--output_root", type=str, default=config.paths.tapvidmv, help="Root output directory")
+  parser.add_argument("--output_root", type=str, default=RELEASE_ROOT, help="Root output directory")
   parser.add_argument("--depth_root", type=str, default=config.paths.depth)
   parser.add_argument("--extrinsics_root", type=str, default=config.paths.extrinsics)
   parser.add_argument("--tracks_root", type=str, default=config.paths.tracks)
