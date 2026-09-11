@@ -15,44 +15,42 @@ def draw_label(img, text, org, scale, colour, thickness, outline):
 
 
 def inspect_dict_structure(data, name="episode", indent=0):
-  spacing = "  " * indent
+  prefix = "  " * indent
   if isinstance(data, dict):
-    print(f"{spacing}{name} (dict, {len(data)} keys)")
-    for k, v in data.items():
-      inspect_dict_structure(v, name=str(k), indent=indent + 1)
-  elif isinstance(data, np.ndarray):
-    print(f"{spacing}{name}: ndarray, shape={data.shape}, dtype={data.dtype}")
-  elif torch.is_tensor(data):
-    print(f"{spacing}{name}: Tensor, shape={tuple(data.shape)}, dtype={data.dtype}")
+    print(f"{prefix}{name} (dict, {len(data)} keys)")
+    for key, value in data.items():
+      inspect_dict_structure(value, name=str(key), indent=indent + 1)
+  elif getattr(data, "ndim", 0) > 0:
+    print(f"{prefix}{name}: {type(data).__name__}, shape={tuple(data.shape)}, dtype={data.dtype}")
   elif isinstance(data, (list, tuple)):
-    print(f"{spacing}{name}: {type(data).__name__}, len={len(data)}")
+    print(f"{prefix}{name}: {type(data).__name__}, len={len(data)}")
   else:
-    val_str = str(data)
-    if len(val_str) > 50:
-      val_str = val_str[:47] + "..."
-    print(f"{spacing}{name}: {type(data).__name__} = {val_str}")
+    print(f"{prefix}{name}: {type(data).__name__} = {str(data)[:50]}")
 
 
-def show_plotly_point_cloud(
-  points,
-  colors,
-  title="3D Point Cloud",
-  max_points=150000,
-  eye_pos=(-1.5, -1.5, 1.0),
-  height=600,
-  width=1000,
-  renderer=None,
-):
+def fuse_cameras(episode, poses, t, device="cpu"):
+  """Every camera's depth map at frame t, unprojected into one world-frame cloud."""
+  clouds = [
+    core.geometry.unproject_depth_torch(
+      cam["raw_depth"][t], cam["video_rgb"][t], cam["K"], poses[cam_id]["extrinsics"][t], device
+    )
+    for cam_id, cam in sorted(episode["camera"].items())
+  ]
+  points, colors = zip(*clouds, strict=True)
+  return torch.cat(points), torch.cat(colors)
+
+
+def show_point_cloud(points, colors, title, eye, up=(0, 0, 1), size=1.5, max_points=150000, height=600, width=1000):
   idx = np.random.permutation(len(points))[:max_points]
-  p, c = points[idx], colors[idx]
-  fig = go.Figure(
+  points, colors = points[idx], colors[idx]
+  go.Figure(
     data=[
       go.Scatter3d(
-        x=p[:, 0],
-        y=p[:, 1],
-        z=p[:, 2],
+        x=points[:, 0],
+        y=points[:, 1],
+        z=points[:, 2],
         mode="markers",
-        marker=dict(size=1.5, color=[f"rgb({r},{g},{b})" for r, g, b in c]),
+        marker=dict(size=size, color=[f"rgb({r},{g},{b})" for r, g, b in colors]),
       )
     ],
     layout=go.Layout(
@@ -61,38 +59,18 @@ def show_plotly_point_cloud(
       width=width,
       height=height,
       showlegend=False,
-      scene=dict(aspectmode="data", camera=dict(eye=dict(x=eye_pos[0], y=eye_pos[1], z=eye_pos[2]))),
+      scene=dict(aspectmode="data", camera=dict(eye=dict(zip("xyz", eye)), up=dict(zip("xyz", up)))),
     ),
-  )
-  if renderer is not None:
-    fig.show(renderer=renderer)
-  else:
-    fig.show()
+  ).show()
 
 
-def show_fused_point_cloud(episode, poses, t=0, use_tint=False, height=600, width=1000):
-  cam_ids = sorted(episode["camera"].keys())
-  tint_colors = np.array([[0, 50, 0], [50, 0, 0], [0, 0, 50]])
-  fused_points, fused_colors = [], []
-
-  for idx, cam_id in enumerate(cam_ids):
-    cam_data = episode["camera"][cam_id]
-    cam_state = poses[cam_id]
-    raw_depth = cam_data["raw_depth"][t].astype(np.float32)
-    points_3d, colors_rgb = core.geometry.unproject_depth(
-      raw_depth, cam_data["video_rgb"][t], cam_data["K"], T_cam2world=cam_state["extrinsics"][t]
-    )
-    if use_tint:
-      colors_rgb = np.clip(colors_rgb.astype(int) + tint_colors[idx % len(tint_colors)], 0, 255).astype(np.uint8)
-    fused_points.append(points_3d)
-    fused_colors.append(colors_rgb)
-
-  show_plotly_point_cloud(
-    points=np.vstack(fused_points),
-    colors=np.vstack(fused_colors),
-    title=f"Fused Point Cloud (Frame {t})" + (" [Tinted]" if use_tint else ""),
-    max_points=150000,
-    eye_pos=(-1.2, -1.2, 0.8),
+def show_fused_point_cloud(episode, poses, t=0, height=600, width=1000):
+  points, colors = fuse_cameras(episode, poses, t)
+  show_point_cloud(
+    points.numpy(),
+    colors.numpy(),
+    title=f"Fused Point Cloud (Frame {t})",
+    eye=(-1.2, -1.2, 0.8),
     height=height,
     width=width,
   )
@@ -100,33 +78,15 @@ def show_fused_point_cloud(episode, poses, t=0, use_tint=False, height=600, widt
 
 def show_distilled_gripper_3d(median_depth, K, img_rgb):
   v, u = np.where(median_depth > 0)
-  z = median_depth[v, u]
-  x = (u - K[0, 2]) * z / K[0, 0]
-  y = (v - K[1, 2]) * z / K[1, 1]
-  points_3d = np.stack([x, y, z], axis=-1)
-  fig = go.Figure(
-    data=[
-      go.Scatter3d(
-        x=points_3d[:, 0],
-        y=points_3d[:, 1],
-        z=points_3d[:, 2],
-        mode="markers",
-        marker=dict(size=2, color=img_rgb[v, u], opacity=0.8),
-      )
-    ]
-  )
-  fig.update_layout(
+  points = core.geometry.unproject_pixels(u, v, median_depth[v, u], K, np.eye(4))
+  show_point_cloud(
+    points,
+    img_rgb[v, u],
     title="Distilled Gripper Surface",
-    scene=dict(
-      xaxis_title="X",
-      yaxis_title="Y",
-      zaxis_title="Depth (Z)",
-      aspectmode="data",
-      camera=dict(eye=dict(x=0, y=-0.5, z=-1.5), up=dict(x=0, y=-1, z=0)),
-    ),
-    margin=dict(l=0, r=0, b=0, t=40),
+    eye=(0, -0.5, -1.5),
+    up=(0, -1, 0),
+    size=2,
   )
-  fig.show()
 
 
 def show_gripper_refinement(episode, t=0):
@@ -137,60 +97,48 @@ def show_gripper_refinement(episode, t=0):
   overlay = rgb.copy()
   overlay[cam_data["sam_real_masks"][t] > 0] = [255, 0, 128]
 
-  _, axes = plt.subplots(1, 4, figsize=(20, 4.5))
-  axes[0].imshow(cv2.addWeighted(rgb, 0.6, overlay, 0.4, 0))
-  axes[0].set_title("RGB + SAM Gripper Mask", fontsize=11)
-
   panels = [
     (cam_data["original_raw_depth"][t], "Original Sensor Depth"),
     (cam_data["empirical_gripper_depth"], "Distilled Gripper Surface Depth"),
     (cam_data["raw_depth"][t], "Final Refined Depth (Injected)"),
   ]
+
+  _, axes = plt.subplots(1, 1 + len(panels), figsize=(20, 4.5))
+  axes[0].imshow(cv2.addWeighted(rgb, 0.6, overlay, 0.4, 0))
+  axes[0].set_title("RGB + SAM Gripper Mask", fontsize=11)
   for ax, (depth, title) in zip(axes[1:], panels, strict=True):
     im = ax.imshow(np.where(depth > 0, depth, np.nan), cmap="viridis", vmin=0.1, vmax=1.2)
     ax.set_title(title, fontsize=11)
     plt.colorbar(im, ax=ax, fraction=0.046)
-
   for ax in axes:
     ax.axis("off")
 
-  plt.suptitle(
-    f"Wrist Camera [{wrist_cam_id[:8]}] Gripper Refinement Inspection (Frame {t})",
-    fontsize=13,
-    y=1.02,
-  )
+  plt.suptitle(f"Wrist Camera [{wrist_cam_id[:8]}] Gripper Refinement Inspection (Frame {t})", fontsize=13, y=1.02)
   plt.tight_layout()
   plt.show()
 
 
-def colorize_disparity(disp_array, vmax=100.0):
-  disp_norm = (np.clip(disp_array, 0, vmax) / vmax * 255).astype(np.uint8)
-  return np.stack(
-    [cv2.cvtColor(cv2.applyColorMap(frame, cv2.COLORMAP_MAGMA), cv2.COLOR_BGR2RGB) for frame in disp_norm]
-  )
+def colorize_disparity(disparity, vmax=100.0):
+  levels = (np.clip(disparity, 0, vmax) / vmax * 255).astype(np.uint8)
+  return np.stack([cv2.cvtColor(cv2.applyColorMap(f, cv2.COLORMAP_MAGMA), cv2.COLOR_BGR2RGB) for f in levels])
 
 
-def render_multicam_disparity_video(episode, max_frames=None):
-  tgt_size = (128, 228)
-  camera_rows = []
+def render_multicam_disparity_video(episode, max_frames=None, tgt_size=(128, 228)):
+  rows = []
   for cam_data in episode["camera"].values():
-    video_rgb = cam_data["video_rgb"]
-    video_right = cam_data["video_right"]
-    raw_depth = cam_data["raw_depth"].astype(np.float32)
-    if max_frames is not None:
-      video_rgb = video_rgb[:max_frames]
-      video_right = video_right[:max_frames]
-      raw_depth = raw_depth[:max_frames]
-    left_video = media.resize_video(video_rgb, tgt_size)
-    right_video = media.resize_video(video_right, tgt_size)
-    fx = cam_data["K"][0, 0]
-    baseline = cam_data["baseline"]
-    raw_disp = np.zeros_like(raw_depth)
-    valid_mask = raw_depth > 0
-    raw_disp[valid_mask] = (fx * baseline) / raw_depth[valid_mask]
-    disp_video = colorize_disparity(media.resize_video(raw_disp, tgt_size))
-    camera_rows.append(np.concatenate([left_video, right_video, disp_video], axis=2))
-  return np.concatenate(camera_rows, axis=1)
+    depth = cam_data["raw_depth"][:max_frames].astype(np.float32)
+    disparity = np.divide(cam_data["K"][0, 0] * cam_data["baseline"], depth, out=np.zeros_like(depth), where=depth > 0)
+    rows.append(
+      np.concatenate(
+        [
+          media.resize_video(cam_data["video_rgb"][:max_frames], tgt_size),
+          media.resize_video(cam_data["video_right"][:max_frames], tgt_size),
+          colorize_disparity(media.resize_video(disparity, tgt_size)),
+        ],
+        axis=2,
+      )
+    )
+  return np.concatenate(rows, axis=1)
 
 
 def render_2d_tracking_video(
@@ -203,181 +151,185 @@ def render_2d_tracking_video(
   tgt_size=None,
   max_frames=None,
 ):
-  if max_frames is not None:
-    video_frames = video_frames[:max_frames]
-    tracks = tracks[:max_frames]
-    visibility = visibility[:max_frames]
+  video_frames, tracks, visibility = video_frames[:max_frames], tracks[:max_frames], visibility[:max_frames]
 
   if tgt_size is not None:
-    orig_h, orig_w = video_frames[0].shape[:2]
-    new_h, new_w = tgt_size
+    src_height, src_width = video_frames[0].shape[:2]
     video_frames = media.resize_video(np.array(video_frames), tgt_size)
-    scale_x = new_w / orig_w
-    scale_y = new_h / orig_h
-    tracks = tracks * np.array([scale_x, scale_y])
-
-  n_frames, n_points, _ = tracks.shape
-  point_radius = int(linewidth * 2)
-  height, width = video_frames[0].shape[:2]
-  track_pts = tracks.copy()
-
-  is_valid = (
-    (track_pts[..., 0] >= 0) & (track_pts[..., 0] < width) & (track_pts[..., 1] >= 0) & (track_pts[..., 1] < height)
-  )
-  is_drawable = is_valid & visibility
-
-  video_frames = [f.copy() for f in video_frames]
-  track_pts = np.round(track_pts).astype(np.int32)
+    tracks = tracks * [tgt_size[1] / src_width, tgt_size[0] / src_height]
 
   if global_colors is None:
-    y_coords = tracks[0, :, 1]
-    norm = plt.Normalize(y_coords.min(), y_coords.max())
-    global_colors = plt.cm.gist_rainbow(norm(y_coords))[:, :3] * 255
-  point_colors = [tuple(map(int, c)) for c in global_colors]
+    depth_order = tracks[0, :, 1]
+    global_colors = plt.cm.gist_rainbow(plt.Normalize(depth_order.min(), depth_order.max())(depth_order))[:, :3] * 255
+  colors = [tuple(map(int, c)) for c in global_colors]
 
-  for t in range(n_frames):
-    current_img = video_frames[t]
-    trace_len = min(t, tracks_leave_trace)
+  height, width = video_frames[0].shape[:2]
+  pts = np.round(tracks).astype(np.int32)
+  in_frame = (tracks[..., 0] >= 0) & (tracks[..., 0] < width) & (tracks[..., 1] >= 0) & (tracks[..., 1] < height)
+  drawable = in_frame & visibility
 
-    for step in range(trace_len):
-      past_t = t - trace_len + step
-      alpha = (step / (trace_len + 1)) ** 2
-      overlay = current_img.copy()
-      valid_edges = np.where(is_drawable[past_t] & is_drawable[past_t + 1])[0]
-      for i in valid_edges:
-        cv2.line(
-          overlay,
-          tuple(track_pts[past_t, i]),
-          tuple(track_pts[past_t + 1, i]),
-          point_colors[i],
-          linewidth,
-          cv2.LINE_AA,
-        )
-      cv2.addWeighted(overlay, alpha, current_img, 1 - alpha, 0, current_img)
+  radius = int(linewidth * 2)
+  video_frames = [frame.copy() for frame in video_frames]
+  for t, img in enumerate(video_frames):
+    trace = min(t, tracks_leave_trace)
+    for step in range(trace):
+      past = t - trace + step
+      alpha = (step / (trace + 1)) ** 2
+      overlay = img.copy()
+      for i in np.flatnonzero(drawable[past] & drawable[past + 1]):
+        cv2.line(overlay, tuple(pts[past, i]), tuple(pts[past + 1, i]), colors[i], linewidth, cv2.LINE_AA)
+      cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
 
-    occ_overlay = current_img.copy()
-    has_occlusion = False
-    active_points = np.where(is_valid[t])[0]
-    for i in active_points:
-      pt_coord = tuple(track_pts[t, i])
+    occluded = img.copy()
+    hidden = False
+    for i in np.flatnonzero(in_frame[t]):
       if visibility[t, i]:
-        cv2.circle(current_img, pt_coord, point_radius, point_colors[i], -1, cv2.LINE_AA)
+        cv2.circle(img, tuple(pts[t, i]), radius, colors[i], -1, cv2.LINE_AA)
       else:
-        cv2.circle(occ_overlay, pt_coord, point_radius, point_colors[i], 1, cv2.LINE_AA)
-        has_occlusion = True
-    if has_occlusion:
-      cv2.addWeighted(occ_overlay, 0.35, current_img, 0.65, 0, current_img)
+        cv2.circle(occluded, tuple(pts[t, i]), radius, colors[i], 1, cv2.LINE_AA)
+        hidden = True
+    if hidden:
+      cv2.addWeighted(occluded, 0.35, img, 0.65, 0, img)
 
   return video_frames
 
 
 def render_segmentation_video(episode, poses, pb_renderer, tgt_width=1200, max_frames=None):
-  cam_ids = list(episode["camera"].keys())
-  n_frames = len(episode["camera"][cam_ids[0]]["video_rgb"])
+  robot = episode["robot"]
+  n_frames = len(next(iter(episode["camera"].values()))["video_rgb"])
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
-  video_frames = []
 
+  video_frames = []
   for t in tqdm(range(n_frames), desc="Rendering segmentation"):
-    current_joints = episode["robot"]["joint_positions"][t]
-    current_gripper = episode["robot"]["gripper_positions"][t]
-    pb_renderer.update_robot_pose(current_joints, gripper_state=current_gripper)
-    frame_views = []
-    for cam_id in cam_ids:
-      cam_data = episode["camera"][cam_id]
-      cam_state = poses[cam_id]
-      img_rgb = cam_data["video_rgb"][t].copy()
+    pb_renderer.update_robot_pose(robot["joint_positions"][t], gripper_state=robot["gripper_positions"][t])
+    views = []
+    for cam_id, cam_data in episode["camera"].items():
+      img_rgb = cam_data["video_rgb"][t]
       height, width = img_rgb.shape[:2]
-      robot_mask = pb_renderer.render_mask(cam_state["extrinsics"][t], cam_data["K"], width, height) > 0
+      robot_mask = pb_renderer.render_mask(poses[cam_id]["extrinsics"][t], cam_data["K"], width, height) > 0
       overlay = img_rgb.copy()
       overlay[robot_mask] = [50, 150, 255]
-      blended_img = cv2.addWeighted(img_rgb, 0.6, overlay, 0.4, 0)
-      draw_label(blended_img, f"Cam [{cam_id}]", (20, 50), 1.2, (255, 255, 255), 2, 4)
-      frame_views.append(blended_img)
-    row_concat = np.concatenate(frame_views, axis=1)
-    tgt_height = int(row_concat.shape[0] * (tgt_width / row_concat.shape[1]))
-    video_frames.append(cv2.resize(row_concat, (tgt_width, tgt_height)))
+      blended = cv2.addWeighted(img_rgb, 0.6, overlay, 0.4, 0)
+      draw_label(blended, f"Cam [{cam_id}]", (20, 50), 1.2, (255, 255, 255), 2, 4)
+      views.append(blended)
+    row = np.concatenate(views, axis=1)
+    video_frames.append(cv2.resize(row, (tgt_width, round(row.shape[0] * tgt_width / row.shape[1]))))
   return video_frames
 
 
-def render_cross_camera_axes(episode, poses, max_frames=None):
-  axis_len, tgt_w = 0.15, 1200
-  cam_ids = list(episode["camera"].keys())
+def render_cross_camera_axes(episode, poses, max_frames=None, tgt_width=1200, axis_len=0.15):
+  cam_ids = list(episode["camera"])
   n_frames = len(poses[cam_ids[0]]["extrinsics"])
+  axes_3d = np.array([[0, 0, 0, 1], [axis_len, 0, 0, 1], [0, axis_len, 0, 1], [0, 0, axis_len, 1]]).T
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
-  axes_3d = np.array([[0, 0, 0, 1], [axis_len, 0, 0, 1], [0, axis_len, 0, 1], [0, 0, axis_len, 1]]).T
-  video_frames = []
 
+  video_frames = []
   for t in tqdm(range(n_frames), desc="Rendering camera axes"):
-    camera_views = []
+    views = []
     for obs_cam in cam_ids:
       cam_data = episode["camera"][obs_cam]
       img_rgb = cam_data["video_rgb"][t].copy()
       height, width = img_rgb.shape[:2]
-      K = cam_data["K"]
-      obs_pose_inv = np.linalg.inv(poses[obs_cam]["extrinsics"][t])
+      T_world2obs = np.linalg.inv(poses[obs_cam]["extrinsics"][t])
 
       for tgt_cam in cam_ids:
-        if obs_cam == tgt_cam:
+        if tgt_cam == obs_cam:
           continue
-        tgt_pose = poses[tgt_cam]["extrinsics"][t]
-        points_cam = (obs_pose_inv @ tgt_pose @ axes_3d)[:3, :]
+        points_cam = (T_world2obs @ poses[tgt_cam]["extrinsics"][t] @ axes_3d)[:3, :]
         if points_cam[2, 0] < 0:
           continue
-        uv = K @ points_cam
+        uv = cam_data["K"] @ points_cam
         org, px, py, pz = map(tuple, (uv[:2] / uv[2]).astype(int).T)
-        if 0 <= org[0] < width and 0 <= org[1] < height:
-          cv2.line(img_rgb, org, px, (255, 0, 0), 3)
-          cv2.line(img_rgb, org, py, (0, 255, 0), 3)
-          cv2.line(img_rgb, org, pz, (0, 0, 255), 3)
-          cv2.circle(img_rgb, org, 5, (0, 0, 0), -1)
-          cv2.circle(img_rgb, org, 2, (255, 255, 255), -1)
-          draw_label(img_rgb, f"Cam {tgt_cam}", (org[0] + 8, org[1] - 8), 0.6, (255, 255, 255), 2, 3)
+        if not (0 <= org[0] < width and 0 <= org[1] < height):
+          continue
+        for tip, colour in zip((px, py, pz), ((255, 0, 0), (0, 255, 0), (0, 0, 255)), strict=True):
+          cv2.line(img_rgb, org, tip, colour, 3)
+        cv2.circle(img_rgb, org, 5, (0, 0, 0), -1)
+        cv2.circle(img_rgb, org, 2, (255, 255, 255), -1)
+        draw_label(img_rgb, f"Cam {tgt_cam}", (org[0] + 8, org[1] - 8), 0.6, (255, 255, 255), 2, 3)
 
       draw_label(img_rgb, f"View: {obs_cam}", (15, 35), 0.8, (0, 255, 255), 2, 3)
-      camera_views.append(img_rgb)
-
-    row_concat = np.concatenate(camera_views, axis=1)
-    tgt_h = int(row_concat.shape[0] * tgt_w / row_concat.shape[1])
-    video_frames.append(cv2.resize(row_concat, (tgt_w, tgt_h)))
+      views.append(img_rgb)
+    row = np.concatenate(views, axis=1)
+    video_frames.append(cv2.resize(row, (tgt_width, round(row.shape[0] * tgt_width / row.shape[1]))))
   return video_frames
 
 
-def splat(points, colors, K, T_cam2world, height, width):
+def disc_offsets(radius, device):
+  span = torch.arange(-radius, radius + 1, device=device)
+  du, dv = (offsets.reshape(-1) for offsets in torch.meshgrid(span, span, indexing="ij"))
+  on_disc = du**2 + dv**2 <= radius**2
+  return du[on_disc], dv[on_disc]
+
+
+def splat(points, colors, K, T_cam2world, height, width, radii):
+  """Z-buffered point splatting: each point paints the pixel disc of its own radius."""
   T_world2cam = torch.linalg.inv(T_cam2world)
   points_cam = points @ T_world2cam[:3, :3].T + T_world2cam[:3, 3]
-  z = points_cam[:, 2]
-  uv = (points_cam @ K.T)[:, :2] / z[:, None].clamp(min=1e-6)
-  u, v = uv.round().long().unbind(-1)
+  z_cam = points_cam[:, 2]
+  uv = (points_cam @ K.T)[:, :2] / z_cam[:, None].clamp(min=1e-6)
+  u_cam, v_cam = uv.round().long().unbind(-1)
 
-  keep = (z > 0) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
-  idx, z = v[keep] * width + u[keep], z[keep]
+  hits = []
+  for radius in radii.unique():
+    on = radii == radius
+    du, dv = disc_offsets(int(radius), points.device)
+    u, v = u_cam[on][:, None] + du, v_cam[on][:, None] + dv
+    z = z_cam[on][:, None].expand_as(u)
+    keep = (z > 0) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
+    hits.append((v[keep] * width + u[keep], z[keep], colors[on][:, None, :].expand(-1, len(du), -1)[keep]))
+  idx, z, colors = (torch.cat(part) for part in zip(*hits, strict=True))
 
   depth = torch.full((height * width,), torch.inf, device=points.device)
   depth.scatter_reduce_(0, idx, z, reduce="amin", include_self=False)
 
   img = torch.zeros((height * width, 3), dtype=torch.uint8, device=points.device)
   wins = z == depth[idx]
-  img[idx[wins]] = colors[keep][wins]
+  img[idx[wins]] = colors[wins]
   return img.reshape(height, width, 3)
 
 
-def sample_segments(starts, ends, colors, n=64):
-  alpha = torch.linspace(0, 1, n, device=starts.device)[None, :, None]
-  points = starts[:, None] + (ends - starts)[:, None] * alpha
-  return points.reshape(-1, 3), colors.repeat_interleave(n, 0)
+def as_tensor(array, dtype, device):
+  if torch.is_tensor(array):
+    return array.to(dtype=dtype, device=device)
+  return torch.as_tensor(np.ascontiguousarray(array), dtype=dtype, device=device)
 
 
-def get_look_at_matrix(eye, target, up=(0, 0, 1)):
-  forward = np.array(target, dtype=float) - np.array(eye, dtype=float)
+def point_layer(points, colors, radius, device):
+  """A splat layer: 3D points, their colors, and the pixel radius they paint."""
+  points = as_tensor(points, torch.float32, device)
+  radii = torch.full((len(points),), radius, dtype=torch.long, device=device)
+  return points, as_tensor(colors, torch.uint8, device), radii
+
+
+def line_layer(starts, ends, colors, radius, device, samples=64):
+  """Same, for 3D segments — each is sampled into a string of points."""
+  starts, ends = as_tensor(starts, torch.float32, device), as_tensor(ends, torch.float32, device)
+  alpha = torch.linspace(0, 1, samples, device=device)[None, :, None]
+  points = (starts[:, None] + (ends - starts)[:, None] * alpha).reshape(-1, 3)
+  return point_layer(points, as_tensor(colors, torch.uint8, device).repeat_interleave(samples, 0), radius, device)
+
+
+def look_at(eye, target, up=(0, 0, 1)):
+  forward = np.subtract(target, eye, dtype=float)
   forward /= np.linalg.norm(forward) + 1e-6
   right = np.cross(forward, up)
   right /= np.linalg.norm(right) + 1e-6
-  down = np.cross(forward, right)
-  view_matrix = np.eye(4)
-  view_matrix[:3, :4] = np.column_stack((right, down, forward, eye))
-  return view_matrix
+  pose = np.eye(4)
+  pose[:3, :4] = np.column_stack([right, np.cross(forward, right), forward, eye])
+  return pose
+
+
+def frustum_wireframe(K_aspect, depth, fov_y):
+  """Corner positions of a camera frustum in its own frame, plus the edges joining them."""
+  half_h = depth * np.tan(np.radians(fov_y / 2))
+  half_w = half_h * K_aspect
+  corners = np.array(
+    [[0, 0, 0], [-half_w, -half_h, depth], [half_w, -half_h, depth], [half_w, half_h, depth], [-half_w, half_h, depth]]
+  )
+  return corners, np.array([(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (2, 3), (3, 4), (4, 1)])
 
 
 def render_4d_orbit_with_tracks(
@@ -395,13 +347,13 @@ def render_4d_orbit_with_tracks(
   max_render_points=400000,
   max_render_tracks=500,
   track_history=5,
-  track_radius=0.008,
+  point_size=1,
+  track_size=3,
   frustum_depth=0.15,
   frustum_aspect=4.0 / 3.0,
 ):
   device = "cuda" if torch.cuda.is_available() else "cpu"
-
-  cam_ids = sorted(episode["camera"].keys())
+  cam_ids = sorted(episode["camera"])
   n_frames = len(poses[cam_ids[0]]["extrinsics"])
   if max_frames is not None:
     n_frames = min(n_frames, max_frames)
@@ -411,103 +363,52 @@ def render_4d_orbit_with_tracks(
 
   if tracks_3d is not None:
     if tracks_3d.shape[1] > max_render_tracks:
-      idx = np.random.permutation(tracks_3d.shape[1])[:max_render_tracks]
-      tracks_3d = tracks_3d[:, idx]
-    y0 = tracks_3d[0, :, 1]
-    norm = plt.Normalize(y0.min(), y0.max())
-    track_colors = (plt.cm.hsv(norm(y0))[:, :3] * 255).astype(np.uint8)
-    dot_offsets = track_radius * torch.tensor(
-      [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
-      dtype=torch.float32,
-      device=device,
-    )
+      tracks_3d = tracks_3d[:, np.random.permutation(tracks_3d.shape[1])[:max_render_tracks]]
+    depth_order = tracks_3d[0, :, 1]
+    norm = plt.Normalize(depth_order.min(), depth_order.max())
+    track_colors = (plt.cm.hsv(norm(depth_order))[:, :3] * 255).astype(np.uint8)
 
-  half_h = frustum_depth * np.tan(np.radians(fov_y / 2))
-  half_w = half_h * frustum_aspect
-  corners_cam = np.array(
-    [
-      [0, 0, 0],
-      [-half_w, -half_h, frustum_depth],
-      [half_w, -half_h, frustum_depth],
-      [half_w, half_h, frustum_depth],
-      [-half_w, half_h, frustum_depth],
-    ]
-  )
-  frustum_edges = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (2, 3), (3, 4), (4, 1)]
+  corners_cam, frustum_edges = frustum_wireframe(frustum_aspect, frustum_depth, fov_y)
   cam_colors = np.array([[255, 102, 51], [51, 204, 51], [51, 102, 255], [255, 255, 51]], dtype=np.uint8)
-
-  def as_pts(arr):
-    return torch.as_tensor(np.ascontiguousarray(arr), dtype=torch.float32, device=device)
-
-  def as_cols(arr):
-    return torch.as_tensor(np.ascontiguousarray(arr), dtype=torch.uint8, device=device)
+  cam_colors = cam_colors[np.arange(len(cam_ids)) % len(cam_colors)]
 
   video_frames = []
   for t in tqdm(range(n_frames), desc="Rendering 4D orbit"):
-    points, colors = [], []
-
-    for cam_id in cam_ids:
-      cam_data = episode["camera"][cam_id]
-      points_3d, colors_rgb = core.geometry.unproject_depth_torch(
-        cam_data["raw_depth"][t],
-        cam_data["video_rgb"][t],
-        cam_data["K"],
-        poses[cam_id]["extrinsics"][t],
-        device,
-      )
-      points.append(points_3d)
-      colors.append(colors_rgb)
-    cloud, cloud_colors = torch.cat(points), torch.cat(colors)
+    cloud, cloud_colors = fuse_cameras(episode, poses, t, device)
     if len(cloud) > max_render_points:
       keep = torch.randperm(len(cloud), device=device)[:max_render_points]
       cloud, cloud_colors = cloud[keep], cloud_colors[keep]
-    points, colors = [cloud], [cloud_colors]
+    layers = [point_layer(cloud, cloud_colors, point_size, device)]
 
     if tracks_3d is not None:
-      dots = as_pts(tracks_3d[t])[:, None, :] + dot_offsets
-      points.append(dots.reshape(-1, 3))
-      colors.append(as_cols(track_colors).repeat_interleave(len(dot_offsets), 0))
+      layers.append(point_layer(tracks_3d[t], track_colors, track_size, device))
 
-      starts, ends, trail_cols = [], [], []
-      for j in range(max(0, t - track_history), t):
-        mask = np.linalg.norm(tracks_3d[j + 1] - tracks_3d[j], axis=1) > 1e-6
-        if mask.any():
-          starts.append(tracks_3d[j][mask])
-          ends.append(tracks_3d[j + 1][mask])
-          trail_cols.append(track_colors[mask])
-      if starts:
-        seg_points, seg_colors = sample_segments(
-          as_pts(np.concatenate(starts)),
-          as_pts(np.concatenate(ends)),
-          as_cols(np.concatenate(trail_cols)),
-        )
-        points.append(seg_points)
-        colors.append(seg_colors)
+      trail = tracks_3d[max(0, t - track_history) : t + 1]
+      starts, ends = trail[:-1].reshape(-1, 3), trail[1:].reshape(-1, 3)
+      moved = np.linalg.norm(ends - starts, axis=1) > 1e-6
+      if moved.any():
+        trail_colors = np.tile(track_colors, (len(trail) - 1, 1))
+        layers.append(line_layer(starts[moved], ends[moved], trail_colors[moved], max(track_size - 2, 0), device))
 
-    starts, ends, frust_cols = [], [], []
-    for ci, cam_id in enumerate(cam_ids):
-      T_cam2world = poses[cam_id]["extrinsics"][t]
-      corners_w = (T_cam2world[:3, :3] @ corners_cam.T).T + T_cam2world[:3, 3]
-      for ei, ej in frustum_edges:
-        starts.append(corners_w[ei])
-        ends.append(corners_w[ej])
-        frust_cols.append(cam_colors[ci % len(cam_colors)])
-    seg_points, seg_colors = sample_segments(
-      as_pts(np.array(starts)), as_pts(np.array(ends)), as_cols(np.array(frust_cols))
+    extrinsics = np.stack([poses[cam_id]["extrinsics"][t] for cam_id in cam_ids])
+    corners = corners_cam @ extrinsics[:, :3, :3].transpose(0, 2, 1) + extrinsics[:, None, :3, 3]
+    layers.append(
+      line_layer(
+        corners[:, frustum_edges[:, 0]].reshape(-1, 3),
+        corners[:, frustum_edges[:, 1]].reshape(-1, 3),
+        np.repeat(cam_colors, len(frustum_edges), axis=0),
+        0,
+        device,
+      )
     )
-    points.append(seg_points)
-    colors.append(seg_colors)
 
-    angle = angle_start + (t * np.pi / n_frames)
-    eye_pos = [
-      orbit_center[0] + orbit_radius * np.cos(angle),
-      orbit_center[1] + orbit_radius * np.sin(angle),
-      camera_height,
-    ]
-    viz_pose = as_pts(get_look_at_matrix(eye_pos, orbit_center))
+    angle = angle_start + t * np.pi / n_frames
+    eye = np.array([np.cos(angle) * orbit_radius, np.sin(angle) * orbit_radius, 0]) + [*orbit_center[:2], camera_height]
+    viz_pose = as_tensor(look_at(eye, orbit_center), torch.float32, device)
 
-    img_rgb = splat(torch.cat(points), torch.cat(colors), K_viz, viz_pose, height, width).cpu().numpy()
-    cv2.putText(img_rgb, f"Frame: {t:03d}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    points, colors, radii = (torch.cat(parts) for parts in zip(*layers, strict=True))
+    img_rgb = splat(points, colors, K_viz, viz_pose, height, width, radii).cpu().numpy()
+    draw_label(img_rgb, f"Frame: {t:03d}", (30, 50), 0.7, (255, 255, 255), 2, 4)
     video_frames.append(img_rgb)
 
   return video_frames
