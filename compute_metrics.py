@@ -106,22 +106,12 @@ def cross_view_px(episode, poses, tracks):
 def track_stats(tracks):
   tracks_3d, n_static = tracks["tracks_3d"], tracks["n_static"]
   n_robot = tracks_3d.shape[1] - n_static
-  accel = np.diff(tracks_3d[:, n_static:], n=2, axis=0)
-  jitter = np.percentile(np.linalg.norm(accel, axis=-1), 95) * 1000.0 if accel.size else float("nan")
 
   return {
-    "track_jitter_mm": float(jitter),
     "n_static": n_static,
     "n_robot": n_robot,
     "n_total_tracks": n_static + n_robot,
     "n_track_frames": len(tracks_3d),
-  }
-
-
-def track_visibility(episode, tracks):
-  return {
-    f"vis_percent_{cam_id}": float(vis.mean() * 100)
-    for cam_id, vis in zip(episode["camera"], tracks["vis"], strict=True)
   }
 
 
@@ -178,7 +168,6 @@ def episode_metrics(episode, poses, device, tracks, pb_renderer, config):
     | scene_metadata(episode)
     | motion_stats(episode)
     | track_stats(tracks)
-    | track_visibility(episode, tracks)
     | robot_coverage(episode, poses, pb_renderer)
     | evaluate_extrinsics(episode, poses, device, pb_renderer, config)
     | mean_residual(depth_residual(episode, poses, tracks))
