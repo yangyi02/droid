@@ -104,15 +104,8 @@ def cross_view_px(episode, poses, tracks):
 
 
 def track_stats(tracks):
-  tracks_3d, n_static = tracks["tracks_3d"], tracks["n_static"]
-  n_robot = tracks_3d.shape[1] - n_static
-
-  return {
-    "n_static": n_static,
-    "n_robot": n_robot,
-    "n_total_tracks": n_static + n_robot,
-    "n_track_frames": len(tracks_3d),
-  }
+  n_static = tracks["n_static"]
+  return {"n_static": n_static, "n_robot": tracks["tracks_3d"].shape[1] - n_static}
 
 
 def motion_stats(episode):
