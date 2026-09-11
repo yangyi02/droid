@@ -98,7 +98,7 @@ def cross_view_px(episode, poses, tracks):
 
     gaps = np.concatenate(gaps) if gaps else np.zeros(0)
     name = "cross_view_wrist_px" if wrist_cam_id in (a, b) else "cross_view_px"
-    error[f"{name}_{a}_{b}"] = float(np.percentile(gaps, 95)) if len(gaps) else float("nan")
+    error[f"{name}_{a}_{b}"] = float(np.mean(gaps)) if len(gaps) else float("nan")
 
   return error
 
