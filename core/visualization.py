@@ -182,16 +182,13 @@ def render_2d_tracking_video(
         cv2.line(overlay, tuple(pts[past, i]), tuple(pts[past + 1, i]), colors[i], linewidth, cv2.LINE_AA)
       cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
 
+    for i in np.flatnonzero(drawable[t]):
+      cv2.circle(img, tuple(pts[t, i]), radius, colors[i], -1, cv2.LINE_AA)
+
     occluded = img.copy()
-    hidden = False
-    for i in np.flatnonzero(in_frame[t]):
-      if visibility[t, i]:
-        cv2.circle(img, tuple(pts[t, i]), radius, colors[i], -1, cv2.LINE_AA)
-      else:
-        cv2.circle(occluded, tuple(pts[t, i]), radius, colors[i], 1, cv2.LINE_AA)
-        hidden = True
-    if hidden:
-      cv2.addWeighted(occluded, 0.35, img, 0.65, 0, img)
+    for i in np.flatnonzero(in_frame[t] & ~visibility[t]):
+      cv2.circle(occluded, tuple(pts[t, i]), radius, colors[i], 1, cv2.LINE_AA)
+    cv2.addWeighted(occluded, 0.35, img, 0.65, 0, img)
 
   return video_frames
 
