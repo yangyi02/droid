@@ -19,15 +19,19 @@ METRICS_FILE = "metrics.json"
 
 OPS = {"<=": operator.le, ">=": operator.ge}
 
+EXTRINSICS = ("chamfer", "overlap", "robot_loss")
+TRACKS = ("depth_residual_static_mm", "depth_residual_robot_mm", "cross_view_px", "cross_view_wrist_px")
+MOTION = ("ee_travel_m",)
+
 CUTS = {
-  "cross_view_px": ("<=", 25.0),
-  "cross_view_wrist_px": ("<=", 250.0),
-  "depth_residual_static_mm": ("<=", 30.0),
-  "depth_residual_robot_mm": ("<=", 30.0),
-  "chamfer": ("<=", 0.08),
-  "n_static": (">=", 50),
-  "n_frames": (">=", 30),
-  "ee_travel_m": (">=", 0.3),
+  "chamfer": ("<=", 0.060),
+  "overlap": (">=", 25.0),
+  "robot_loss": ("<=", 0.050),
+  "depth_residual_static_mm": ("<=", 15.0),
+  "depth_residual_robot_mm": ("<=", 6.0),
+  "cross_view_px": ("<=", 5.0),
+  "cross_view_wrist_px": ("<=", 20.0),
+  "ee_travel_m": (">=", 0.5),
 }
 
 
