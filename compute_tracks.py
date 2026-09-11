@@ -164,9 +164,10 @@ def project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer, depth_tol
   return uv, vis
 
 
-def filter_robot_tracks(vis):
-  keep = vis.any(axis=(0, 1))
-  print(f"  Robot: {keep.sum()} of {vis.shape[2]} candidates are visible somewhere")
+def filter_robot_tracks(vis, flicker):
+  jitters = (vis[:, 1:] != vis[:, :-1]).mean(axis=1) > flicker
+  keep = vis.any(axis=(0, 1)) & ~jitters.any(axis=0)
+  print(f"  Robot: {keep.sum()} of {vis.shape[2]} candidates survive visible/jitter")
   return keep
 
 
@@ -242,7 +243,7 @@ def process_episode(episode_id, pb_renderer, config):
 
   robot_xyz, robot_view = find_robot_candidates(episode, poses, pb_renderer)
   robot_uv, robot_vis = project_robot_tracks(robot_xyz, episode, poses, pb_renderer, config.tracks.depth_tolerance)
-  robot_keep = filter_robot_tracks(robot_vis)
+  robot_keep = filter_robot_tracks(robot_vis, config.tracks.flicker)
   robot = sample_tracks(
     robot_keep, robot_xyz, robot_uv, robot_vis, robot_view, config.tracks.num_robot_points_per_view
   )
