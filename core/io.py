@@ -101,5 +101,6 @@ def load_track_data(episode_id, tracks_root):
     "uv": np.stack(uv),
     "vis": np.stack(vis),
     "query_view": meta_data["query_view"],
+    "n_robot": int(meta_data["n_robot"]),
     "n_static": int(meta_data["n_static"]),
   }

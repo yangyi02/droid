@@ -3,6 +3,7 @@ import os
 
 import numpy as np
 import pybullet
+from scipy.spatial.transform import Rotation
 
 NEAR_PLANE = 0.01
 FAR_PLANE = 10.0
@@ -13,6 +14,18 @@ GRIPPER_WIDTH_OFFSET = 0.08
 def metric_depth(depth_buf, height, width):
   buf = np.reshape(depth_buf, (height, width))
   return (FAR_PLANE * NEAR_PLANE) / (FAR_PLANE - buf * (FAR_PLANE - NEAR_PLANE))
+
+
+def link_transform(obj_id, link_id):
+  if link_id == -1:
+    pos, orn = pybullet.getBasePositionAndOrientation(obj_id)
+  else:
+    pos, orn = pybullet.getLinkState(obj_id, link_id)[:2]
+
+  T_link2world = np.eye(4)
+  T_link2world[:3, :3] = Rotation.from_quat(orn).as_matrix()
+  T_link2world[:3, 3] = pos
+  return T_link2world
 
 
 def _load_egl():

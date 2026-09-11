@@ -47,17 +47,17 @@ def depth_residual_mm(points_3d, cam_data, extrinsics, t):
 
 
 def depth_residual(episode, poses, tracks):
-  tracks_3d, n_static = tracks["tracks_3d"], tracks["n_static"]
+  tracks_3d, n_robot = tracks["tracks_3d"], tracks["n_robot"]
   per_cam_vis = dict(zip(episode["camera"], tracks["vis"], strict=True))
 
   residual = {}
   for cam_id, cam_data in episode["camera"].items():
-    static, robot = [], []
+    robot, static = [], []
     for t in range(len(tracks_3d)):
       visible, extrinsics = per_cam_vis[cam_id][t], poses[cam_id]["extrinsics"][t]
-      static.append(depth_residual_mm(tracks_3d[t, :n_static][visible[:n_static]], cam_data, extrinsics, t))
-      robot.append(depth_residual_mm(tracks_3d[t, n_static:][visible[n_static:]], cam_data, extrinsics, t))
-    residual[cam_id] = {"static": np.concatenate(static), "robot": np.concatenate(robot)}
+      robot.append(depth_residual_mm(tracks_3d[t, :n_robot][visible[:n_robot]], cam_data, extrinsics, t))
+      static.append(depth_residual_mm(tracks_3d[t, n_robot:][visible[n_robot:]], cam_data, extrinsics, t))
+    residual[cam_id] = {"robot": np.concatenate(robot), "static": np.concatenate(static)}
 
   return residual
 
@@ -66,7 +66,7 @@ def mean_residual(residual):
   return {
     f"depth_residual_{kind}_mm_{cam_id}": float(np.mean(gaps[kind])) if len(gaps[kind]) else float("nan")
     for cam_id, gaps in residual.items()
-    for kind in ("static", "robot")
+    for kind in ("robot", "static")
   }
 
 
