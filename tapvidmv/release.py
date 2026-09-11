@@ -18,10 +18,7 @@ MASK = "foreground_mask.npy"
 
 
 def find_dataset():
-  here = Path.cwd()
-  roots = [parent / "tapvidmv" / "data" for parent in (here, *here.parents)]
-  roots += [parent / "data" for parent in (here, *here.parents)]
-  return next((root for root in roots if root.is_dir() and any(root.glob("*/tracks_xyz.npy"))), roots[0])
+  return Path(__file__).parent / "data"
 
 
 def episode_names(root):
