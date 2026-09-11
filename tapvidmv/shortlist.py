@@ -1,5 +1,4 @@
 import argparse
-import csv
 import glob
 import json
 import operator
@@ -136,14 +135,15 @@ def write_selection(selected, output_dir, n):
   list_path = os.path.join(output_dir, f"episodes_eval{n}.txt")
   with open(list_path, "w") as f:
     f.writelines(row["episode_id"] + "\n" for row in selected)
+  return list_path
 
-  csv_path = os.path.join(output_dir, f"episodes_eval{n}_details.csv")
-  with open(csv_path, "w", newline="") as f:
-    writer = csv.DictWriter(f, fieldnames=sorted({key for row in selected for key in row}), restval="")
-    writer.writeheader()
-    writer.writerows(selected)
 
-  return list_path, csv_path
+def load_pool(list_path, metrics_root):
+  with open(os.path.expanduser(list_path)) as f:
+    names = [line.strip() for line in f if line.strip()]
+
+  metrics_root = os.path.expanduser(metrics_root)
+  return [json.load(open(os.path.join(metrics_root, name, METRICS_FILE))) for name in names]
 
 
 def report(selected):
@@ -181,10 +181,10 @@ def main():
   rows = load_metrics(os.path.expanduser(args.input))
   selected = sample_diverse(apply_cuts(rows, cuts), args.n)
 
-  list_path, csv_path = write_selection(selected, args.output_dir, args.n)
+  list_path = write_selection(selected, args.output_dir, args.n)
 
   report(selected)
-  print(f"\nEpisode list: {list_path}\nDetailed CSV: {csv_path}")
+  print(f"\nEpisode list: {list_path}")
 
 
 if __name__ == "__main__":

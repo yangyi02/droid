@@ -66,8 +66,7 @@ than site, so the pool spreads over camera placements and tabletops rather than
 over labs. The notebook then shows the coverage that came out: sites, scenes, and
 the motion spread the diversity is sampled along.
 
-Writes `episodes_eval100.txt` and `episodes_eval100_details.csv`. The command
-line reproduces whatever you settle on:
+Writes `episodes_eval100.txt`. The command line reproduces whatever you settle on:
 
 ```bash
 python tapvidmv/shortlist.py --n 100 --cut cross_view_px=8.0
