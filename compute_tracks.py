@@ -25,7 +25,7 @@ def link_transform(obj_id, link_id):
   return T_link2world
 
 
-def find_static_candidates(episode, poses, pb_renderer, match_radius):
+def find_static_candidates(episode, poses, pb_renderer, match_radius, max_depth):
   robot = episode["robot"]
   pb_renderer.update_robot_pose(robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0])
 
@@ -36,7 +36,7 @@ def find_static_candidates(episode, poses, pb_renderer, match_radius):
     height, width = depth.shape
 
     robot_mask = pb_renderer.render_mask(poses[src_cam]["extrinsics"][0], cam_data["K"], width, height)
-    on_env = ~robot_mask & (depth > 0)
+    on_env = ~robot_mask & (depth > 0) & (depth < max_depth)
     vs, us = np.where(on_env)
 
     points = core.geometry.unproject_pixels(
@@ -73,7 +73,7 @@ def project_static_tracks(static_points_3d, episode, poses, depth_tolerance):
       uv[view, t] = np.stack([u, v], axis=1)
       gap[view, t] = core.geometry.sample_depth(cam_data["raw_depth"][t], u, v, z) - z
 
-  return uv, np.abs(gap) < depth_tolerance, gap
+  return uv, gap >= -depth_tolerance, gap
 
 
 def filter_static_tracks(vis, gap, depth_tolerance, min_run_frames, flicker):
@@ -225,7 +225,9 @@ def process_episode(episode_id, pb_renderer, config):
   episode = core.io.load_depth_data(episode_id, config.paths.depth)
   poses = core.io.load_extrinsics(episode, config.paths.extrinsics)
 
-  static_xyz, static_view = find_static_candidates(episode, poses, pb_renderer, config.tracks.match_radius)
+  static_xyz, static_view = find_static_candidates(
+    episode, poses, pb_renderer, config.tracks.match_radius, config.tracks.max_depth
+  )
   static_uv, static_vis, static_gap = project_static_tracks(static_xyz, episode, poses, config.tracks.depth_tolerance)
   static_keep = filter_static_tracks(
     static_vis,
