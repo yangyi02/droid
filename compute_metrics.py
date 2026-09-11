@@ -70,67 +70,6 @@ def mean_residual(residual):
   }
 
 
-def seen_surface(cam_data, extrinsics, points_3d, t):
-  u, v, z = core.geometry.project_points(points_3d, cam_data["K"], extrinsics)
-  z_obs = core.geometry.sample_depth(cam_data["raw_depth"][t], u, v, z)
-  return core.geometry.unproject_pixels(u, v, np.where(z_obs > 0, z_obs, np.nan), cam_data["K"], extrinsics)
-
-
-def cross_view_px(episode, poses, tracks):
-  tracks_3d = tracks["tracks_3d"]
-  per_cam_vis = dict(zip(episode["camera"], tracks["vis"], strict=True))
-  wrist_cam_id = episode["meta"]["wrist_serial"]
-
-  error = {}
-  for a, b in itertools.combinations(sorted(episode["camera"]), 2):
-    gaps = []
-    for t in range(len(tracks_3d)):
-      for src, dst in ((a, b), (b, a)):
-        points = tracks_3d[t][per_cam_vis[src][t] & per_cam_vis[dst][t]]
-        if not len(points):
-          continue
-        surface = seen_surface(episode["camera"][src], poses[src]["extrinsics"][t], points, t)
-        K, extrinsics = episode["camera"][dst]["K"], poses[dst]["extrinsics"][t]
-        u, v, z = core.geometry.project_points(points, K, extrinsics)
-        u_seen, v_seen, z_seen = core.geometry.project_points(surface, K, extrinsics)
-        keep = np.isfinite(surface).all(axis=1) & (z > 0) & (z_seen > 0)
-        gaps.append(np.hypot(u_seen - u, v_seen - v)[keep])
-
-    gaps = np.concatenate(gaps) if gaps else np.zeros(0)
-    name = "cross_view_wrist_px" if wrist_cam_id in (a, b) else "cross_view_px"
-    error[f"{name}_{a}_{b}"] = float(np.mean(gaps)) if len(gaps) else float("nan")
-
-  return error
-
-
-def track_stats(tracks):
-  n_static = tracks["n_static"]
-  return {"n_static": n_static, "n_robot": tracks["tracks_3d"].shape[1] - n_static}
-
-
-def motion_stats(episode):
-  robot = episode["robot"]
-  joints = robot["joint_positions"]
-  gripper = robot["gripper_positions"]
-
-  joint_ranges = joints.max(axis=0) - joints.min(axis=0)
-  joint_stds = joints.std(axis=0)
-
-  T_ee2base = robot["T_ee_base_all"]
-  ee_positions = T_ee2base[:, :3, 3]
-  ee_deltas = np.linalg.norm(np.diff(ee_positions, axis=0), axis=1)
-  ee_travel = float(np.sum(ee_deltas))
-
-  return {
-    "joint_range_mean_rad": float(np.mean(joint_ranges)),
-    "joint_range_max_rad": float(np.max(joint_ranges)),
-    "joint_std_mean_rad": float(np.mean(joint_stds)),
-    "gripper_range": float(gripper.max() - gripper.min()),
-    "ee_travel_m": ee_travel,
-    "n_frames": int(len(joints)),
-  }
-
-
 def scene_metadata(episode):
   site, scene, _ = episode["meta"]["episode_id"].split("+")
 
@@ -138,33 +77,17 @@ def scene_metadata(episode):
     "site": site,
     "scene": scene,
     "n_cameras": len(episode["camera"]),
+    "n_frames": int(len(episode["robot"]["joint_positions"])),
     "wrist_serial": episode["meta"]["wrist_serial"],
   }
-
-
-def robot_coverage(episode, poses, pb_renderer):
-  robot = episode["robot"]
-  pb_renderer.update_robot_pose(robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0])
-
-  coverage = {}
-  for cam_id, cam_data in episode["camera"].items():
-    height, width = cam_data["raw_depth"][0].shape
-    mask = pb_renderer.render_mask(poses[cam_id]["extrinsics"][0], cam_data["K"], width, height)
-    coverage[f"robot_percent_{cam_id}"] = float(mask.mean() * 100)
-
-  return coverage
 
 
 def episode_metrics(episode, poses, device, tracks, pb_renderer, config):
   return (
     {"episode_id": episode["meta"]["episode_id"]}
     | scene_metadata(episode)
-    | motion_stats(episode)
-    | track_stats(tracks)
-    | robot_coverage(episode, poses, pb_renderer)
     | evaluate_extrinsics(episode, poses, device, pb_renderer, config)
     | mean_residual(depth_residual(episode, poses, tracks))
-    | cross_view_px(episode, poses, tracks)
   )
 
 

@@ -50,7 +50,7 @@ python compute_tracks.py --config.render.gpu=False  # CPU rasteriser, for a box 
 | 1. Depth | `compute_depth.py` | `core.depth` | SVO decode → S2M2 stereo depth → SAM gripper mask → depth distillation |
 | 2. Extrinsics | `compute_extrinsics.py` | `core.physics` | Dataset extrinsics → rendered robot alignment → global joint optimization |
 | 3. Tracks | `compute_tracks.py` | `core.geometry`, `core.physics` | Static background depth consensus + URDF FK robot tracks (model-free) |
-| 4. Metrics | `compute_metrics.py` | `core.pointcloud`, `core.geometry` | Per-episode quality numbers: extrinsics objective, cross-view agreement, depth residuals, motion |
+| 4. Metrics | `compute_metrics.py` | `core.pointcloud`, `core.geometry` | Per-episode quality numbers: extrinsics objective, depth residuals |
 
 ### Stage 1 — `compute_depth.py`
 
@@ -128,9 +128,7 @@ extrinsics and tracks directories already use:
 | Category | Metrics |
 |---|---|
 | Extrinsics | `chamfer_*`, `overlap_*` and `robot_loss_*` per camera pair and camera — stage 2's own objective, read at the pose it converged to |
-| Track consistency | `depth_residual_{static,robot}_mm_<cam>` per camera, and `cross_view_px_<cam>_<cam>` — what two cameras disagree by, in the pixels a benchmark is scored in |
-| Motion | End-effector travel distance, joint range, gripper range |
-| Coverage | `robot_percent_<cam>` — the share of each view's first frame the arm covers |
+| Track consistency | `depth_residual_{static,robot}_mm_<cam>` per camera |
 | Metadata | Site, scene, camera count, frame count |
 
 Nothing is reduced to a single "worst camera" number: the metrics keep every view, and
@@ -148,12 +146,12 @@ One concept, one spelling, repo-wide. The pipeline files and the notebooks all f
 | Frames on data | `points_cam`, `points_world` — suffix names the frame the coordinates are in |
 | Image size | `height`, `width` — never `h`/`w` or `h_img`/`w_img` |
 | Images | `img_rgb`, `img_left`, `img_right` — modifier last, matching `video_rgb`, `video_right` |
-| Percentages | `_percent`, spelled out (`vis_percent_<cam>`, `robot_percent_<cam>`) |
+| Percentages | `_percent`, spelled out (`vis_percent_<cam>`) |
 | Counts | `n_` for things that exist (`n_frames`, `n_points`, `n_static`); `num_` only in `config.py`, where it is a cap being requested |
 | Indices | `t` for a frame, `u`/`v` for a pixel |
 | Per-camera dicts | `per_cam_tracks`, `per_cam_vis` keyed by `cam_id`; one camera's array drops the prefix |
 | Math symbols | `K`, `T`, `R` stay symbols — everything else is complete words |
-| Modules | don't repeat the module in its functions (`compute_metrics.motion_stats`, not `compute_motion_stats`) |
+| Modules | don't repeat the module in its functions (`compute_metrics.track_stats`, not `compute_track_stats`) |
 
 The two dicts threaded through every stage are `episode` (one episode's loaded data:
 `meta`, `robot`, `camera`) and `poses` (per-camera extrinsics, the thing stage 2 estimates
