@@ -76,8 +76,9 @@ def project_static_tracks(static_points_3d, episode, poses, depth_tolerance):
   return uv, gap >= -depth_tolerance, gap
 
 
-def filter_static_tracks(vis, gap, depth_tolerance, min_run_frames, flicker):
+def filter_static_tracks(vis, gap, depth_tolerance, min_run_fraction, flicker):
   n_views, n_frames, n_points = vis.shape
+  min_run_frames = int(min_run_fraction * n_frames)
 
   run = np.zeros((n_views, n_points), dtype=np.int32)
   streak = np.zeros((n_views, n_points), dtype=np.int32)
@@ -234,7 +235,7 @@ def process_episode(episode_id, pb_renderer, config):
     static_vis,
     static_gap,
     config.tracks.depth_tolerance,
-    config.tracks.min_run_frames,
+    config.tracks.min_run_fraction,
     config.tracks.flicker,
   )
   static = sample_tracks(
