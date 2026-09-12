@@ -55,7 +55,8 @@ def get_config():
   config.tracks.match_radius = 0.005
   config.tracks.max_depth = 1.5
   config.tracks.min_run_fraction = 0.10
-  config.tracks.flicker = 0.10
+  config.tracks.flicker = 0.05
   config.tracks.depth_tolerance = 0.01
+  config.tracks.background_tolerance = 0.05
 
   return config

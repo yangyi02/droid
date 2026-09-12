@@ -59,6 +59,7 @@ def project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer, depth_tol
 
   uv = np.zeros((n_views, n_frames, n_points, 2), dtype=np.float32)
   vis = np.zeros((n_views, n_frames, n_points), dtype=bool)
+  gap = np.zeros((n_views, n_frames, n_points), dtype=np.float32)
 
   for t in range(n_frames):
     pb_renderer.update_robot_pose(robot["joint_positions"][t], gripper_state=robot["gripper_positions"][t])
@@ -75,10 +76,22 @@ def project_robot_tracks(robot_tracks_3d, episode, poses, pb_renderer, depth_tol
       z_urdf = core.geometry.sample_depth(urdf_depth, u, v, z_pred)
       z_sensor = core.geometry.sample_depth(cam_data["raw_depth"][t], u, v, z_pred)
       measured = np.stack([z_urdf, z_sensor])
-      gap = np.where(measured == 0, np.inf, measured).min(axis=0) - z_pred
-      vis[view, t] = gap >= -depth_tolerance
+      urdf_gap, sensor_gap = np.where(measured == 0, np.inf, measured) - z_pred
+      vis[view, t] = np.minimum(urdf_gap, sensor_gap) >= -depth_tolerance
+      gap[view, t] = sensor_gap
 
-  return uv, vis
+  return uv, vis, gap
+
+
+def filter_robot_tracks(vis, gap, background_tolerance, flicker):
+  n_points = vis.shape[2]
+
+  on_background = (vis & np.isfinite(gap) & (gap > background_tolerance)).any(axis=1)
+  jitters = (vis[:, 1:] != vis[:, :-1]).mean(axis=1) > flicker
+
+  keep = ~(on_background | jitters).any(axis=0)
+  print(f"  Robot: {keep.sum()} of {n_points} candidates survive background/jitter")
+  return keep
 
 
 def find_static_candidates(episode, poses, pb_renderer, match_radius, max_depth):
@@ -210,8 +223,12 @@ def process_episode(episode_id, pb_renderer, config):
   poses = core.io.load_extrinsics(episode, config.paths.extrinsics)
 
   robot_xyz, robot_view = find_robot_candidates(episode, poses, pb_renderer)
-  robot_uv, robot_vis = project_robot_tracks(robot_xyz, episode, poses, pb_renderer, config.tracks.depth_tolerance)
-  robot_keep = np.ones(len(robot_view), dtype=bool)
+  robot_uv, robot_vis, robot_gap = project_robot_tracks(
+    robot_xyz, episode, poses, pb_renderer, config.tracks.depth_tolerance
+  )
+  robot_keep = filter_robot_tracks(
+    robot_vis, robot_gap, config.tracks.background_tolerance, config.tracks.flicker
+  )
   robot = sample_tracks(
     robot_keep, robot_xyz, robot_uv, robot_vis, robot_view, config.tracks.num_robot_points_per_view
   )
