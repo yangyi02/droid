@@ -52,10 +52,11 @@ def get_config():
   config.tracks = ml_collections.ConfigDict()
   config.tracks.num_static_points_per_view = 100
   config.tracks.num_robot_points_per_view = 100
-  config.tracks.match_radius = 0.005
-  config.tracks.max_depth = 1.5
-  config.tracks.min_run_fraction = 0.10
-  config.tracks.flicker = 0.05
-  config.tracks.depth_tolerance = 0.02
+  config.tracks.match_radius = 0.02
+  config.tracks.mask_margin = 10
+  config.tracks.robot_depth_tolerance = 0.02
+  config.tracks.static_depth_tolerance = 0.05
+  config.tracks.flicker = 0.1
+  config.tracks.min_run_fraction = 0.1
 
   return config

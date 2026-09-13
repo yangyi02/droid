@@ -1,5 +1,6 @@
 import os
 
+import cv2
 import numpy as np
 from absl import app
 from ml_collections import config_flags
@@ -11,7 +12,14 @@ import core.physics
 import core.runner
 
 
-def find_robot_candidates(episode, poses, pb_renderer):
+def resize_mask(mask, margin):
+  """Grow the mask by margin pixels, or shrink it when margin is negative."""
+  kernel = np.ones((abs(margin), abs(margin)), np.uint8)
+  morph = cv2.dilate if margin > 0 else cv2.erode
+  return morph(mask.astype(np.uint8), kernel).astype(bool)
+
+
+def find_robot_candidates(episode, poses, pb_renderer, mask_margin):
   robot = episode["robot"]
   n_frames = len(robot["joint_positions"])
 
@@ -26,7 +34,7 @@ def find_robot_candidates(episode, poses, pb_renderer):
     T_cam2world = poses[src_cam]["extrinsics"][0]
 
     obj_ids, link_ids, urdf_depth = pb_renderer.render_segmentation(T_cam2world, K, width, height)
-    vs, us = np.where(obj_ids == pb_renderer.robot_id)
+    vs, us = np.where(resize_mask(obj_ids == pb_renderer.robot_id, -mask_margin))
 
     seeds.append(
       core.geometry.unproject_pixels(us.astype(np.float32), vs.astype(np.float32), urdf_depth[vs, us], K, T_cam2world)
@@ -89,7 +97,7 @@ def filter_robot_tracks(vis, flicker):
   return keep
 
 
-def find_static_candidates(episode, poses, pb_renderer, match_radius, max_depth):
+def find_static_candidates(episode, poses, pb_renderer, match_radius, mask_margin):
   robot = episode["robot"]
   pb_renderer.update_robot_pose(robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0])
 
@@ -100,7 +108,7 @@ def find_static_candidates(episode, poses, pb_renderer, match_radius, max_depth)
     height, width = depth.shape
 
     robot_mask = pb_renderer.render_mask(poses[src_cam]["extrinsics"][0], cam_data["K"], width, height)
-    on_env = ~robot_mask & (depth > 0) & (depth < max_depth)
+    on_env = ~resize_mask(robot_mask, mask_margin) & (depth > 0)
     vs, us = np.where(on_env)
 
     points = core.geometry.unproject_pixels(
@@ -124,22 +132,33 @@ def find_static_candidates(episode, poses, pb_renderer, match_radius, max_depth)
   return np.concatenate(verified).astype(np.float32), np.concatenate(query_view)
 
 
-def project_static_tracks(static_points_3d, episode, poses, depth_tolerance):
-  n_frames = len(episode["robot"]["joint_positions"])
+def project_static_tracks(static_points_3d, episode, poses, pb_renderer, depth_tolerance):
+  robot = episode["robot"]
+  n_frames = len(robot["joint_positions"])
   n_views, n_points = len(episode["camera"]), len(static_points_3d)
 
   uv = np.zeros((n_views, n_frames, n_points, 2), dtype=np.float32)
   vis = np.zeros((n_views, n_frames, n_points), dtype=bool)
   gap = np.zeros((n_views, n_frames, n_points), dtype=np.float32)
 
-  for view, (cam_id, cam_data) in enumerate(episode["camera"].items()):
-    for t in range(n_frames):
-      u, v, z_pred = core.geometry.project_points(static_points_3d, cam_data["K"], poses[cam_id]["extrinsics"][t])
+  for t in range(n_frames):
+    pb_renderer.update_robot_pose(robot["joint_positions"][t], gripper_state=robot["gripper_positions"][t])
+
+    for view, (cam_id, cam_data) in enumerate(episode["camera"].items()):
+      K = cam_data["K"]
+      height, width = cam_data["raw_depth"][t].shape
+      T_cam2world = poses[cam_id]["extrinsics"][t]
+      urdf_depth = pb_renderer.render_depth(T_cam2world, K, width, height)
+
+      u, v, z_pred = core.geometry.project_points(static_points_3d, K, T_cam2world)
       uv[view, t] = np.stack([u, v], axis=1)
 
-      measured = core.geometry.sample_depth(cam_data["raw_depth"][t], u, v, z_pred)
-      gap[view, t] = np.where(measured == 0, np.inf, measured) - z_pred
-      vis[view, t] = gap[view, t] >= -depth_tolerance
+      z_urdf = core.geometry.sample_depth(urdf_depth, u, v, z_pred)
+      z_sensor = core.geometry.sample_depth(cam_data["raw_depth"][t], u, v, z_pred)
+      measured = np.stack([z_urdf, z_sensor])
+      urdf_gap, sensor_gap = np.where(measured == 0, np.inf, measured) - z_pred
+      vis[view, t] = np.minimum(urdf_gap, sensor_gap) >= -depth_tolerance
+      gap[view, t] = sensor_gap
 
   return uv, vis, gap
 
@@ -152,11 +171,10 @@ def filter_static_tracks(vis, gap, depth_tolerance, min_run_fraction, flicker):
   windows = np.lib.stride_tricks.sliding_window_view(seen_through, min_frames, axis=1)
 
   gone = windows.all(axis=-1).any(axis=1) & vis[:, 0]
-  blind = np.isinf(gap).sum(axis=1) >= min_frames
   jitters = (vis[:, 1:] != vis[:, :-1]).mean(axis=1) > flicker
 
-  keep = ~(gone | blind | jitters).any(axis=0)
-  print(f"  Static: {keep.sum()} of {n_points} candidates survive gone/blind/jitter")
+  keep = ~(gone | jitters).any(axis=0)
+  print(f"  Static: {keep.sum()} of {n_points} candidates survive gone/jitter")
   return keep
 
 
@@ -217,21 +235,25 @@ def process_episode(episode_id, pb_renderer, config):
   episode = core.io.load_depth_data(episode_id, config.paths.depth)
   poses = core.io.load_extrinsics(episode, config.paths.extrinsics)
 
-  robot_xyz, robot_view = find_robot_candidates(episode, poses, pb_renderer)
-  robot_uv, robot_vis = project_robot_tracks(robot_xyz, episode, poses, pb_renderer, config.tracks.depth_tolerance)
+  robot_xyz, robot_view = find_robot_candidates(episode, poses, pb_renderer, config.tracks.mask_margin)
+  robot_uv, robot_vis = project_robot_tracks(
+    robot_xyz, episode, poses, pb_renderer, config.tracks.robot_depth_tolerance
+  )
   robot_keep = filter_robot_tracks(robot_vis, config.tracks.flicker)
   robot = sample_tracks(
     robot_keep, robot_xyz, robot_uv, robot_vis, robot_view, config.tracks.num_robot_points_per_view
   )
 
   static_xyz, static_view = find_static_candidates(
-    episode, poses, pb_renderer, config.tracks.match_radius, config.tracks.max_depth
+    episode, poses, pb_renderer, config.tracks.match_radius, config.tracks.mask_margin
   )
-  static_uv, static_vis, static_gap = project_static_tracks(static_xyz, episode, poses, config.tracks.depth_tolerance)
+  static_uv, static_vis, static_gap = project_static_tracks(
+    static_xyz, episode, poses, pb_renderer, config.tracks.static_depth_tolerance
+  )
   static_keep = filter_static_tracks(
     static_vis,
     static_gap,
-    config.tracks.depth_tolerance,
+    config.tracks.static_depth_tolerance,
     config.tracks.min_run_fraction,
     config.tracks.flicker,
   )
