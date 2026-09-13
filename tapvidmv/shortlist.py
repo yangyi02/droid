@@ -19,14 +19,11 @@ METRICS_FILE = "metrics.json"
 OPS = {"<=": operator.le, ">=": operator.ge}
 
 EXTRINSICS = ("chamfer", "overlap", "robot_loss")
-TRACKS = ("depth_residual_static_mm", "depth_residual_robot_mm")
 
 CUTS = {
   "chamfer": ("<=", 0.050),
   "overlap": (">=", 40.0),
   "robot_loss": ("<=", 0.020),
-  "depth_residual_static_mm": ("<=", 6.0),
-  "depth_residual_robot_mm": ("<=", 5.0),
 }
 
 
@@ -141,7 +138,7 @@ def load_pool(list_path, metrics_root):
 def report(selected):
   print(f"\nSelected {len(selected)} episodes")
   print(f"  Sites: {dict(sorted(Counter(row['site'] for row in selected).items()))}")
-  for column in ("depth_residual_static_mm", "depth_residual_robot_mm"):
+  for column in EXTRINSICS:
     values = [v for v in (cut_value(row, column, CUTS[column][0]) for row in selected) if not np.isnan(v)]
     if values:
       print(f"  {column}: median={np.median(values):.3f}, range=[{min(values):.3f}, {max(values):.3f}]")
@@ -156,7 +153,7 @@ def main():
     action="append",
     default=[],
     metavar="COLUMN=VALUE",
-    help=f"Move one threshold, e.g. --cut depth_residual_static_mm=5.0. Columns: {', '.join(CUTS)}",
+    help=f"Move one threshold, e.g. --cut chamfer=0.040. Columns: {', '.join(CUTS)}",
   )
   parser.add_argument(
     "--output_dir",

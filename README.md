@@ -26,7 +26,7 @@ bash mount_gcs.sh
 bash run_parallel.sh depth        # Stage 1: depth
 bash run_parallel.sh extrinsics   # Stage 2: extrinsics
 bash run_parallel.sh tracks       # Stage 3: tracks
-bash run_parallel.sh metrics      # Stage 4: quality metrics
+bash run_parallel.sh metrics      # Stage 4: quality metrics (needs stage 2, not stage 3)
 ```
 
 Every path, threshold and optimizer setting lives in `config.py`. The stage
@@ -50,7 +50,7 @@ python compute_tracks.py --config.render.gpu=False  # CPU rasteriser, for a box 
 | 1. Depth | `compute_depth.py` | `core.depth` | SVO decode → S2M2 stereo depth → SAM gripper mask → depth distillation |
 | 2. Extrinsics | `compute_extrinsics.py` | `core.physics` | Dataset extrinsics → rendered robot alignment → global joint optimization |
 | 3. Tracks | `compute_tracks.py` | `core.geometry`, `core.physics` | Static background depth consensus + URDF FK robot tracks (model-free) |
-| 4. Metrics | `compute_metrics.py` | `core.pointcloud`, `core.geometry` | Per-episode quality numbers: extrinsics objective, depth residuals |
+| 4. Metrics | `compute_metrics.py` | `core.pointcloud` | Per-episode quality numbers: the extrinsics objective, read at the converged pose |
 
 ### Stage 1 — `compute_depth.py`
 
@@ -122,13 +122,13 @@ track_metadata.npz             # n_static, n_robot
 
 Quality numbers for one episode, written as `<metrics>/<episode_id>/metrics.json` — one
 file per episode like every other stage, so ranks never share a file and a crash costs
-only its own episode. Columns are keyed by camera serial, the same names the depth,
-extrinsics and tracks directories already use:
+only its own episode. It scores stage 2's poses and never opens a track file, so it runs
+off the extrinsics directory and can go in parallel with stage 3. Columns are keyed by
+camera serial, the same names the depth and extrinsics directories already use:
 
 | Category | Metrics |
 |---|---|
 | Extrinsics | `chamfer_*`, `overlap_*` and `robot_loss_*` per camera pair and camera — stage 2's own objective, read at the pose it converged to |
-| Track consistency | `depth_residual_{static,robot}_mm_<cam>` per camera |
 | Metadata | Site, scene, camera count, frame count |
 
 Nothing is reduced to a single "worst camera" number: the metrics keep every view, and

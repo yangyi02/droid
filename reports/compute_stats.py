@@ -168,7 +168,7 @@ def main():
     type=str,
     default="",
     help="Optional directory of per-episode metrics.json from compute_metrics.py "
-    "to integrate depth residual and extrinsics quality into summary.",
+    "to integrate extrinsics quality into summary.",
   )
   args = parser.parse_args()
 
@@ -256,17 +256,6 @@ def main():
       """The metrics write one column per camera or camera pair; the summary pools all of them."""
       keys = sorted({k for r in metric_rows for k in r if k.startswith(f"{prefix}_")})
       return [v for key in keys for v in _extract_metric(key)]
-
-    static_means = _extract_family("depth_residual_static_mm")
-    robot_means = _extract_family("depth_residual_robot_mm")
-
-    if static_means or robot_means:
-      summary["depth_residual_mm"] = {
-        "description": "Predicted 3D depth vs raw sensor depth (primary self-consistency metric).",
-        "static_mean": round(float(np.mean(static_means)), 2) if static_means else None,
-        "robot_mean": round(float(np.mean(robot_means)), 2) if robot_means else None,
-        "n_episodes": len(metric_rows),
-      }
 
     chamfer = _extract_family("chamfer")
     overlap = _extract_family("overlap")

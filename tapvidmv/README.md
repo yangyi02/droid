@@ -67,7 +67,7 @@ over labs. The notebook then shows the coverage that came out: sites and scenes.
 Writes `episodes_eval100.txt`. The command line reproduces whatever you settle on:
 
 ```bash
-python tapvidmv/shortlist.py --n 100 --cut depth_residual_static_mm=5.0
+python tapvidmv/shortlist.py --n 100 --cut chamfer=0.040
 ```
 
 | Flag | Default | Description |
@@ -86,8 +86,8 @@ the metrics that let it through. **Keep** / **Skip** / **Back** build the set,
 and the last cell writes `episodes_eval50.txt`.
 
 This is the only step that can catch tracks that are confidently wrong. Every cut
-in step 1 is computed from the tracker's own residuals, so an episode whose
-ground truth is wrong in a self-consistent way passes all of them. Nor can the
+in step 1 is computed from the pipeline's own self-consistency, so an episode
+whose ground truth is wrong in a self-consistent way passes all of them. Nor can the
 metrics see whether the manipulation is interesting, or whether two candidates
 from different scenes are doing the same thing anyway.
 

@@ -10,7 +10,6 @@ from ml_collections import config_flags
 
 import config
 import core.pointcloud
-import core.geometry
 import core.io
 import core.physics
 import core.runner
@@ -39,37 +38,6 @@ def evaluate_extrinsics(episode, poses, device, pb_renderer, config):
   )
 
 
-def depth_residual_mm(points_3d, cam_data, extrinsics, t):
-  u, v, z = core.geometry.project_points(points_3d, cam_data["K"], extrinsics)
-  z_obs = core.geometry.sample_depth(cam_data["raw_depth"][t], u, v, z)
-  gap = np.abs(z_obs - z) * 1000.0
-  return gap[np.isfinite(gap) & (z_obs > 0)]
-
-
-def depth_residual(episode, poses, tracks):
-  tracks_3d, n_robot = tracks["tracks_3d"], tracks["n_robot"]
-  per_cam_vis = dict(zip(episode["camera"], tracks["vis"], strict=True))
-
-  residual = {}
-  for cam_id, cam_data in episode["camera"].items():
-    robot, static = [], []
-    for t in range(len(tracks_3d)):
-      visible, extrinsics = per_cam_vis[cam_id][t], poses[cam_id]["extrinsics"][t]
-      robot.append(depth_residual_mm(tracks_3d[t, :n_robot][visible[:n_robot]], cam_data, extrinsics, t))
-      static.append(depth_residual_mm(tracks_3d[t, n_robot:][visible[n_robot:]], cam_data, extrinsics, t))
-    residual[cam_id] = {"robot": np.concatenate(robot), "static": np.concatenate(static)}
-
-  return residual
-
-
-def mean_residual(residual):
-  return {
-    f"depth_residual_{kind}_mm_{cam_id}": float(np.mean(gaps[kind])) if len(gaps[kind]) else float("nan")
-    for cam_id, gaps in residual.items()
-    for kind in ("robot", "static")
-  }
-
-
 def scene_metadata(episode):
   site, scene, _ = episode["meta"]["episode_id"].split("+")
 
@@ -82,12 +50,11 @@ def scene_metadata(episode):
   }
 
 
-def episode_metrics(episode, poses, device, tracks, pb_renderer, config):
+def episode_metrics(episode, poses, device, pb_renderer, config):
   return (
     {"episode_id": episode["meta"]["episode_id"]}
     | scene_metadata(episode)
     | evaluate_extrinsics(episode, poses, device, pb_renderer, config)
-    | mean_residual(depth_residual(episode, poses, tracks))
   )
 
 
@@ -95,9 +62,8 @@ def process_episode(episode_id, device, pb_renderer, config):
   t0 = time.time()
   episode = core.io.load_depth_data(episode_id, config.paths.depth)
   poses = core.io.load_extrinsics(episode, config.paths.extrinsics)
-  tracks = core.io.load_track_data(episode_id, config.paths.tracks)
 
-  metrics = episode_metrics(episode, poses, device, tracks, pb_renderer, config)
+  metrics = episode_metrics(episode, poses, device, pb_renderer, config)
   payload = {k: None if isinstance(v, float) and not np.isfinite(v) else v for k, v in metrics.items()}
 
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(config.paths.metrics, episode_id)))
@@ -112,7 +78,7 @@ def main(_):
   config = config_flag.value
   export_root = os.path.abspath(os.path.expanduser(config.paths.metrics))
 
-  available = core.runner.list_episode_dirs(config.paths.tracks)
+  available = core.runner.list_episode_dirs(config.paths.extrinsics)
 
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
   pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=config.render.gpu)
