@@ -120,6 +120,12 @@ def show_gripper_refinement(episode, t=0):
   plt.show()
 
 
+def common_frames(*streams, max_frames=None):
+  """Frames every stream actually has -- an episode's videos, depth and poses can differ by a frame or two."""
+  n_frames = min(len(stream) for stream in streams)
+  return n_frames if max_frames is None else min(n_frames, max_frames)
+
+
 def colorize_disparity(disparity, vmax=100.0):
   levels = (np.clip(disparity, 0, vmax) / vmax * 255).astype(np.uint8)
   return np.stack([cv2.cvtColor(cv2.applyColorMap(f, cv2.COLORMAP_MAGMA), cv2.COLOR_BGR2RGB) for f in levels])
@@ -127,14 +133,22 @@ def colorize_disparity(disparity, vmax=100.0):
 
 def render_multicam_disparity_video(episode, max_frames=None, tgt_size=(128, 228)):
   rows = []
+  n_frames = common_frames(
+    *(
+      stream
+      for cam in episode["camera"].values()
+      for stream in (cam["raw_depth"], cam["video_rgb"], cam["video_right"])
+    ),
+    max_frames=max_frames,
+  )
   for cam_data in episode["camera"].values():
-    depth = cam_data["raw_depth"][:max_frames].astype(np.float32)
+    depth = cam_data["raw_depth"][:n_frames].astype(np.float32)
     disparity = np.divide(cam_data["K"][0, 0] * cam_data["baseline"], depth, out=np.zeros_like(depth), where=depth > 0)
     rows.append(
       np.concatenate(
         [
-          media.resize_video(cam_data["video_rgb"][:max_frames], tgt_size),
-          media.resize_video(cam_data["video_right"][:max_frames], tgt_size),
+          media.resize_video(cam_data["video_rgb"][:n_frames], tgt_size),
+          media.resize_video(cam_data["video_right"][:n_frames], tgt_size),
           colorize_disparity(media.resize_video(disparity, tgt_size)),
         ],
         axis=2,
@@ -153,7 +167,8 @@ def render_2d_tracking_video(
   tgt_size=None,
   max_frames=None,
 ):
-  video_frames, tracks, visibility = video_frames[:max_frames], tracks[:max_frames], visibility[:max_frames]
+  n_frames = common_frames(video_frames, tracks, visibility, max_frames=max_frames)
+  video_frames, tracks, visibility = video_frames[:n_frames], tracks[:n_frames], visibility[:n_frames]
 
   if tgt_size is not None:
     src_height, src_width = video_frames[0].shape[:2]
@@ -195,9 +210,13 @@ def render_2d_tracking_video(
 
 def render_segmentation_video(episode, poses, pb_renderer, tgt_width=1200, max_frames=None):
   robot = episode["robot"]
-  n_frames = len(next(iter(episode["camera"].values()))["video_rgb"])
-  if max_frames is not None:
-    n_frames = min(n_frames, max_frames)
+  n_frames = common_frames(
+    robot["joint_positions"],
+    robot["gripper_positions"],
+    *(cam["video_rgb"] for cam in episode["camera"].values()),
+    *(poses[cam_id]["extrinsics"] for cam_id in episode["camera"]),
+    max_frames=max_frames,
+  )
 
   video_frames = []
   for t in tqdm(range(n_frames), desc="Rendering segmentation"):
@@ -219,10 +238,12 @@ def render_segmentation_video(episode, poses, pb_renderer, tgt_width=1200, max_f
 
 def render_cross_camera_axes(episode, poses, max_frames=None, tgt_width=1200, axis_len=0.15):
   cam_ids = list(episode["camera"])
-  n_frames = len(poses[cam_ids[0]]["extrinsics"])
+  n_frames = common_frames(
+    *(poses[cam_id]["extrinsics"] for cam_id in cam_ids),
+    *(episode["camera"][cam_id]["video_rgb"] for cam_id in cam_ids),
+    max_frames=max_frames,
+  )
   axes_3d = np.array([[0, 0, 0, 1], [axis_len, 0, 0, 1], [0, axis_len, 0, 1], [0, 0, axis_len, 1]]).T
-  if max_frames is not None:
-    n_frames = min(n_frames, max_frames)
 
   video_frames = []
   for t in tqdm(range(n_frames), desc="Rendering camera axes"):
@@ -354,9 +375,16 @@ def render_4d_orbit_with_tracks(
 ):
   device = "cuda" if torch.cuda.is_available() else "cpu"
   cam_ids = sorted(episode["camera"])
-  n_frames = len(poses[cam_ids[0]]["extrinsics"])
-  if max_frames is not None:
-    n_frames = min(n_frames, max_frames)
+  n_frames = common_frames(
+    *(poses[cam_id]["extrinsics"] for cam_id in cam_ids),
+    *(
+      stream
+      for cam_id in cam_ids
+      for stream in (episode["camera"][cam_id]["raw_depth"], episode["camera"][cam_id]["video_rgb"])
+    ),
+    *([tracks_3d] if tracks_3d is not None else []),
+    max_frames=max_frames,
+  )
 
   focal = (height / 2) / np.tan(np.radians(fov_y) / 2)
   K_viz = torch.tensor([[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]], dtype=torch.float32, device=device)
