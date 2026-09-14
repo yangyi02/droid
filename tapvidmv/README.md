@@ -81,9 +81,9 @@ python tapvidmv/shortlist.py --n 100 --cut chamfer=0.040
 
 Work through the pool by eye. Each candidate plays as a three-view clip with the
 **ground-truth tracks drawn on it** — filled where that view calls a point
-visible, hollow where it is occluded, with a short trail behind each dot — beside
-the metrics that let it through. **Keep** / **Skip** / **Back** build the set,
-and the last cell writes `episodes_eval50.txt`.
+visible, hollow where it is occluded — beside the metrics that let it through.
+**Keep** / **Skip** / **Back** build the set, and the last cell writes
+`episodes_eval50.txt`.
 
 This is the only step that can catch tracks that are confidently wrong. Every cut
 in step 1 is computed from the pipeline's own self-consistency, so an episode

@@ -125,24 +125,21 @@ def montage(panels, *, columns=None, cell_width=480, background=(0, 0, 0)):
   return np.vstack([np.hstack(cells[r * columns : (r + 1) * columns]) for r in range(rows)])
 
 
-def read_frames(path, indices):
-  wanted = set(int(i) for i in indices)
+def read_video(path, width):
+  """Every frame, resized to `width` as it is decoded, and the scale that was applied."""
   capture = cv2.VideoCapture(path)
-  frames, index = {}, 0
-  while wanted:
+  frames, scale = [], 1.0
+  while True:
     ok, frame = capture.read()
     if not ok:
       break
-    if index in wanted:
-      frames[index] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-      wanted.discard(index)
-    index += 1
+    scale = width / frame.shape[1]
+    frames.append(
+      cv2.resize(
+        cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+        (width, max(1, round(frame.shape[0] * scale))),
+        interpolation=cv2.INTER_AREA,
+      )
+    )
   capture.release()
-  return frames
-
-
-def frame_count(path):
-  capture = cv2.VideoCapture(path)
-  total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-  capture.release()
-  return total
+  return frames, scale
