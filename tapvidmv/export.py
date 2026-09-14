@@ -1,5 +1,6 @@
 import argparse
 import os
+import shutil
 import sys
 
 import cv2
@@ -61,18 +62,22 @@ def export_to_tapvid3d(
   P = tracks_3d.shape[1]
 
   seq_dir = os.path.abspath(os.path.expanduser(os.path.join(output_root, episode_id)))
-  os.makedirs(seq_dir, exist_ok=True)
+  # Written under another name and renamed once it is whole, so the episode directory appearing
+  # is the same event as the episode being finished -- which is all the resume check has to read.
+  staging = seq_dir + ".partial"
+  shutil.rmtree(staging, ignore_errors=True)
+  os.makedirs(staging)
 
-  np.save(os.path.join(seq_dir, release.TRACKS), tracks_3d.astype(np.float32))
+  np.save(os.path.join(staging, release.TRACKS), tracks_3d.astype(np.float32))
   print(f"  tracks_xyz.npy: ({F}, {P}, 3)")
 
   queries = _build_queries(uv, query_view)
-  np.save(os.path.join(seq_dir, release.QUERIES), queries)
+  np.save(os.path.join(staging, release.QUERIES), queries)
   print(f"  queries_xytv.npy: ({P}, 4)")
 
   for view, cam_id in enumerate(cam_ids):
     view_id = str(view)
-    view_dir = os.path.join(seq_dir, view_id)
+    view_dir = os.path.join(staging, view_id)
     os.makedirs(view_dir, exist_ok=True)
 
     cam_data = episode["camera"][cam_id]
@@ -111,6 +116,9 @@ def export_to_tapvid3d(
     if include_foreground_mask and cam_id == wrist_cam_id:
       parts.append(f" fg_mask({F},{H},{W})")
     print("".join(parts))
+
+  shutil.rmtree(seq_dir, ignore_errors=True)
+  os.rename(staging, seq_dir)
 
   print(f"\n  TAPVid-3D export complete → {seq_dir}")
   return seq_dir

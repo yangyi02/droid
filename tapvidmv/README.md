@@ -97,10 +97,18 @@ so the picker does not wait on video decoding.
 ### Step 4 — [`export.py`](export.py)
 
 ```bash
-python tapvidmv/export.py                                     # episodes_eval50.txt
+bash tapvidmv/run_export.sh                                   # episodes_eval50.txt, 8 workers
+bash tapvidmv/run_export.sh 16                                # 16 workers
+bash tapvidmv/run_export.sh 8 --no_depth                      # flags pass through to export.py
+
+python tapvidmv/export.py                                     # one process
 python tapvidmv/export.py --episode_list episodes_eval100.txt
 python tapvidmv/export.py --episode_id AUTOLab+5d05c5aa+2023-10-14-21h-59m-22s
 ```
+
+No GPU is involved — the work is decoding video, encoding JPEG and writing, about
+19 s per 95-frame episode. `run_export.sh` shards by `--rank` / `--world_size`,
+the same split the pipeline stages use, and logs one file per rank under `logs/`.
 
 Writes the release layout into **`tapvidmv/data/`** — local disk, not the gcsfuse
 mount the pipeline writes to. The export re-encodes every frame to JPEG and
@@ -108,8 +116,9 @@ writes the depth maps, which is far too many bytes to push through fuse, and
 publishing is a separate step done by hand.
 
 It runs after selection, not before: exporting first would mean paying that cost
-over thousands of episodes to keep fifty. Fifty run fine serially; it skips
-episodes already present, so an interrupted run resumes.
+over thousands of episodes to keep fifty. Each episode is written under a
+`.partial` name and renamed once it is whole, so an interrupted run resumes by
+skipping the directories that are there and redoing the one it died inside.
 
 **Budget the disk.** `depth.npy` is float32 metres, twice the size of the uint16
 millimetres on disk, so one episode is ~1.9 GB at the median 170 frames and
@@ -170,6 +179,7 @@ gs://dm-tapnet/mv-tap/droid/tapvidmv/<episode_id>/...
 | `shortlist.ipynb` | Steps 1 & 2 — calibrate the cuts, draw the pool |
 | `review.ipynb` | Step 3 — the human pass, ground truth drawn on every clip |
 | `export.py` | Step 4 — pipeline outputs → release layout; owns `RELEASE_ROOT` |
+| `run_export.sh` | Step 4 in parallel — one worker per shard, logs under `logs/` |
 | `verify.ipynb` | Verification — reads the export, seven ways of asking whether it is right |
 | `release.py` | Reads the release layout: `View`/`Episode`, projection, unprojection |
 | `viz.py` | Drawing primitives: points, trails, montage, frame reading |
