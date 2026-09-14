@@ -50,6 +50,9 @@ def export_to_tapvid3d(
   episode_id = episode["meta"]["episode_id"]
   wrist_cam_id = episode["meta"]["wrist_serial"]
   cam_ids = list(episode["camera"])
+  # Stage 1 left a handful of episodes with a camera one frame longer than the robot arrays, and
+  # the tracks are cut to the robot. Every per-frame array below is written at F so a reader can
+  # index them all by the same t.
   F = tracks_3d.shape[0]
 
   print(f"\nExporting episode [{episode_id}] to TAPVid-3D format")
@@ -86,19 +89,19 @@ def export_to_tapvid3d(
     intrinsics = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]], dtype=np.float32)
     np.save(os.path.join(view_dir, release.INTRINSICS), intrinsics)
 
-    c2w = poses[cam_id]["extrinsics"]
+    c2w = poses[cam_id]["extrinsics"][:F]
     w2c = np.linalg.inv(c2w).astype(np.float32)
     np.save(os.path.join(view_dir, release.EXTRINSICS), w2c)
 
     np.save(os.path.join(view_dir, release.VISIBILITY), vis[view].astype(bool))
 
     if include_depth and "raw_depth" in cam_data:
-      depth = cam_data["raw_depth"].astype(np.float32)
+      depth = cam_data["raw_depth"][:F].astype(np.float32)
       depth[~np.isfinite(depth)] = 0.0
       np.save(os.path.join(view_dir, release.DEPTH), depth)
 
     if include_foreground_mask and cam_id == wrist_cam_id:
-      mask = cam_data["sam_real_masks"].astype(bool)
+      mask = cam_data["sam_real_masks"][:F].astype(bool)
       np.save(os.path.join(view_dir, release.MASK), mask)
 
     H, W = video[0].shape[:2]
