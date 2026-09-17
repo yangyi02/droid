@@ -1,6 +1,5 @@
 torch
 numpy
-pybullet
 opencv-python
 scipy
 matplotlib
