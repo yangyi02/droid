@@ -11,7 +11,9 @@ git clone --recurse-submodules https://github.com/yangyi02/droid.git
 cd droid
 
 # 2. Create the virtualenv -- setup.sh installs into whichever python is
-#    active, so without this it goes into the system interpreter
+#    active, so without this it goes into the system interpreter. It also
+#    appends a cuDNN library path to venv/bin/activate, so every later run
+#    starts by activating this venv
 python3 -m venv venv
 source venv/bin/activate
 
@@ -254,9 +256,28 @@ The notebook uses **3 global boolean flags** at the top (`COMPUTE_DEPTH`, `COMPU
 
 ### ZED SDK (required for Stage 1 SVO decoding)
 
-Installed by `bash setup.sh` (runtime only, from `download.stereolabs.com/zedsdk/5.2/cu12/ubuntu22`),
-together with the `pyzed` wheel it ships. `bash setup.sh --no-depth` skips it, along with
-everything else only Stage 1 needs — use that when depth is loaded from GCS rather than recomputed.
+Installed by `bash setup.sh` (runtime only, from `download.stereolabs.com/zedsdk/5.2/cu12/ubuntu22`).
+The SDK is system-wide, but `pyzed` is a wheel per interpreter and the SDK does not carry one:
+the installer's `/usr/local/zed/get_python_api.py` fetches the wheel matching the active python.
+A new virtualenv therefore needs that step even when `/usr/local/zed` is already there, which is
+why `setup.sh` guards on whether `pyzed` imports rather than on whether the SDK exists.
+`bash setup.sh --no-depth` skips it, along with everything else only Stage 1 needs — use that when
+depth is loaded from GCS rather than recomputed.
+
+### PyBullet (built from source)
+
+Deliberately absent from `requirements.txt`. PyPI ships no pybullet wheels, and a build that cannot
+see numpy silently drops NumPy support, which `core.physics` depends on — see
+`notebooks/pybullet_numpy_benchmark.ipynb`. `setup.sh` builds it after numpy is installed and with
+build isolation off, and skips the build when `pybullet.isNumpyEnabled()` is already true.
+
+### cuDNN (this machine, not the pipeline)
+
+The VM image prepends `/usr/lib/x86_64-linux-gnu` to `LD_LIBRARY_PATH`, which outranks the
+`DT_RUNPATH` inside pip's cuDNN: torch's convolutions bind the older system `libcudnn_graph` and
+die with `CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED`. `setup.sh` appends the wheel's own library
+directory to `venv/bin/activate`, so running a stage without activating the venv brings the failure
+back.
 
 ### Git Submodules (auto-cloned with `--recurse-submodules`)
 
