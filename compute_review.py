@@ -122,6 +122,7 @@ def blueprint(review, inspect, fps):
         origin="/",
         line_grid=False,
         background=rrb.Background(kind="GradientDark"),
+        contents=["+ /scene/**", "+ /cameras/**", "+ /tracks", "+ /inspect/**"],
         eye_controls=rrb.EyeControls3D(
           kind="Orbital",
           tracking_entity=f"/inspect/{inspect[0]}/point",
@@ -153,8 +154,8 @@ def blueprint(review, inspect, fps):
 def log_cameras(rec, review, episode, cfg):
   rec.log("/", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
 
-  n_scene_points, n_off_image = 0, 0
-  for view, cam_data in enumerate(episode["camera"].values()):
+  cameras = list(episode["camera"].values())
+  for view in range(review.n_views):
     K = review.K[view]
     rec.log(
       f"/cameras/{view}/pose/image",
@@ -168,8 +169,11 @@ def log_cameras(rec, review, episode, cfg):
       static=True,
     )
 
-    for t in range(review.n_frames):
-      rec.set_time("frame", sequence=t)
+  n_scene_points, n_off_image = 0, 0
+  for t in range(review.n_frames):
+    rec.set_time("frame", sequence=t)
+    for view, cam_data in enumerate(cameras):
+      K = review.K[view]
       img_rgb = cam_data["video_rgb"][t]
       T_cam2world = review.T_cam2world[view, t]
 
@@ -178,12 +182,6 @@ def log_cameras(rec, review, episode, cfg):
         f"/cameras/{view}/pose",
         rr.Transform3D(translation=T_cam2world[:3, 3], mat3x3=T_cam2world[:3, :3]),
       )
-
-      points_world, colors = depth_cloud(
-        cam_data["raw_depth"][t], img_rgb, K, T_cam2world, cfg.depth_stride, cfg.max_depth
-      )
-      rec.log(f"/scene/{view}", rr.Points3D(points_world, colors=colors, radii=SCENE_RADIUS_M))
-      n_scene_points += len(points_world)
 
       u, v, z = core.geometry.project_points(review.tracks_3d[t], K, T_cam2world)
       inside = in_frame(u, v, z, review.image_wh[view])
@@ -200,6 +198,12 @@ def log_cameras(rec, review, episode, cfg):
           draw_order=20,
         ),
       )
+
+      points_world, colors = depth_cloud(
+        cam_data["raw_depth"][t], img_rgb, K, T_cam2world, cfg.depth_stride, cfg.max_depth
+      )
+      rec.log(f"/scene/{view}", rr.Points3D(points_world, colors=colors, radii=SCENE_RADIUS_M))
+      n_scene_points += len(points_world)
 
     rec.flush(timeout_sec=120)
 
@@ -295,11 +299,11 @@ def build_recording(episode, review, episode_id, review_root, cfg):
   rec = rr.RecordingStream(APP_ID)
   try:
     rec.save(staging, default_blueprint=blueprint(review, inspect, cfg.fps))
-    n_scene_points, n_off_image = log_cameras(rec, review, episode, cfg)
     log_tracks(rec, review)
     log_inspect(rec, review, inspect)
     log_inspect_views(rec, review, inspect)
     rec.flush(timeout_sec=120)
+    n_scene_points, n_off_image = log_cameras(rec, review, episode, cfg)
   finally:
     rec.disconnect()
   os.replace(staging, rrd)

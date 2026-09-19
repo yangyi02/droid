@@ -205,11 +205,13 @@ run the viewer natively can skip the browser and connect to the data port instea
 `serve_review.sh` raises the proxy's memory ceiling, which matters: the default is 1 GiB,
 and a recording larger than that is served with its oldest messages quietly dropped.
 
-Only the frame on screen is drawn — around half a million points — but the whole recording
-is streamed into the viewer, so it is about 2 GB of laptop RAM and a minute on a home
-connection, and a browser tab is a tighter place to put that than a native window. `rerun rrd filter` cuts that down while the recording keeps its shape:
-dropping two of the three `/scene/<view>` entities leaves one camera's cloud at a third of
-the size, and dropping all three leaves the RGB and every track at 6% of it.
+The recording is written tracks first and cameras second, and the camera pass interleaves
+the views frame by frame, so the tracks are there to look at while the cloud is still
+arriving and the three camera views fill in together rather than one after another. All of
+it still has to reach the viewer, and `rerun rrd filter` makes that smaller while the
+recording keeps its shape: dropping two of the three `/scene/<view>` entities leaves one
+camera's cloud at a third of the size, and dropping all three leaves the RGB and every
+track at 6% of it.
 
 ```bash
 rerun rrd filter --drop-entity /scene/1 --drop-entity /scene/2 \
