@@ -9,3 +9,4 @@ mediapy
 plotly
 pandas
 ipywidgets
+rerun-sdk

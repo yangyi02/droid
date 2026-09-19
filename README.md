@@ -29,6 +29,9 @@ bash run_parallel.sh depth        # Stage 1: depth
 bash run_parallel.sh extrinsics   # Stage 2: extrinsics
 bash run_parallel.sh tracks       # Stage 3: tracks
 bash run_parallel.sh metrics      # Stage 4: quality metrics (needs stage 2, not stage 3)
+
+# 6. Look at what stage 3 produced, on a handful of episodes (optional)
+python compute_review.py --config.runner.limit=5 && rerun data/output/droid/review/<episode_id>.rrd
 ```
 
 Every path, threshold and optimizer setting lives in `config.py`. The stage
@@ -53,6 +56,7 @@ python compute_tracks.py --config.render.gpu=False  # CPU rasteriser, for a box 
 | 2. Extrinsics | `compute_extrinsics.py` | `core.physics` | Dataset extrinsics → rendered robot alignment → global joint optimization |
 | 3. Tracks | `compute_tracks.py` | `core.geometry`, `core.physics` | Static background depth consensus + URDF FK robot tracks (model-free) |
 | 4. Metrics | `compute_metrics.py` | `core.pointcloud` | Per-episode quality numbers: the extrinsics objective, read at the converged pose |
+| 5. Review | `compute_review.py` | `core.geometry`, `rerun` | Stage 3's tracks as a Rerun recording: every point in 3D over the depth cloud, and reprojected into every camera |
 
 ### Stage 1 — `compute_depth.py`
 
@@ -136,6 +140,66 @@ camera serial, the same names the depth and extrinsics directories already use:
 Nothing is reduced to a single "worst camera" number: the metrics keep every view, and
 leave it to whatever reads them to decide which view condemns an episode.
 
+### Stage 5 — `compute_review.py`
+
+Stage 3's tracks, all of them at once, the way you would judge them by eye. One Rerun
+recording per episode, built straight from stages 1–3: no TAPVid-3D export, nothing
+frozen, so it runs on whatever `compute_tracks.py` just wrote and is thrown away when the
+next setting is tried.
+
+```bash
+python compute_review.py --config.runner.limit=5    # ~1 min and ~1.1 GB per episode
+rerun data/output/droid/review/<episode_id>.rrd
+```
+
+The 3D view holds the depth cloud of every camera, the camera frustums moving through it,
+and every track — cyan for the robot's URDF tracks, amber for the static ones. Below it
+sits one 2D view per camera: its RGB with every track reprojected onto it, green where
+stage 3 annotated the point visible in that camera and red where it did not. Scrub the
+timeline and a bad track shows up as a point that slides off its texture, or as a colour
+that disagrees with what the image plainly shows.
+
+A few tracks (`config.review.n_inspect`, spread over the scene, half robot and half
+static) carry the whole single-point overlay on top of that: the point in magenta with the
+trail of where it has just been, a line from every camera centre coloured by that camera's
+annotated visibility, the marker where it lands in each image with a one-line verdict
+(`VISIBLE`, `NOT VISIBLE | outside image`, `INCONSISTENT`, `QUERY FRAME`), and the yellow
+cross at the query pixel it was born at — the gap between cross and marker on the query
+frame is reprojection error. Each one is its own entity tree, `/inspect/<track>`, and only
+the first one's rays start visible, because three rays read and a dozen do not. Ticking a
+different track's rays on in the 3D view's entity tree is how you switch between them.
+
+Sharding is the same shuffle every stage uses, so `--config.runner.limit=5` is the five
+episodes stage 3 ran first. Each episode prints what it wrote, including how many
+observations are annotated visible while projecting outside their own image — a
+contradiction, and normally a handful at the border.
+
+| Knob | |
+|---|---|
+| `config.review.depth_stride` | Every nth pixel of the depth map becomes a scene point. 2 is ~78 M points and ~1.1 GB for a 150-frame three-camera episode; 1 is the whole cloud, four times that, and more than a laptop viewer will open |
+| `config.review.max_depth` | Metres. 2 m is the DROID tabletop — anything past it is the rest of the room |
+| `config.review.n_inspect` | How many tracks carry the full overlay. Every one of them adds a verdict label to each camera view, so a handful stays readable |
+| `config.review.fps` | Playback speed in the viewer, not a claim about the source |
+
+**Output** (`data/output/droid/review/<episode_id>.rrd`): one recording per episode, and
+the viewer streams a whole one into memory when it opens, so they are looked at one at a
+time and thrown away when stage 3 changes.
+
+To open one from a laptop, serve it from wherever it was written and forward both ports —
+9090 is the web viewer, 9876 is the data:
+
+```bash
+rerun --serve-web --web-viewer-port 9090 --port 9876 data/output/droid/review/<episode_id>.rrd
+```
+
+The scene cloud is 98% of a recording, so dropping it leaves something small enough to copy
+anywhere, with the RGB, every track in 2D and the inspected tracks intact:
+
+```bash
+rerun rrd filter --drop-entity /scene/0 --drop-entity /scene/1 --drop-entity /scene/2 \
+    -o small.rrd data/output/droid/review/<episode_id>.rrd
+```
+
 ## Naming Conventions
 
 One concept, one spelling, repo-wide. The pipeline files and the notebooks all follow these.
@@ -173,6 +237,7 @@ droid/
 ├── compute_extrinsics.py      # Stage 2: Dataset init + camera-robot alignment
 ├── compute_tracks.py          # Stage 3: Static prior + URDF FK dense 3D tracking
 ├── compute_metrics.py         # Batch quality metrics evaluation (GCP)
+├── compute_review.py          # Stage 5: Rerun recordings of stage 3's tracks
 ├── run_parallel.sh            # Multi-GPU parallel runner for the stages above
 ├── config.py                  # Paths, GCS buckets and every hyperparameter (ConfigDict)
 ├── setup.sh                   # One-shot dependency + weights setup (--no-depth skips Stage 1)
@@ -237,7 +302,9 @@ bash run_parallel.sh depth 32      # depth, first 32 episodes
 | stage | `depth`, `extrinsics`, `tracks`, `metrics` | required | Pipeline stage |
 | limit | integer | all | Max episodes to process |
 
-One worker per GPU detected by `nvidia-smi`, episodes sharded by rank.
+One worker per GPU detected by `nvidia-smi`, episodes sharded by rank. `compute_review.py`
+is deliberately not in the list: it is a few episodes you then sit and watch, not a batch
+stage, so it is run directly with `--config.runner.limit`.
 
 ## Interactive Notebook
 

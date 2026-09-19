@@ -18,6 +18,7 @@ def get_config():
   config.paths.extrinsics = os.path.join(output, "extrinsics")
   config.paths.tracks = os.path.join(output, "tracks")
   config.paths.metrics = os.path.join(output, "metrics")
+  config.paths.review = os.path.join(output, "review")
 
   config.urls = ml_collections.ConfigDict()
   config.urls.meta = "https://huggingface.co/KarlP/droid/resolve/main"
@@ -59,5 +60,11 @@ def get_config():
   config.tracks.static_depth_tolerance = 0.05
   config.tracks.flicker = 0.1
   config.tracks.min_run_fraction = 0.1
+
+  config.review = ml_collections.ConfigDict()
+  config.review.depth_stride = 2
+  config.review.max_depth = 2.0
+  config.review.n_inspect = 4
+  config.review.fps = 30
 
   return config
