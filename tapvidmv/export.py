@@ -44,8 +44,6 @@ def export_to_tapvid3d(
   vis,
   query_view,
   output_root=RELEASE_ROOT,
-  include_depth=True,
-  include_foreground_mask=True,
   jpeg_quality=95,
 ):
   episode_id = episode["meta"]["episode_id"]
@@ -95,20 +93,17 @@ def export_to_tapvid3d(
 
     np.save(os.path.join(view_dir, release.VISIBILITY), vis[view].astype(bool))
 
-    if include_depth and "raw_depth" in cam_data:
-      depth = cam_data["raw_depth"][:F].astype(np.float32)
-      depth[~np.isfinite(depth)] = 0.0
-      np.save(os.path.join(view_dir, release.DEPTH), depth)
+    depth = cam_data["raw_depth"][:F].astype(np.float32)
+    depth[~np.isfinite(depth)] = 0.0
+    np.save(os.path.join(view_dir, release.DEPTH), depth)
 
-    if include_foreground_mask and cam_id == wrist_cam_id:
+    if cam_id == wrist_cam_id:
       mask = cam_data["sam_real_masks"][:F].astype(bool)
       np.save(os.path.join(view_dir, release.MASK), mask)
 
     H, W = video[0].shape[:2]
-    parts = [f"  view {view_id} [{cam_id}]: imgs({F},JPEG) intr(4,) extr({F},4,4) vis({F},{P})"]
-    if include_depth and "raw_depth" in cam_data:
-      parts.append(f" depth({F},{H},{W})")
-    if include_foreground_mask and cam_id == wrist_cam_id:
+    parts = [f"  view {view_id} [{cam_id}]: imgs({F},JPEG) intr(4,) extr({F},4,4) vis({F},{P}) depth({F},{H},{W})"]
+    if cam_id == wrist_cam_id:
       parts.append(f" fg_mask({F},{H},{W})")
     print("".join(parts))
 
@@ -134,8 +129,6 @@ def process_episode(episode_id, args):
     vis=tracks["vis"],
     query_view=tracks["query_view"],
     output_root=args.output_root,
-    include_depth=not args.no_depth,
-    include_foreground_mask=not args.no_foreground_mask,
     jpeg_quality=args.jpeg_quality,
   )
 
@@ -165,8 +158,6 @@ if __name__ == "__main__":
   parser.add_argument("--depth_root", type=str, default=config.paths.depth)
   parser.add_argument("--extrinsics_root", type=str, default=config.paths.extrinsics)
   parser.add_argument("--tracks_root", type=str, default=config.paths.tracks)
-  parser.add_argument("--no_depth", action="store_true", help="Skip depth.npy export")
-  parser.add_argument("--no_foreground_mask", action="store_true", help="Skip foreground_mask.npy export")
   parser.add_argument("--jpeg_quality", type=int, default=95)
   args = parser.parse_args()
 

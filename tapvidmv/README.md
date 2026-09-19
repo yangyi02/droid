@@ -99,7 +99,7 @@ so the picker does not wait on video decoding.
 ```bash
 bash tapvidmv/run_export.sh                                   # episodes_eval50.txt, 8 workers
 bash tapvidmv/run_export.sh 16                                # 16 workers
-bash tapvidmv/run_export.sh 8 --no_depth                      # flags pass through to export.py
+bash tapvidmv/run_export.sh 16 --limit 4                      # flags pass through to export.py
 
 python tapvidmv/export.py                                     # one process
 python tapvidmv/export.py --episode_list episodes_eval100.txt
@@ -131,7 +131,6 @@ upload as you go.
 | `--episode_id` | — | A single episode, overriding the list |
 | `--limit` | all | Max episodes |
 | `--output_root` | `tapvidmv/data` | Where the release is written |
-| `--no_depth` | off | Skip `depth.npy` — much smaller, for checking the flow |
 | `--jpeg_quality` | 95 | |
 
 Per episode the layout is:
