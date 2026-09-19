@@ -18,6 +18,7 @@ ROBOT = [56, 189, 248]
 STATIC = [250, 204, 21]
 VISIBLE = [34, 220, 100]
 NOT_VISIBLE = [255, 65, 65]
+OUTSIDE = [90, 120, 255]
 INSPECT = [255, 40, 235]
 QUERY = [255, 205, 30]
 WHITE = [255, 255, 255]
@@ -94,6 +95,15 @@ def verdict(track, visible, inside, z, at_query):
   if at_query:
     status += " | QUERY FRAME"
   return f"{track} | {status}"
+
+
+def ray_color(review, view, t, track):
+  u, v, z = core.geometry.project_points(
+    review.tracks_3d[t, track][None], review.K[view], review.T_cam2world[view, t]
+  )
+  if not in_frame(u, v, z, review.image_wh[view])[0]:
+    return OUTSIDE
+  return VISIBLE if review.vis[view, t, track] else NOT_VISIBLE
 
 
 def query_cross(review, track):
@@ -238,7 +248,7 @@ def log_inspect(rec, review, inspect):
         f"/inspect/{track}/rays",
         rr.LineStrips3D(
           [[point_world, centers[view, t]] for view in range(review.n_views)],
-          colors=[VISIBLE if review.vis[view, t, track] else NOT_VISIBLE for view in range(review.n_views)],
+          colors=[ray_color(review, view, t, track) for view in range(review.n_views)],
           radii=RAY_RADIUS_M,
         ),
       )

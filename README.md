@@ -161,8 +161,10 @@ that disagrees with what the image plainly shows.
 
 A few tracks (`config.review.n_inspect`, spread over the scene, half robot and half
 static) carry the whole single-point overlay on top of that: the point in magenta with the
-trail of where it has just been, a line from every camera centre coloured by that camera's
-annotated visibility, the marker where it lands in each image with a one-line verdict
+trail of where it has just been, a line from every camera centre — green where that camera
+annotated the point visible, red where it annotated it hidden, and blue where the point is
+outside that camera's frustum altogether, which is a different thing from being occluded —
+the marker where it lands in each image with a one-line verdict
 (`VISIBLE`, `NOT VISIBLE | outside image`, `INCONSISTENT`, `QUERY FRAME`), and the yellow
 cross at the query pixel it was born at — the gap between cross and marker on the query
 frame is reprojection error. Each one is its own entity tree, `/inspect/<track>`, and only
