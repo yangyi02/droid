@@ -2,10 +2,11 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-EPISODE=${1:?usage: serve_review.sh <episode_id> [port]}
-PORT=${2:-9876}
+EPISODE=${1:?usage: serve_review.sh <episode_id> [viewer_port] [data_port]}
+VIEWER_PORT=${2:-9090}
+DATA_PORT=${3:-9876}
 
-echo "Forward port $PORT to your laptop, then run there: rerun rerun+http://127.0.0.1:$PORT/proxy"
+echo "Forward ports $VIEWER_PORT and $DATA_PORT, then open http://localhost:$VIEWER_PORT in a browser"
 
-exec venv/bin/rerun --serve-grpc --bind 127.0.0.1 --port "$PORT" --server-memory-limit 50% \
-    "data/output/droid/review/$EPISODE.rrd"
+exec venv/bin/rerun --serve-web --bind 127.0.0.1 --web-viewer-port "$VIEWER_PORT" --port "$DATA_PORT" \
+    --server-memory-limit 50% "data/output/droid/review/$EPISODE.rrd"

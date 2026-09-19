@@ -185,22 +185,26 @@ contradiction, and normally a handful at the border.
 the viewer streams a whole one into memory when it opens, so they are looked at one at a
 time and thrown away when stage 3 changes.
 
-To look at one from a laptop, serve it where it was written and let the laptop's own
-viewer render it. Nothing is copied and the laptop's GPU does the drawing:
+To look at one from a laptop, serve it where it was written and open it in the laptop's
+browser. Nothing is copied and nothing is installed on the laptop, which also puts it out
+of reach of anything that vets executables:
 
 ```bash
-bash serve_review.sh <episode_id>                  # on the machine holding the recording
-rerun rerun+http://127.0.0.1:9876/proxy            # on the laptop, once 9876 is forwarded
+bash serve_review.sh <episode_id>      # on the machine holding the recording
 ```
 
-VS Code's Remote-SSH forwards the port from its PORTS panel; otherwise
-`ssh -L 9876:localhost:9876 <host>`. `serve_review.sh` raises the proxy's memory ceiling,
-which matters: the default is 1 GiB, and a recording larger than that is served with its
-oldest messages quietly dropped.
+Then forward both ports — 9090 serves the viewer, 9876 serves the data — and open
+`http://localhost:9090`. VS Code's Remote-SSH forwards them from its PORTS panel;
+otherwise `ssh -L 9090:localhost:9090 -L 9876:localhost:9876 <host>`. A laptop that can
+run the viewer natively can skip the browser and connect to the data port instead, with
+`rerun rerun+http://127.0.0.1:9876/proxy`.
+
+`serve_review.sh` raises the proxy's memory ceiling, which matters: the default is 1 GiB,
+and a recording larger than that is served with its oldest messages quietly dropped.
 
 Only the frame on screen is drawn — around half a million points — but the whole recording
-is streamed into the viewer's memory, so it is about 2 GB of laptop RAM and a minute on a
-home connection. `rerun rrd filter` cuts that down while the recording keeps its shape:
+is streamed into the viewer, so it is about 2 GB of laptop RAM and a minute on a home
+connection, and a browser tab is a tighter place to put that than a native window. `rerun rrd filter` cuts that down while the recording keeps its shape:
 dropping two of the three `/scene/<view>` entities leaves one camera's cloud at a third of
 the size, and dropping all three leaves the RGB and every track at 6% of it.
 
@@ -247,7 +251,7 @@ droid/
 ├── compute_tracks.py          # Stage 3: Static prior + URDF FK dense 3D tracking
 ├── compute_metrics.py         # Batch quality metrics evaluation (GCP)
 ├── compute_review.py          # Stage 5: Rerun recordings of stage 3's tracks
-├── serve_review.sh            # Serve one recording to a viewer on your laptop
+├── serve_review.sh            # Serve one recording to a browser on your laptop
 ├── run_parallel.sh            # Multi-GPU parallel runner for the stages above
 ├── config.py                  # Paths, GCS buckets and every hyperparameter (ConfigDict)
 ├── setup.sh                   # One-shot dependency + weights setup (--no-depth skips Stage 1)
