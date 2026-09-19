@@ -205,6 +205,13 @@ run the viewer natively can skip the browser and connect to the data port instea
 `serve_review.sh` raises the proxy's memory ceiling, which matters: the default is 1 GiB,
 and a recording larger than that is served with its oldest messages quietly dropped.
 
+Forward both ports by hand rather than letting the editor do it. A port the editor
+forwarded on its own, or one whose forward outlived a restart of the server, goes on
+accepting connections after the tunnel behind it has died: the viewer page still loads and
+then sits on its welcome screen, because the data port is the one that is dead.
+`curl -I --noproxy '*' http://localhost:9876` answers `400 Bad Request` when that tunnel
+is alive and hangs when it is not.
+
 The recording is written tracks first and cameras second, and the camera pass interleaves
 the views frame by frame, so the tracks are there to look at while the cloud is still
 arriving and the three camera views fill in together rather than one after another. All of
