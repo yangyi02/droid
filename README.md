@@ -193,8 +193,11 @@ of reach of anything that vets executables:
 bash serve_review.sh <episode_id>      # on the machine holding the recording
 ```
 
-Then forward both ports — 9090 serves the viewer, 9876 serves the data — and open
-`http://localhost:9090`. VS Code's Remote-SSH forwards them from its PORTS panel;
+Then forward both ports — 9090 serves the viewer, 9876 serves the data — and open the
+URL the script prints, which carries the data port as a query parameter:
+`http://localhost:9090?url=rerun%2Bhttp%3A%2F%2Flocalhost%3A9876%2Fproxy`. Without it the
+viewer loads with nothing in it, and the source can be added by hand from its Sources
+panel instead. VS Code's Remote-SSH forwards the ports from its PORTS panel;
 otherwise `ssh -L 9090:localhost:9090 -L 9876:localhost:9876 <host>`. A laptop that can
 run the viewer natively can skip the browser and connect to the data port instead, with
 `rerun rerun+http://127.0.0.1:9876/proxy`.
