@@ -148,7 +148,7 @@ frozen, so it runs on whatever `compute_tracks.py` just wrote and is thrown away
 next setting is tried.
 
 ```bash
-python compute_review.py --config.runner.limit=5    # ~1 min and ~1.1 GB per episode
+python compute_review.py --config.runner.limit=5    # ~1 min and ~370 MB per episode
 rerun data/output/droid/review/<episode_id>.rrd
 ```
 
@@ -176,7 +176,7 @@ contradiction, and normally a handful at the border.
 
 | Knob | |
 |---|---|
-| `config.review.depth_stride` | Every nth pixel of the depth map becomes a scene point. 2 is ~78 M points and ~1.1 GB for a 150-frame three-camera episode; 1 is the whole cloud, four times that, and more than a laptop viewer will open |
+| `config.review.depth_stride` | Every nth pixel of the depth map becomes a scene point. 4 is ~20 M points and ~370 MB for a 150-frame three-camera episode, which a browser tab opens without complaint; 2 is four times that and 1 is sixteen, and the whole recording has to reach the viewer before it is useful |
 | `config.review.max_depth` | Metres. 2 m is the DROID tabletop — anything past it is the rest of the room |
 | `config.review.n_inspect` | How many tracks carry the full overlay. Every one of them adds a verdict label to each camera view, so a handful stays readable |
 | `config.review.fps` | Playback speed in the viewer, not a claim about the source |

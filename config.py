@@ -62,7 +62,7 @@ def get_config():
   config.tracks.min_run_fraction = 0.1
 
   config.review = ml_collections.ConfigDict()
-  config.review.depth_stride = 2
+  config.review.depth_stride = 4
   config.review.max_depth = 2.0
   config.review.n_inspect = 4
   config.review.fps = 30
