@@ -53,6 +53,7 @@ def get_config():
   config.tracks.num_static_points_per_view = 100
   config.tracks.num_robot_points_per_view = 100
   config.tracks.match_radius = 0.02
+  config.tracks.max_depth = 2.0
   config.tracks.mask_margin = 10
   config.tracks.robot_depth_tolerance = 0.02
   config.tracks.static_depth_tolerance = 0.05

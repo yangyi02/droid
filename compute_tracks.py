@@ -97,7 +97,7 @@ def filter_robot_tracks(vis, flicker):
   return keep
 
 
-def find_static_candidates(episode, poses, pb_renderer, match_radius, mask_margin):
+def find_static_candidates(episode, poses, pb_renderer, match_radius, mask_margin, max_depth):
   robot = episode["robot"]
   pb_renderer.update_robot_pose(robot["joint_positions"][0], gripper_state=robot["gripper_positions"][0])
 
@@ -108,7 +108,7 @@ def find_static_candidates(episode, poses, pb_renderer, match_radius, mask_margi
     height, width = depth.shape
 
     robot_mask = pb_renderer.render_mask(poses[src_cam]["extrinsics"][0], cam_data["K"], width, height)
-    on_env = ~resize_mask(robot_mask, mask_margin) & (depth > 0)
+    on_env = ~resize_mask(robot_mask, mask_margin) & (depth > 0) & (depth <= max_depth)
     vs, us = np.where(on_env)
 
     points = core.geometry.unproject_pixels(
@@ -245,7 +245,7 @@ def process_episode(episode_id, pb_renderer, config):
   )
 
   static_xyz, static_view = find_static_candidates(
-    episode, poses, pb_renderer, config.tracks.match_radius, config.tracks.mask_margin
+    episode, poses, pb_renderer, config.tracks.match_radius, config.tracks.mask_margin, config.tracks.max_depth
   )
   static_uv, static_vis, static_gap = project_static_tracks(
     static_xyz, episode, poses, pb_renderer, config.tracks.static_depth_tolerance

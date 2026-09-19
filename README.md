@@ -103,7 +103,7 @@ each view, drawn from what that view sees in frame 0.
 
 | Step | Description |
 |------|-------------|
-| `find_static_candidates` | Multi-view depth consensus over each view's first frame, deduplicated by voxel |
+| `find_static_candidates` | Multi-view depth consensus over each view's first frame, within `config.tracks.max_depth` of the camera, deduplicated by voxel |
 | `project_static_tracks` | Project static points into every view; the sensor depth gap labels visibility |
 | `filter_static_tracks` | Drop points that recede from the depth map or flicker |
 | `find_robot_candidates` | Every robot mask pixel in each view's first frame, carried through time by URDF forward kinematics |
