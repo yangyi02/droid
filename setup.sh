@@ -8,16 +8,11 @@ fi
 
 pip install -r requirements.txt
 
-# pybullet ships no wheels, and a build that cannot see numpy quietly drops NumPy support,
-# so it is built here against the numpy above rather than listed in requirements.txt.
 if ! python -c "import pybullet, sys; sys.exit(0 if pybullet.isNumpyEnabled() else 1)" 2>/dev/null; then
   pip install --force-reinstall --no-deps --no-binary pybullet \
       --no-build-isolation --no-cache-dir pybullet
 fi
 
-# The VM image puts /usr/lib/x86_64-linux-gnu on LD_LIBRARY_PATH, which outranks the
-# DT_RUNPATH in pip's cuDNN: the wheel's engines then link the older system libcudnn_graph
-# and every convolution dies on a symbol version. Point the venv at the wheel's own libs.
 CUDNN_LIB="$(python -c 'import os, site; print(os.path.join(site.getsitepackages()[0], "nvidia", "cudnn", "lib"))')"
 if [ -n "${VIRTUAL_ENV:-}" ] && ! grep -q "nvidia/cudnn/lib" "$VIRTUAL_ENV/bin/activate"; then
   echo "export LD_LIBRARY_PATH=\"$CUDNN_LIB:\$LD_LIBRARY_PATH\"" >> "$VIRTUAL_ENV/bin/activate"
@@ -30,9 +25,6 @@ fi
 git submodule update --init --recursive
 pip install -r requirements-depth.txt
 
-# The SDK is system-wide but pyzed is a wheel per interpreter, so a new venv needs
-# get_python_api.py even when /usr/local/zed is already there. Both downloads land in a
-# temp directory rather than in the checkout.
 if ! python -c "import pyzed.sl" 2>/dev/null; then
   (
     cd "$(mktemp -d)"

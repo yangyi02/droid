@@ -51,9 +51,6 @@ def export_to_tapvid3d(
   episode_id = episode["meta"]["episode_id"]
   wrist_cam_id = episode["meta"]["wrist_serial"]
   cam_ids = list(episode["camera"])
-  # Stage 1 left a handful of episodes with a camera one frame longer than the robot arrays, and
-  # the tracks are cut to the robot. Every per-frame array below is written at F so a reader can
-  # index them all by the same t.
   F = tracks_3d.shape[0]
 
   print(f"\nExporting episode [{episode_id}] to TAPVid-3D format")
@@ -62,8 +59,6 @@ def export_to_tapvid3d(
   P = tracks_3d.shape[1]
 
   seq_dir = os.path.abspath(os.path.expanduser(os.path.join(output_root, episode_id)))
-  # Written under another name and renamed once it is whole, so the episode directory appearing
-  # is the same event as the episode being finished -- which is all the resume check has to read.
   staging = seq_dir + ".partial"
   shutil.rmtree(staging, ignore_errors=True)
   os.makedirs(staging)

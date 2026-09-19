@@ -1,9 +1,4 @@
 #!/bin/bash
-# The release export, episodes sharded across workers. CPU only -- no GPU is involved, so the
-# worker count comes from what the disk can absorb rather than from nvidia-smi.
-#
-#   bash tapvidmv/run_export.sh                 # 8 workers
-#   bash tapvidmv/run_export.sh 16 --no_depth   # anything after the count goes to export.py
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
