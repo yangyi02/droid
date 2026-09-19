@@ -185,19 +185,28 @@ contradiction, and normally a handful at the border.
 the viewer streams a whole one into memory when it opens, so they are looked at one at a
 time and thrown away when stage 3 changes.
 
-To open one from a laptop, serve it from wherever it was written and forward both ports —
-9090 is the web viewer, 9876 is the data:
+To look at one from a laptop, serve it where it was written and let the laptop's own
+viewer render it. Nothing is copied and the laptop's GPU does the drawing:
 
 ```bash
-rerun --serve-web --web-viewer-port 9090 --port 9876 data/output/droid/review/<episode_id>.rrd
+bash serve_review.sh <episode_id>                  # on the machine holding the recording
+rerun rerun+http://127.0.0.1:9876/proxy            # on the laptop, once 9876 is forwarded
 ```
 
-The scene cloud is 98% of a recording, so dropping it leaves something small enough to copy
-anywhere, with the RGB, every track in 2D and the inspected tracks intact:
+VS Code's Remote-SSH forwards the port from its PORTS panel; otherwise
+`ssh -L 9876:localhost:9876 <host>`. `serve_review.sh` raises the proxy's memory ceiling,
+which matters: the default is 1 GiB, and a recording larger than that is served with its
+oldest messages quietly dropped.
+
+Only the frame on screen is drawn — around half a million points — but the whole recording
+is streamed into the viewer's memory, so it is about 2 GB of laptop RAM and a minute on a
+home connection. `rerun rrd filter` cuts that down while the recording keeps its shape:
+dropping two of the three `/scene/<view>` entities leaves one camera's cloud at a third of
+the size, and dropping all three leaves the RGB and every track at 6% of it.
 
 ```bash
-rerun rrd filter --drop-entity /scene/0 --drop-entity /scene/1 --drop-entity /scene/2 \
-    -o small.rrd data/output/droid/review/<episode_id>.rrd
+rerun rrd filter --drop-entity /scene/1 --drop-entity /scene/2 \
+    -o one-camera.rrd data/output/droid/review/<episode_id>.rrd
 ```
 
 ## Naming Conventions
@@ -238,6 +247,7 @@ droid/
 ├── compute_tracks.py          # Stage 3: Static prior + URDF FK dense 3D tracking
 ├── compute_metrics.py         # Batch quality metrics evaluation (GCP)
 ├── compute_review.py          # Stage 5: Rerun recordings of stage 3's tracks
+├── serve_review.sh            # Serve one recording to a viewer on your laptop
 ├── run_parallel.sh            # Multi-GPU parallel runner for the stages above
 ├── config.py                  # Paths, GCS buckets and every hyperparameter (ConfigDict)
 ├── setup.sh                   # One-shot dependency + weights setup (--no-depth skips Stage 1)
