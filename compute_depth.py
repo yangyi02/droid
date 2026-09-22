@@ -213,8 +213,6 @@ def export_depth(episode, export_root):
     T_cam_ee_init=robot["T_cam_ee_init"].astype(np.float32),
   )
 
-  return ep_dir
-
 
 def process_episode(episode_id, models, dbs, raw_root, config):
   s2m2_model, sam_predictor, run_stereo_matching, device = models

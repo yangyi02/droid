@@ -55,7 +55,7 @@ def per_camera_alignment(episode, pb_renderer, prev_poses, device, config):
   poses = copy.deepcopy(prev_poses)
   T_ee_base_all = episode["robot"]["T_ee_base_all"]
 
-  for cam_id in episode["camera"].keys():
+  for cam_id in episode["camera"]:
     is_wrist = cam_id == wrist_cam_id
     mode = "wrist (gripper-only)" if is_wrist else "external (full body)"
     print(f"\n  Optimizing [{mode}] camera: [{cam_id}] ...")
@@ -187,7 +187,6 @@ def export_extrinsics(episode, poses, export_root):
       json.dump(payload, f, indent=2)
 
   print(f"  Extrinsics saved to {ep_dir}/*/{fname}")
-  return ep_dir
 
 
 def _has_final_extrinsics(ep_dir):
@@ -213,7 +212,7 @@ def process_episode(episode_id, pb_renderer, extrinsics_db, device, config):
 def main(_):
   config = config_flag.value
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-  serials_db, _, extrinsics_db, _ = core.io.load_metadata(config)
+  _, _, extrinsics_db, _ = core.io.load_metadata(config)
   pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=config.render.gpu)
 
   target = core.runner.shard_episodes(

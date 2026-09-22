@@ -20,7 +20,7 @@ RELEASE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", 
 
 def _encode_jpeg(rgb_frame, quality=95):
   bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-  ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+  _, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
   return np.frombuffer(buf, dtype=np.uint8).copy()
 
 
@@ -100,7 +100,6 @@ def export_to_tapvid3d(
   os.rename(staging, seq_dir)
 
   print(f"\n  TAPVid-3D export complete → {seq_dir}")
-  return seq_dir
 
 
 def process_episode(episode_id, args):

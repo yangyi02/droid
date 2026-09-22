@@ -45,4 +45,3 @@ def run_episodes(episode_ids, process, rank, world_size, done, stage):
   print(f"\n{stage}: {len(succeeded)} succeeded, {len(skipped)} skipped, {len(failed)} failed of {len(todo)}.")
   for episode_id in failed:
     print(f"  FAILED {episode_id}")
-  return succeeded

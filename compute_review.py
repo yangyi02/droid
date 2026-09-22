@@ -20,7 +20,6 @@ NOT_VISIBLE = [255, 65, 65]
 OUTSIDE = [90, 120, 255]
 INSPECT = [255, 40, 235]
 QUERY = [255, 205, 30]
-WHITE = [255, 255, 255]
 
 TRACK_RADIUS_M = 0.003
 INSPECT_RADIUS_M = 0.006
@@ -316,7 +315,6 @@ def build_recording(episode, review, episode_id, review_root, cfg):
     f" | inspecting {len(inspect)} tracks, showing {inspect[0]}"
     f" | {os.path.getsize(rrd) / 1024**2:.0f} MiB"
   )
-  return rrd
 
 
 def process_episode(episode_id, config):
