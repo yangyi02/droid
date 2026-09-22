@@ -105,20 +105,17 @@ projected into every view.
 | `settle` | Drop labels that flip for one frame and flip straight back — nothing on a rigid arm is revealed and hidden again in a thirtieth of a second |
 | `never_seen_through` | Drop background points the depth map keeps looking through on more than `max_seen_through` of their clear-line frames: they sat on something that has since moved |
 
-**A hole is not free space.** Stereo fails exactly where surfaces are dark, thin or
-textureless — and those are also the things that occlude. Reading a missing depth as "nothing
-in the way" calls hidden points visible; on the wrist camera that was a fifth to a third of
-everything it called visible. Reading it as "hidden" is no better, since the surface is often
-just untextured. So a frame where this camera measured nothing is left as **no reading at
-all**, and the label holds where it was. The rendered arm is exact and still answers, which is
-why `project_tracks` combines the two with `fmin`: the missing reading is ignored, the robot
-is not.
+**Holes in the stereo — a known limitation.** Stereo fails exactly where surfaces are dark,
+thin or textureless, and those are also the things that occlude. `sensor_slack` returns
+infinity where the depth map measured nothing, `project_tracks` turns that into a NaN, and
+`fmin` ignores it, so the rendered robot decides the label by itself. Where the robot is not
+in front of the point either, the margin is infinite and the point reads **visible** — a hole
+still counts as free space there. On the wrist camera that was measured at a fifth to a third
+of everything it called visible, which makes it the largest known source of wrong labels in
+the output.
 
-Two alternatives were built and dropped. Walking the ray to ask the *other* cameras came back
-"blocked" three times as often as this camera's own depth did, so a point flipped every time
-the map dropped out under it for a frame. A background model fused over the whole episode
-answered almost nothing the other cameras had not, and carried every object that was ever
-moved as an occluder no longer there.
+`latch` does hold the previous label where the margin is NaN, but that happens when the point
+lands off the image or behind the camera, not when the stereo has a hole.
 
 A quota goes to a *camera* because a query is a pixel in one camera's video. Pooling the arm's
 quota across cameras hands points out by surface area instead, and the surface the wrist camera
