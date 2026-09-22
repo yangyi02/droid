@@ -14,37 +14,12 @@ import core.runner
 
 
 def resize_mask(mask, margin):
-  """Grow the mask by margin pixels, or shrink it when margin is negative."""
   kernel = np.ones((abs(margin), abs(margin)), np.uint8)
   morph = cv2.dilate if margin > 0 else cv2.erode
   return morph(mask.astype(np.uint8), kernel).astype(bool)
 
 
 def query_frames(episode, poses, pb_renderer, config):
-  """One set of query frames for the episode: the first frame, and then in every equal stretch of the
-  rest of it, the frame where the camera that sees the least of the arm sees the most of it.
-
-  The first frame is in whatever it offers, because a model that only runs forwards has nothing to
-  track from without it, and a query there is the only one that covers the whole episode. It takes the
-  first stretch's place rather than being added to the set, so that the episode still holds as many
-  query times as it is asked for and no two of them sit a tenth of a second apart. On an episode where
-  the arm starts half out of view that quota comes back crowded, or short -- the points it does place
-  are no worse for it, there are just fewer places to put them.
-
-  The stretches cover the whole episode. Ground truth does not run out: the arm's points come from
-  kinematics and the background's stand still, so a point born on the last frame has its whole track
-  before it, and a model that reads the clip both ways is asked for exactly that. Only a forward-only
-  model needs a query with an episode still ahead of it, and the first frame is that query.
-
-  Inside a stretch the frame is chosen rather than spaced, because an evenly spaced one takes whatever
-  the arm happened to be doing: on one episode here the first frame left a camera 53 candidates to
-  fill a quota of 20 from, while another frame in the same stretch offered 2243.
-
-  The cameras share the frames instead of each taking its own best. Sharing costs almost nothing -- a
-  camera lands within a few percent of its own best moment -- and it thirds the number of distinct query
-  times in an episode, which is what a tracker has to run a pass for, and what lets a multi-view method
-  read all three videos at the same instant. Each camera is scored against its own best frame, because
-  one riding on the wrist fills its image with the arm and one across the room never can."""
   robot = episode["robot"]
   reach = len(robot["joint_positions"])
 
@@ -62,40 +37,27 @@ def query_frames(episode, poses, pb_renderer, config):
 
 
 def spread_cells(points, min_gap):
-  """One candidate per min_gap cube of surface.
-
-  In metres rather than in pixels, because a grid on the image measures the camera, not the scene: the
-  wrist camera sits 15 cm from the gripper and the room cameras 65 cm from the arm, so the same pixel
-  grid offers a candidate every 5 mm on the gripper and every 3 cm on everything else. Sampling then
-  runs out of arm to pick from long before it runs out of budget, and spends the rest on the gripper."""
   order = np.random.permutation(len(points))
   _, first = np.unique(np.round(points[order] / min_gap).astype(np.int64), axis=0, return_index=True)
   return order[first]
 
 
 def sensor_slack(depth, u, v, z_pred, config):
-  """How far behind the point the measured surface sits, counted in what the depth map can be trusted to.
-  Stereo error grows with range, so a centimetre at arm's length is not a centimetre across the room: past
-  one the surface is really behind the point, under minus one something is really standing in front of it.
-  Infinite where the stereo left a hole, which is not the same as empty space, and not a number off-frame."""
   z = core.geometry.sample_depth(depth, u, v, z_pred)
   gap = np.where(z == 0, np.inf, z) - z_pred
   return gap / (config.tracks.sensor_tolerance_base + config.tracks.sensor_tolerance_slope * z_pred)
 
 
 def urdf_gap(depth, u, v, z_pred):
-  """The same against the rendered robot, which is exact, so only the pose can be wrong."""
   z = core.geometry.sample_depth(depth, u, v, z_pred)
   return np.where(z == 0, np.inf, z) - z_pred
 
 
 def part_masks(parts):
-  """Which candidates sit on which robot link."""
   return [(part, (parts == part).all(axis=1)) for part in map(tuple, np.unique(parts, axis=0).tolist())]
 
 
 def link_local(points_world, parts):
-  """Candidates in the frame of the link they sit on, so forward kinematics can carry them."""
   homogeneous = np.hstack([points_world, np.ones((len(points_world), 1))]).T
   local = np.zeros_like(homogeneous)
   for part, on_part in part_masks(parts):
@@ -104,11 +66,6 @@ def link_local(points_world, parts):
 
 
 def find_robot_candidates(episode, poses, pb_renderer, queries, config):
-  """Robot surface on each camera's own query frames, in the frame of the link it sits on.
-
-  A candidate this camera cannot really see is dropped here. The rendered arm only says the surface
-  faces the camera; a real object standing in front of it is not in that render, and a point hidden
-  on the one frame it is born cannot be a query."""
   robot = episode["robot"]
 
   local, parts, query_view, query_frame = [], [], [], []
@@ -145,10 +102,6 @@ def find_robot_candidates(episode, poses, pb_renderer, queries, config):
 
 
 def carry_robot(local, parts, robot, pb_renderer, frames):
-  """Where each arm point sits on the frames asked for, by forward kinematics.
-
-  Asked for one frame to sample on and for every frame once the sampling is done, so the whole episode
-  is only ever carried for the points that were kept."""
   carried = np.zeros((len(frames), local.shape[1], 3), dtype=np.float32)
   on_links = part_masks(parts)
   for step, t in enumerate(frames):
@@ -159,13 +112,6 @@ def carry_robot(local, parts, robot, pb_renderer, frames):
 
 
 def depth_steps(depth, window=5):
-  """How far apart the nearest and the farthest surface within a window of each pixel are.
-
-  A pixel where that distance is large sits on the edge between two things, and stereo cannot hold an
-  edge still: the boundary moves a pixel between frames and the reading jumps from one surface to the
-  other. Everything read off such a pixel inherits the coin toss -- where the point is, and whether
-  anything is in front of it. Where nothing was measured nearby the answer is infinite, which reads as
-  an edge and is meant to: nothing there can be trusted either."""
   kernel = np.ones((window, window), np.uint8)
   far = cv2.dilate(depth, kernel)
   near = -cv2.dilate(np.where(depth > 0, -depth, -np.inf).astype(np.float32), kernel)
@@ -173,15 +119,6 @@ def depth_steps(depth, window=5):
 
 
 def find_static_candidates(episode, poses, pb_renderer, queries, config):
-  """Background within reach on the query frames, in the places every camera that can see it agrees on.
-
-  Two things are asked of a candidate beyond standing still. Its pixel must not sit on a depth edge in
-  any camera, because a reading taken there is a coin toss. And every camera that can see the place must
-  put the surface where this one does: a camera abstains when it measured nothing there, when the arm is
-  in the way, or when the place is off its image, but one that does read a surface somewhere else is
-  reporting that the point is not where we think it is. Asking only that some camera agree let a point
-  through that a third camera put four centimetres away -- which is four centimetres of error in its
-  position and several pixels of error in every projection of it."""
   robot = episode["robot"]
   match_radius, max_depth = config.tracks.match_radius, config.tracks.max_depth
   max_step = config.tracks.max_edge_step
@@ -231,7 +168,6 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
 
 
 def project_tracks(tracks_3d, n_robot, episode, poses, pb_renderer, config):
-  """Every point in every view: where it lands, whether that view can see it, and what the depth map measured."""
   robot = episode["robot"]
   n_frames, n_points, _ = tracks_3d.shape
   n_views = len(episode["camera"])
@@ -272,17 +208,6 @@ def project_tracks(tracks_3d, n_robot, episode, poses, pb_renderer, config):
 
 
 def latch(margin, band):
-  """Read the arm's margin with two lines instead of one, so a point sitting on the cut stops flickering.
-
-  The cut is at -1: below it something stands in front of the point. A point exactly on it is a coin
-  toss decided by measurement noise, frame after frame, while nothing in the scene has moved. So it
-  takes band past the cut to call a point hidden, and band the other way to call it visible again;
-  between the two lines the label stays where it was. A real occlusion clears both lines and starts on
-  the same frame either way -- what the band removes is the stutter, not the event.
-
-  A frame with no reading at all arrives as a nan, which is under neither line, so the label holds
-  there too. With band at zero that is all this does: one cut, and no opinion where nothing was
-  measured."""
   hidden, shown = margin < -1 - band, margin > -1 + band
 
   vis = np.empty(margin.shape, dtype=bool)
@@ -293,16 +218,6 @@ def latch(margin, band):
 
 
 def settle(vis, inside):
-  """Drop labels that change for a single frame and change straight back.
-
-  Nothing on a rigid arm is revealed and hidden again in a thirtieth of a second, so a lone frame that
-  disagrees with both its neighbours is a threshold being grazed, not something moving. There is no
-  threshold that avoids this: how far a point sits behind the drawn surface is spread evenly over the
-  first two centimetres, so any cut runs through the middle of a crowd, and moving it only changes
-  which points sit on the edge.
-
-  Settling can turn a frame visible as well as hidden, so it is held to the same floor as everything
-  else: a point that landed outside the image was seen by nobody, whatever its neighbours did."""
   settled = vis
   for _ in range(4):
     middle = settled[:, 1:-1]
@@ -315,14 +230,12 @@ def settle(vis, inside):
 
 
 def never_seen_through(slack, max_seen_through):
-  """A point the depth map keeps looking straight through sits on something that moved away."""
   seen_through = np.isfinite(slack) & (slack > 1)
   clear_line = np.isfinite(slack) & (slack >= -1)
   return ~(seen_through.sum(axis=1) / np.maximum(clear_line.sum(axis=1), 1) > max_seen_through).any(axis=0)
 
 
 def out_of_reach(points_3d, episode, pb_renderer, clearance):
-  """Background points the gripper ever closes on are the ones it carries away."""
   robot = episode["robot"]
 
   closest = np.full(len(points_3d), np.inf, dtype=np.float32)
@@ -337,32 +250,12 @@ def out_of_reach(points_3d, episode, pb_renderer, clearance):
 
 
 def take(picked, home, group, quota):
-  """Pick quota more points out of group, as far from each other and from everything already picked as
-  they go. Distances are measured at the first frame's pose: the same spot on a link comes back to the
-  same place there whatever the arm is doing, so a gripper that is in view on every query frame is
-  covered once and then left alone, and later frames spend their quota on surface that has just turned
-  towards a camera."""
   if quota <= 0 or not len(group):
     return picked
   return np.concatenate([picked, group[core.geometry.farthest_points(home[group], quota, seeds=home[picked])]])
 
 
 def sample_tracks(keep, home, query_view, query_frame, is_robot, queries, config):
-  """Every camera, on every one of its query frames: points_per_class on the arm and as many again on
-  the scene, spread over the surface that camera can see.
-
-  A query belongs to a camera -- it is a pixel in one video -- so a camera is what a quota is handed
-  to. Pooling the arm's quota across the cameras instead and letting them compete on distance sounds
-  fairer and is not: it hands out points by surface area, and the surface the wrist camera can see is
-  a few percent of the arm, so that camera came away with eight annotated points for a whole episode.
-  What the pooled version was trying to fix -- the gripper holding half the arm's points, because it
-  is the one thing the wrist camera ever looks at -- is not a bias to fix here. It is what that camera
-  films. Reporting one 2D number over three cameras this different is what makes it look like a bias,
-  and a per-camera number does not need saving from it.
-
-  Nothing here reads how much of a frame something fills. Area decides how many candidates there are,
-  not how many points are wanted, and while it did decide the split the background -- always the
-  larger surface -- spent the arm's share on most frames."""
   on_arm = in_scene = np.empty(0, dtype=int)
   for frame in queries:
     for view in range(int(query_view.max()) + 1):

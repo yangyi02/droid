@@ -63,17 +63,10 @@ class Review:
 
 
 def inspect_tracks(review, n_inspect):
-  """A plain random sample of the tracks, seeded so the same episode always shows the same ones.
-
-  It used to prefer tracks whose visibility changes, on the grounds that a point nobody ever loses
-  sight of has nothing to check. That is true for finding faults and wrong for judging the set: the
-  sample it produced flipped three times as often as the background does, and the quarter of the
-  background that never changes at all could not appear in it."""
   return sorted(np.random.default_rng(0).choice(review.n_points, min(n_inspect, review.n_points), replace=False).tolist())
 
 
 def verdict(visible, inside, z, at_query):
-  """What one camera says about the track on one frame."""
   status = "visible" if visible else "hidden"
   if z <= 0:
     status = "behind"
@@ -85,7 +78,6 @@ def verdict(visible, inside, z, at_query):
 
 
 def frame_status(review, view, t, track):
-  """Whether the track lands inside this camera's image on this frame, and how far in front it is."""
   u, v, z = core.geometry.project_points(
     review.tracks_3d[t, track][None], review.K[view], review.T_cam2world[view, t]
   )
@@ -226,7 +218,6 @@ def log_tracks(rec, review):
 
 
 def log_inspect(rec, review, inspect):
-  """One toggleable subtree per inspected track: the point and what each camera says about it."""
   centers = review.T_cam2world[:, :, :3, 3]
   query_frame = review.queries[:, 2].astype(int)
   query_view = review.queries[:, 3].astype(int)
@@ -262,8 +253,6 @@ def log_inspect(rec, review, inspect):
 
 
 def log_inspect_views(rec, review, inspect):
-  """Every inspected track in every camera at once, carrying only its number: which one to look at
-  closely is a question for the 3D view, and a verdict per track per view would bury the image."""
   inspect = np.asarray(inspect)
   query_frame = review.queries[inspect, 2].astype(int)
   query_view = review.queries[inspect, 3].astype(int)

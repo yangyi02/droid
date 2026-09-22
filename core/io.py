@@ -87,13 +87,11 @@ def load_extrinsics(episode, extrinsics_root):
 
 
 def read_episode_list(path):
-  """The episode ids in a selection file, ignoring blank lines and trailing comments."""
   with open(os.path.abspath(os.path.expanduser(path))) as f:
     return {line.split("#")[0].strip() for line in f if line.split("#")[0].strip()}
 
 
 def build_queries(uv, query_view, query_frame):
-  """Where each track was born: the pixel it was picked at, then its frame and its camera."""
   xy = np.round(uv[query_view, query_frame, np.arange(uv.shape[2])])
   return np.concatenate([xy, query_frame[:, None], query_view[:, None]], axis=1).astype(np.float32)
 

@@ -29,7 +29,6 @@ def inspect_dict_structure(data, name="episode", indent=0):
 
 
 def fuse_cameras(episode, poses, t, device="cpu", max_depth=None):
-  """Every camera's depth map at frame t, unprojected into one world-frame cloud."""
   clouds = []
   for cam_id, cam in sorted(episode["camera"].items()):
     depth = cam["raw_depth"][t]
@@ -121,7 +120,6 @@ def show_gripper_refinement(episode, t=0):
 
 
 def common_frames(*streams, max_frames=None):
-  """Frames every stream actually has -- an episode's videos, depth and poses can differ by a frame or two."""
   n_frames = min(len(stream) for stream in streams)
   return n_frames if max_frames is None else min(n_frames, max_frames)
 
@@ -285,7 +283,6 @@ def disc_offsets(radius, device):
 
 
 def splat(points, colors, K, T_cam2world, height, width, radii):
-  """Z-buffered point splatting: each point paints the pixel disc of its own radius."""
   T_world2cam = torch.linalg.inv(T_cam2world)
   points_cam = points @ T_world2cam[:3, :3].T + T_world2cam[:3, 3]
   z_cam = points_cam[:, 2]
@@ -318,14 +315,12 @@ def as_tensor(array, dtype, device):
 
 
 def point_layer(points, colors, radius, device):
-  """A splat layer: 3D points, their colors, and the pixel radius they paint."""
   points = as_tensor(points, torch.float32, device)
   radii = torch.full((len(points),), radius, dtype=torch.long, device=device)
   return points, as_tensor(colors, torch.uint8, device), radii
 
 
 def line_layer(starts, ends, colors, radius, device, samples=64):
-  """Same, for 3D segments — each is sampled into a string of points."""
   starts, ends = as_tensor(starts, torch.float32, device), as_tensor(ends, torch.float32, device)
   alpha = torch.linspace(0, 1, samples, device=device)[None, :, None]
   points = (starts[:, None] + (ends - starts)[:, None] * alpha).reshape(-1, 3)
@@ -343,7 +338,6 @@ def look_at(eye, target, up=(0, 0, 1)):
 
 
 def frustum_wireframe(K_aspect, depth, fov_y):
-  """Corner positions of a camera frustum in its own frame, plus the edges joining them."""
   half_h = depth * np.tan(np.radians(fov_y / 2))
   half_w = half_h * K_aspect
   corners = np.array(

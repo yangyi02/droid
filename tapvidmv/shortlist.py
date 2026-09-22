@@ -73,7 +73,6 @@ def apply_cuts(rows, cuts):
 
 
 def quality(row, cuts):
-  """How close an episode sits to the cuts, summed. Lower is better, 1.0 per term is the cut itself."""
   score = 0.0
   for column, (op, limit) in cuts.items():
     value = cut_value(row, column, op)

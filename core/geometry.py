@@ -32,10 +32,6 @@ def project_points(points_world, K, T_cam2world):
 
 
 def farthest_points(points, n_points, seeds=None):
-  """A greedy order that keeps the picks as far apart as they go, starting from the outermost.
-
-  Seeds are points someone else already took. They are never returned, but every pick keeps its distance
-  from them too, so a stretch of surface that is already covered is the last place this call looks."""
   chosen = []
   if seeds is None or not len(seeds):
     nearest = np.sum((points - points.mean(axis=0)) ** 2, axis=1)
@@ -50,7 +46,6 @@ def farthest_points(points, n_points, seeds=None):
 
 
 def in_frame(u, v, width, height):
-  """Whether a projection rounds to a pixel that exists: the image reaches half a pixel past each edge centre."""
   return (u >= -0.5) & (u < width - 0.5) & (v >= -0.5) & (v < height - 0.5)
 
 

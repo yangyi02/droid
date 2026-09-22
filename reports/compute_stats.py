@@ -253,7 +253,6 @@ def main():
       return [r[key] for r in metric_rows if isinstance(r.get(key), (int, float)) and np.isfinite(r[key])]
 
     def _extract_family(prefix):
-      """The metrics write one column per camera or camera pair; the summary pools all of them."""
       keys = sorted({k for r in metric_rows for k in r if k.startswith(f"{prefix}_")})
       return [v for key in keys for v in _extract_metric(key)]
 
