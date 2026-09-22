@@ -353,7 +353,6 @@ droid/
 │   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
 │   ├── physics.py             #   PyBulletRenderer + robot point clouds and depth losses
 │   ├── pointcloud.py          #   Robot/scene clouds, chamfer + overlap, robot depth loss
-│   ├── scene.py               #   What the other cameras say about a hole in this one
 │   ├── runner.py              #   Episode sharding + resume-aware batch loop
 │   └── visualization.py       #   Visualization helpers (point clouds, tracking videos, 4D orbit)
 ├── notebooks/                 # Interactive notebooks (run from anywhere in the checkout)
