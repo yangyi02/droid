@@ -18,7 +18,7 @@ MASK = "foreground_mask.npy"
 
 
 def find_dataset():
-  return Path(__file__).parent / "data"
+  return Path(__file__).parent / "data" / "release"
 
 
 def episode_names(root):

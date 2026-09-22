@@ -15,7 +15,7 @@ import core.runner
 
 config = get_config()
 
-RELEASE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+RELEASE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "release")
 
 
 def _encode_jpeg(rgb_frame, quality=95):

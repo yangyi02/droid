@@ -34,7 +34,7 @@ metrics ──▶ 1. calibrate the cuts ─┐
             3. pick by eye ─── review.ipynb ──────────▶ episodes_eval50.txt
                                        │
                                        ▼
-            4. export ─────── export.py ────────────▶ tapvidmv/data/
+            4. export ─────── export.py ────────────▶ tapvidmv/data/release/
                                        │
                                        ▼
                             verify.ipynb
@@ -135,7 +135,7 @@ No GPU is involved — the work is decoding video, encoding JPEG and writing, ab
 19 s per 95-frame episode. `run_export.sh` shards by `--rank` / `--world_size`,
 the same split the pipeline stages use, and logs one file per rank under `logs/`.
 
-Writes the release layout into **`tapvidmv/data/`** — local disk, not the gcsfuse
+Writes the release layout into **`tapvidmv/data/release/`** — local disk, not the gcsfuse
 mount the pipeline writes to. The export re-encodes every frame to JPEG and
 writes the depth maps, which is far too many bytes to push through fuse, and
 publishing is a separate step done by hand.
@@ -155,7 +155,7 @@ upload as you go.
 | `--episode_list` | `episodes_eval50.txt` | List to export, or `all` for everything with tracks |
 | `--episode_id` | — | A single episode, overriding the list |
 | `--limit` | all | Max episodes |
-| `--output_root` | `tapvidmv/data` | Where the release is written |
+| `--output_root` | `tapvidmv/data/release` | Where the release is written |
 | `--jpeg_quality` | 95 | |
 
 Per episode the layout is:
@@ -176,7 +176,7 @@ Per episode the layout is:
 ### Verify — [`verify.ipynb`](verify.ipynb)
 
 Reads the **exported** files, so it checks the thing that ships rather than the
-pipeline's intermediate state. It finds `tapvidmv/data/` on its own.
+pipeline's intermediate state. It finds `tapvidmv/data/release/` on its own.
 
 The questions sharpen as you go down: is the rig what we think it is (one camera
 on the wrist, two fixed) → do the 2D tracks stay glued to their surfaces → do the
