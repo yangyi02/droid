@@ -86,6 +86,18 @@ def load_extrinsics(episode, extrinsics_root):
   return poses
 
 
+def read_episode_list(path):
+  """The episode ids in a selection file, ignoring blank lines and trailing comments."""
+  with open(os.path.abspath(os.path.expanduser(path))) as f:
+    return {line.split("#")[0].strip() for line in f if line.split("#")[0].strip()}
+
+
+def build_queries(uv, query_view, query_frame):
+  """Where each track was born: the pixel it was picked at, then its frame and its camera."""
+  xy = np.round(uv[query_view, query_frame, np.arange(uv.shape[2])])
+  return np.concatenate([xy, query_frame[:, None], query_view[:, None]], axis=1).astype(np.float32)
+
+
 def load_track_data(episode_id, tracks_root):
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(tracks_root, episode_id)))
   meta_data = np.load(os.path.join(ep_dir, "track_metadata.npz"))
@@ -101,6 +113,7 @@ def load_track_data(episode_id, tracks_root):
     "uv": np.stack(uv),
     "vis": np.stack(vis),
     "query_view": meta_data["query_view"],
+    "query_frame": meta_data["query_frame"],
     "n_robot": int(meta_data["n_robot"]),
     "n_static": int(meta_data["n_static"]),
   }

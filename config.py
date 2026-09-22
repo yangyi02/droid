@@ -16,9 +16,14 @@ def get_config():
   config.paths.urdf = os.path.join(repo, "assets", "franka_description", "franka_panda_robotiq_2f85_og.urdf")
   config.paths.depth = os.path.join(output, "depth")
   config.paths.extrinsics = os.path.join(output, "extrinsics")
-  config.paths.tracks = os.path.join(output, "tracks")
+  # TEMPORARY: stage 3 writes beside the old tracks rather than over them, so the two runs can be
+  # compared before anything is thrown away. Put this back to os.path.join(output, "tracks").
+  config.paths.tracks = os.path.join(repo, "tapvidmv", "data", "tracks")
   config.paths.metrics = os.path.join(output, "metrics")
-  config.paths.review = os.path.join(output, "review")
+  # Local disk, not the bucket: recordings are looked at once and thrown away, and the mount writes at
+  # 17 MB/s against local disk's 412, then pays it again because a rename there is a server-side copy.
+  config.paths.review = os.path.join(repo, "tapvidmv", "data", "review")
+  config.paths.episode_list = ""
 
   config.urls = ml_collections.ConfigDict()
   config.urls.meta = "https://huggingface.co/KarlP/droid/resolve/main"
@@ -51,20 +56,25 @@ def get_config():
   config.extrinsics.max_depth = 1.5
 
   config.tracks = ml_collections.ConfigDict()
-  config.tracks.num_static_points_per_view = 100
-  config.tracks.num_robot_points_per_view = 100
+  config.tracks.num_query_frames = 3
+  config.tracks.points_per_class = 33
+  config.tracks.min_gap = 0.005
   config.tracks.match_radius = 0.02
+  config.tracks.max_edge_step = 0.05
   config.tracks.max_depth = 2.0
   config.tracks.mask_margin = 10
-  config.tracks.robot_depth_tolerance = 0.02
-  config.tracks.static_depth_tolerance = 0.05
-  config.tracks.flicker = 0.1
-  config.tracks.min_run_fraction = 0.1
+  config.tracks.urdf_tolerance = 0.006
+  config.tracks.sensor_tolerance_base = 0.02
+  config.tracks.sensor_tolerance_slope = 0.012
+  config.tracks.hysteresis = 0.5
+  config.tracks.max_seen_through = 0.02
+  config.tracks.gripper_clearance = 0.08
 
   config.review = ml_collections.ConfigDict()
   config.review.depth_stride = 4
+  config.review.scene_radius = 0.003
   config.review.max_depth = 2.0
-  config.review.n_inspect = 4
+  config.review.n_inspect = 40
   config.review.fps = 30
 
   return config

@@ -27,7 +27,7 @@ bash run_parallel.sh metrics
 
 ```
 metrics ──▶ 1. calibrate the cuts ─┐
-                                   ├─ shortlist.ipynb ─▶ episodes_eval100.txt
+                                   ├─ shortlist.ipynb ─▶ episodes_eval150.txt
             2. draw the pool ──────┘
                                        │
                                        ▼
@@ -54,28 +54,53 @@ both in total and *alone*. The second number is the one that matters: it is
 exactly how many episodes relaxing that threshold buys back. A cut that rejects
 nothing, or nothing another cut has already caught, is doing no work.
 
-The thresholds in `CUTS` were set from eight episodes that looked fine, with
-headroom, and have never been calibrated against a full metrics run. Across the
-first 40 real episodes, seven of the eight rejected nothing at all. Calibrating
-them is what the notebook is for.
+`CUTS` is calibrated against the full metrics run of 5521 episodes. The three
+numbers do not carry equal weight:
+
+| Cut | | |
+|---|---|---|
+| `robot_loss ≤ 0.016` | Worth tightening hardest | It measures camera-robot alignment directly, and that is what the robot half of the tracks is built on. Nearly every scene has an episode that clears it, so the cut costs coverage almost nothing while rejecting two thirds of the pool |
+| `overlap ≥ 43` | Worth tightening | Cross-camera agreement, which the static points and the visibility labels rest on |
+| `chamfer ≤ 0.048` | Not worth tightening far | Per-scene best chamfer runs from 0.032 to 0.063, so it reads as much on how cluttered a scene is as on how well it was calibrated. Pushing it down removes whole scenes rather than bad calibrations |
 
 **2. Which survivors go in the pool.** Quotas are equal per *scene* — the middle
-field of the episode id, 62 of them against 13 sites — filled round-robin. Scene rather
-than site, so the pool spreads over camera placements and tabletops rather than
-over labs. The notebook then shows the coverage that came out: sites and scenes.
+field of the episode id, 62 of them against 13 sites — filled round-robin, capped
+at `--max_per_scene`. Scene rather than site, so the pool spreads over camera
+placements and tabletops rather than over labs. Within a scene the episodes are
+ordered by `quality`, each metric read as a fraction of its own cut and summed,
+so a scene contributes its best episodes rather than a spread over its timeline.
 
-Writes `episodes_eval100.txt`. The command line reproduces whatever you settle on:
+The cuts and the ordering each buy about half of the gain, and they buy different
+halves — the cuts cut the tail, the ordering moves the middle:
+
+| Selection | robot_loss p50 | p90 | scenes |
+|---|---|---|---|
+| Old cuts, spread over each scene's timeline | 0.0137 | 0.0181 | 49 |
+| Old cuts, ordered by quality | 0.0113 | 0.0162 | 49 |
+| These cuts, spread over the timeline | 0.0122 | 0.0153 | 43 |
+| **These cuts, ordered by quality** | **0.0108** | **0.0148** | **43** |
+
+Writes `episodes_eval<n>.txt`, named for how many came out. The command line
+reproduces whatever you settle on:
 
 ```bash
-python tapvidmv/shortlist.py --n 100 --cut chamfer=0.040
+python tapvidmv/shortlist.py --n 150 --max_per_scene 6      # 150 episodes over 43 scenes
+python tapvidmv/shortlist.py --n 150 --cut chamfer=0.047 --cut robot_loss=0.014   # 134 over 39, tighter
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--n` | 150 | Size of the candidate pool |
+| `--n` | 150 | Size of the candidate pool. Fewer come out when the cuts and the per-scene cap cannot fill it |
+| `--max_per_scene` | 6 | Cap on how many episodes one scene may contribute |
 | `--cut COLUMN=VALUE` | — | Move one threshold; repeatable |
 | `--input` | `config.paths.metrics` | Directory of per-episode metrics |
-| `--output_dir` | this directory | Where the list and CSV are written |
+| `--output_dir` | this directory | Where the list is written |
+
+Stage 3 reads the list it writes, so the expensive stage only runs on the selection:
+
+```bash
+bash run_parallel.sh tracks "" --config.paths.episode_list=tapvidmv/episodes_eval150.txt
+```
 
 ### Step 3 — [`review.ipynb`](review.ipynb)
 

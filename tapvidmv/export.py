@@ -18,22 +18,10 @@ config = get_config()
 RELEASE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
-def read_episode_list(path):
-  path = os.path.abspath(os.path.expanduser(path))
-  with open(path) as f:
-    return {line.split("#")[0].strip() for line in f if line.split("#")[0].strip()}
-
-
 def _encode_jpeg(rgb_frame, quality=95):
   bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
   ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
   return np.frombuffer(buf, dtype=np.uint8).copy()
-
-
-def _build_queries(uv, query_view):
-  xy = np.round(uv[query_view, 0, np.arange(uv.shape[2])])
-  t = np.zeros((len(xy), 1), dtype=np.float32)
-  return np.concatenate([xy, t, query_view[:, None]], axis=1).astype(np.float32)
 
 
 def export_to_tapvid3d(
@@ -43,6 +31,7 @@ def export_to_tapvid3d(
   uv,
   vis,
   query_view,
+  query_frame,
   output_root=RELEASE_ROOT,
   jpeg_quality=95,
 ):
@@ -64,7 +53,7 @@ def export_to_tapvid3d(
   np.save(os.path.join(staging, release.TRACKS), tracks_3d.astype(np.float32))
   print(f"  tracks_xyz.npy: ({F}, {P}, 3)")
 
-  queries = _build_queries(uv, query_view)
+  queries = core.io.build_queries(uv, query_view, query_frame)
   np.save(os.path.join(staging, release.QUERIES), queries)
   print(f"  queries_xytv.npy: ({P}, 4)")
 
@@ -128,6 +117,7 @@ def process_episode(episode_id, args):
     uv=tracks["uv"],
     vis=tracks["vis"],
     query_view=tracks["query_view"],
+    query_frame=tracks["query_frame"],
     output_root=args.output_root,
     jpeg_quality=args.jpeg_quality,
   )
@@ -171,7 +161,7 @@ if __name__ == "__main__":
       available = with_tracks
       print(f"Exporting all {len(available)} episodes with tracks")
     else:
-      available = read_episode_list(args.episode_list)
+      available = core.io.read_episode_list(args.episode_list)
       print(f"Read {len(available)} episodes from {args.episode_list}")
 
     def run_one(episode_id):

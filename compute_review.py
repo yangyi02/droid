@@ -11,7 +11,6 @@ import core.geometry
 import core.io
 import core.runner
 
-APP_ID = "droid_track_review"
 JPEG_QUALITY = 95
 
 ROBOT = [56, 189, 248]
@@ -23,17 +22,9 @@ INSPECT = [255, 40, 235]
 QUERY = [255, 205, 30]
 WHITE = [255, 255, 255]
 
-SCENE_RADIUS_M = 0.001
 TRACK_RADIUS_M = 0.003
 INSPECT_RADIUS_M = 0.006
 RAY_RADIUS_M = 0.0015
-TRAIL_FRAMES = 12
-
-
-def build_queries(uv, query_view):
-  xy = np.round(uv[query_view, 0, np.arange(uv.shape[2])])
-  frame = np.zeros((len(xy), 1), dtype=np.float32)
-  return np.concatenate([xy, frame, query_view[:, None]], axis=1).astype(np.float32)
 
 
 class Review:
@@ -41,7 +32,7 @@ class Review:
     self.tracks_3d = tracks["tracks_3d"]
     self.vis = tracks["vis"]
     self.n_robot = tracks["n_robot"]
-    self.queries = build_queries(tracks["uv"], tracks["query_view"])
+    self.queries = core.io.build_queries(tracks["uv"], tracks["query_view"], tracks["query_frame"])
 
     K, T_cam2world, image_wh = [], [], []
     for cam_id, cam_data in episode["camera"].items():
@@ -66,42 +57,44 @@ class Review:
   def n_views(self):
     return len(self.K)
 
+  @property
+  def track_colors(self):
+    return np.where(np.arange(self.n_points)[:, None] < self.n_robot, ROBOT, STATIC).astype(np.uint8)
+
 
 def inspect_tracks(review, n_inspect):
-  chosen = []
-  for group in (np.arange(review.n_robot), np.arange(review.n_robot, review.n_points)):
-    points_world = review.tracks_3d[0, group]
-    nearest_sq = np.sum((points_world - points_world.mean(axis=0)) ** 2, axis=1)
-    for _ in range(min(n_inspect // 2, len(group))):
-      pick = int(np.argmax(nearest_sq))
-      chosen.append(int(group[pick]))
-      nearest_sq = np.minimum(nearest_sq, np.sum((points_world - points_world[pick]) ** 2, axis=1))
-      nearest_sq[pick] = -np.inf
-  return chosen
+  """A plain random sample of the tracks, seeded so the same episode always shows the same ones.
+
+  It used to prefer tracks whose visibility changes, on the grounds that a point nobody ever loses
+  sight of has nothing to check. That is true for finding faults and wrong for judging the set: the
+  sample it produced flipped three times as often as the background does, and the quarter of the
+  background that never changes at all could not appear in it."""
+  return sorted(np.random.default_rng(0).choice(review.n_points, min(n_inspect, review.n_points), replace=False).tolist())
 
 
-def in_frame(u, v, z, image_wh):
-  return (z > 0) & (u >= -0.5) & (u < image_wh[0] - 0.5) & (v >= -0.5) & (v < image_wh[1] - 0.5)
-
-
-def verdict(track, visible, inside, z, at_query):
-  status = "VISIBLE" if visible else "NOT VISIBLE"
+def verdict(visible, inside, z, at_query):
+  """What one camera says about the track on one frame."""
+  status = "visible" if visible else "hidden"
   if z <= 0:
-    status += " | behind camera"
+    status = "behind"
   elif not inside:
-    status += " | outside image"
+    status = "off-frame"
   if visible and not inside:
-    status += " | INCONSISTENT"
-  if at_query:
-    status += " | QUERY FRAME"
-  return f"{track} | {status}"
+    status += "!"
+  return status + "*" if at_query else status
 
 
-def ray_color(review, view, t, track):
+def frame_status(review, view, t, track):
+  """Whether the track lands inside this camera's image on this frame, and how far in front it is."""
   u, v, z = core.geometry.project_points(
     review.tracks_3d[t, track][None], review.K[view], review.T_cam2world[view, t]
   )
-  if not in_frame(u, v, z, review.image_wh[view])[0]:
+  return bool((core.geometry.in_frame(u, v, *review.image_wh[view]) & (z > 0))[0]), float(z[0])
+
+
+def ray_color(review, view, t, track):
+  inside, _ = frame_status(review, view, t, track)
+  if not inside:
     return OUTSIDE
   return VISIBLE if review.vis[view, t, track] else NOT_VISIBLE
 
@@ -121,26 +114,29 @@ def depth_cloud(depth, img_rgb, K, T_cam2world, stride, max_depth):
   return points_world.astype(np.float32), img_rgb[v, u]
 
 
-def blueprint(review, inspect, fps):
+def blueprint(review, inspect, episode_id, fps):
   center = review.tracks_3d[0, inspect[0]]
   extent = float(np.linalg.norm(np.ptp(review.tracks_3d.reshape(-1, 3), axis=0)))
 
   return rrb.Blueprint(
     rrb.Vertical(
       rrb.Spatial3DView(
-        name="3D tracks",
+        # The episode is in the title because two recordings served together are told apart by nothing
+        # else on screen: they share an application id, and what is left is a random recording id.
+        name=f"3D tracks — {episode_id}",
         origin="/",
         line_grid=False,
         background=rrb.Background(kind="GradientDark"),
         contents=["+ /scene/**", "+ /cameras/**", "+ /tracks", "+ /inspect/**"],
         eye_controls=rrb.EyeControls3D(
+          # No tracking_entity: it would pin the orbit to one track for good, and switching which
+          # track is shown does not move it. Double-click a point in the viewer to re-centre.
           kind="Orbital",
-          tracking_entity=f"/inspect/{inspect[0]}/point",
           look_target=center,
           position=center + np.array([1.2, -1.4, 0.9]) * max(extent * 0.4, 0.3),
           eye_up=[0, 0, 1],
         ),
-        overrides={f"/inspect/{track}/rays": rrb.EntityBehavior(visible=False) for track in inspect[1:]},
+        overrides={f"/inspect/{track}": rrb.EntityBehavior(visible=False) for track in inspect[1:]},
       ),
       rrb.Horizontal(
         *[
@@ -148,6 +144,7 @@ def blueprint(review, inspect, fps):
             name=f"Camera {view}",
             origin=f"/views/{view}",
             visual_bounds=rrb.VisualBounds2D(x_range=[0, int(wh[0])], y_range=[0, int(wh[1])]),
+            overrides={f"/views/{view}/tracks": rrb.EntityBehavior(visible=False)},
           )
           for view, wh in enumerate(review.image_wh)
         ]
@@ -194,14 +191,14 @@ def log_cameras(rec, review, episode, cfg):
       )
 
       u, v, z = core.geometry.project_points(review.tracks_3d[t], K, T_cam2world)
-      inside = in_frame(u, v, z, review.image_wh[view])
+      inside = core.geometry.in_frame(u, v, *review.image_wh[view]) & (z > 0)
       visible = review.vis[view, t]
       n_off_image += int((visible & ~inside).sum())
       rec.log(
         f"/views/{view}/tracks",
         rr.Points2D(
           np.stack([u[inside], v[inside]], axis=1) + 0.5,
-          colors=np.where(visible[inside, None], VISIBLE, NOT_VISIBLE).astype(np.uint8),
+          colors=review.track_colors[inside],
           radii=rr.Radius.ui_points(3),
           labels=[str(point) for point in np.flatnonzero(inside)],
           show_labels=False,
@@ -212,7 +209,7 @@ def log_cameras(rec, review, episode, cfg):
       points_world, colors = depth_cloud(
         cam_data["raw_depth"][t], img_rgb, K, T_cam2world, cfg.depth_stride, cfg.max_depth
       )
-      rec.log(f"/scene/{view}", rr.Points3D(points_world, colors=colors, radii=SCENE_RADIUS_M))
+      rec.log(f"/scene/{view}", rr.Points3D(points_world, colors=colors, radii=cfg.scene_radius))
       n_scene_points += len(points_world)
 
     rec.flush(timeout_sec=120)
@@ -221,7 +218,7 @@ def log_cameras(rec, review, episode, cfg):
 
 
 def log_tracks(rec, review):
-  colors = np.where(np.arange(review.n_points)[:, None] < review.n_robot, ROBOT, STATIC).astype(np.uint8)
+  colors = review.track_colors
   labels = [str(point) for point in range(review.n_points)]
 
   for t, points_world in enumerate(review.tracks_3d):
@@ -233,16 +230,30 @@ def log_tracks(rec, review):
 
 
 def log_inspect(rec, review, inspect):
+  """One toggleable subtree per inspected track: the point and what each camera says about it."""
   centers = review.T_cam2world[:, :, :3, 3]
+  query_frame = review.queries[:, 2].astype(int)
+  query_view = review.queries[:, 3].astype(int)
 
   for track in inspect:
     tracks_3d = review.tracks_3d[:, track]
+    kind = "robot" if track < review.n_robot else "static"
+
     for t, point_world in enumerate(tracks_3d):
       rec.set_time("frame", sequence=t)
-      rec.log(f"/inspect/{track}/point", rr.Points3D(point_world[None], colors=INSPECT, radii=INSPECT_RADIUS_M))
+      calls = [
+        f"cam{view} {verdict(bool(review.vis[view, t, track]), *frame_status(review, view, t, track), t == query_frame[track] and view == query_view[track])}"
+        for view in range(review.n_views)
+      ]
       rec.log(
-        f"/inspect/{track}/trail",
-        rr.LineStrips3D([tracks_3d[max(0, t - TRAIL_FRAMES + 1) : t + 1]], colors=INSPECT, radii=RAY_RADIUS_M),
+        f"/inspect/{track}/point",
+        rr.Points3D(
+          point_world[None],
+          colors=INSPECT,
+          radii=INSPECT_RADIUS_M,
+          labels=[f"{track} ({kind}) | " + " | ".join(calls)],
+          show_labels=True,
+        ),
       )
       rec.log(
         f"/inspect/{track}/rays",
@@ -255,49 +266,42 @@ def log_inspect(rec, review, inspect):
 
 
 def log_inspect_views(rec, review, inspect):
-  query_frame = review.queries[:, 2].astype(int)
-  query_view = review.queries[:, 3].astype(int)
+  """Every inspected track in every camera at once, carrying only its number: which one to look at
+  closely is a question for the 3D view, and a verdict per track per view would bury the image."""
+  inspect = np.asarray(inspect)
+  query_frame = review.queries[inspect, 2].astype(int)
+  query_view = review.queries[inspect, 3].astype(int)
+  labels = [str(track) for track in inspect]
 
   for view in range(review.n_views):
     width, height = review.image_wh[view]
     for t in range(review.n_frames):
       rec.set_time("frame", sequence=t)
-      u, v, z = core.geometry.project_points(
-        review.tracks_3d[t, inspect], review.K[view], review.T_cam2world[view, t]
+      u, v, z = core.geometry.project_points(review.tracks_3d[t, inspect], review.K[view], review.T_cam2world[view, t])
+      inside = core.geometry.in_frame(u, v, width, height) & (z > 0)
+      visible = review.vis[view, t, inspect]
+
+      rec.log(
+        f"/views/{view}/inspect",
+        rr.Points2D(
+          np.stack([u[inside], v[inside]], axis=1) + 0.5,
+          colors=np.where(visible[inside, None], VISIBLE, NOT_VISIBLE).astype(np.uint8),
+          radii=rr.Radius.ui_points(5),
+          labels=[labels[i] for i in np.flatnonzero(inside)],
+          show_labels=True,
+          draw_order=22,
+        ),
       )
-      inside = in_frame(u, v, z, review.image_wh[view])
-
-      for i, track in enumerate(inspect):
-        visible = bool(review.vis[view, t, track])
-        color = VISIBLE if visible else NOT_VISIBLE
-        at_query = t == query_frame[track] and view == query_view[track]
-        marker = [[float(np.clip(u[i] + 0.5, 0, width)), float(np.clip(v[i] + 0.5, 0, height))]]
-        prefix = f"/views/{view}/inspect/{track}"
-
-        rec.log(
-          prefix + "/marker_outline",
-          rr.Points2D(
-            marker if inside[i] else np.empty((0, 2)),
-            colors=WHITE,
-            radii=rr.Radius.ui_points(7),
-            draw_order=21,
-          ),
-        )
-        rec.log(
-          prefix + "/marker",
-          rr.Points2D(
-            marker,
-            colors=color,
-            radii=rr.Radius.ui_points(5) if inside[i] else 0,
-            labels=[verdict(track, visible, inside[i], z[i], at_query)],
-            show_labels=True,
-            draw_order=22,
-          ),
-        )
-        rec.log(
-          prefix + "/query",
-          rr.LineStrips2D(query_cross(review, track) if at_query else [], colors=QUERY, radii=0.8, draw_order=23),
-        )
+      born = (query_frame == t) & (query_view == view)
+      rec.log(
+        f"/views/{view}/query",
+        rr.LineStrips2D(
+          [cross for i in np.flatnonzero(born) for cross in query_cross(review, int(inspect[i]))],
+          colors=QUERY,
+          radii=0.8,
+          draw_order=23,
+        ),
+      )
 
 
 def build_recording(episode, review, episode_id, review_root, cfg):
@@ -306,9 +310,13 @@ def build_recording(episode, review, episode_id, review_root, cfg):
   staging = rrd + ".partial"
   inspect = inspect_tracks(review, cfg.n_inspect)
 
-  rec = rr.RecordingStream(APP_ID)
+  # One application id per episode. The viewer keeps a blueprint per application, so sharing one across
+  # episodes meant the first recording opened set the layout for the rest: its overrides name the track
+  # ids it inspects, and against another episode's ids they match nothing and every overlay comes up on
+  # at once. The plus signs would otherwise be migrated to an entry name behind our back.
+  rec = rr.RecordingStream(episode_id.replace("+", "-"), recording_id=episode_id)
   try:
-    rec.save(staging, default_blueprint=blueprint(review, inspect, cfg.fps))
+    rec.save(staging, default_blueprint=blueprint(review, inspect, episode_id, cfg.fps))
     log_tracks(rec, review)
     log_inspect(rec, review, inspect)
     log_inspect_views(rec, review, inspect)
@@ -324,7 +332,7 @@ def build_recording(episode, review, episode_id, review_root, cfg):
     f" | {n_scene_points / 1e6:.1f}M scene points"
     f" | annotated visible {100 * review.vis.mean():.0f}%"
     f" | visible off-image {n_off_image}"
-    f" | inspecting {inspect}"
+    f" | inspecting {len(inspect)} tracks, showing {inspect[0]}"
     f" | {os.path.getsize(rrd) / 1024**2:.0f} MiB"
   )
   return rrd
@@ -342,8 +350,12 @@ def process_episode(episode_id, config):
 def main(_):
   config = config_flag.value
 
+  available = core.runner.list_episode_dirs(config.paths.tracks)
+  if config.paths.episode_list:
+    available &= core.io.read_episode_list(config.paths.episode_list)
+
   target = core.runner.shard_episodes(
-    core.runner.list_episode_dirs(config.paths.tracks),
+    available,
     config.runner.rank,
     config.runner.world_size,
     config.runner.limit,

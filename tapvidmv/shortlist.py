@@ -21,9 +21,9 @@ OPS = {"<=": operator.le, ">=": operator.ge}
 EXTRINSICS = ("chamfer", "overlap", "robot_loss")
 
 CUTS = {
-  "chamfer": ("<=", 0.050),
-  "overlap": (">=", 40.0),
-  "robot_loss": ("<=", 0.020),
+  "chamfer": ("<=", 0.048),
+  "overlap": (">=", 43.0),
+  "robot_loss": ("<=", 0.016),
 }
 
 
@@ -72,35 +72,30 @@ def apply_cuts(rows, cuts):
   return kept
 
 
-def _spread_order(n):
-  order, segments = [], [(0, n - 1)]
-  while segments:
-    nxt = []
-    for lo, hi in segments:
-      mid = (lo + hi) // 2
-      order.append(mid)
-      nxt.extend([(lo, mid - 1), (mid + 1, hi)])
-    segments = [(lo, hi) for lo, hi in nxt if lo <= hi]
-  return order
+def quality(row, cuts):
+  """How close an episode sits to the cuts, summed. Lower is better, 1.0 per term is the cut itself."""
+  score = 0.0
+  for column, (op, limit) in cuts.items():
+    value = cut_value(row, column, op)
+    score += value / limit if op == "<=" else limit / max(value, 1e-6)
+  return score
 
 
-def sample_diverse(rows, n_target):
+def sample_diverse(rows, n_target, cuts, max_per_scene):
   by_scene = {}
   for row in rows:
     by_scene.setdefault(row["scene"], []).append(row)
 
-  ordered = {}
-  for scene, scene_rows in by_scene.items():
-    scene_rows.sort(key=lambda r: r["episode_id"])
-    ordered[scene] = [scene_rows[i] for i in _spread_order(len(scene_rows))]
+  for scene_rows in by_scene.values():
+    scene_rows.sort(key=lambda row: quality(row, cuts))
 
-  scenes = [scene for _, scene in sorted((-len(rows), scene) for scene, rows in ordered.items())]
+  scenes = [scene for _, scene in sorted((-len(rows), scene) for scene, rows in by_scene.items())]
   selected, round_idx = [], 0
-  while len(selected) < n_target:
+  while len(selected) < n_target and round_idx < max_per_scene:
     took_any = False
     for scene in scenes:
-      if round_idx < len(ordered[scene]):
-        selected.append(ordered[scene][round_idx])
+      if round_idx < len(by_scene[scene]):
+        selected.append(by_scene[scene][round_idx])
         took_any = True
         if len(selected) == n_target:
           break
@@ -117,11 +112,11 @@ def sample_diverse(rows, n_target):
   return selected
 
 
-def write_selection(selected, output_dir, n):
+def write_selection(selected, output_dir):
   output_dir = os.path.expanduser(output_dir)
   os.makedirs(output_dir, exist_ok=True)
 
-  list_path = os.path.join(output_dir, f"episodes_eval{n}.txt")
+  list_path = os.path.join(output_dir, f"episodes_eval{len(selected)}.txt")
   with open(list_path, "w") as f:
     f.writelines(row["episode_id"] + "\n" for row in selected)
   return list_path
@@ -148,6 +143,7 @@ def main():
   parser = argparse.ArgumentParser(description="Select evaluation episodes from metrics CSV")
   parser.add_argument("--input", default=config.paths.metrics, help="Directory of per-episode metrics")
   parser.add_argument("--n", type=int, default=150, help="Size of the candidate pool to hand to the human pass")
+  parser.add_argument("--max_per_scene", type=int, default=6, help="Cap on how many episodes one scene may contribute")
   parser.add_argument(
     "--cut",
     action="append",
@@ -168,9 +164,9 @@ def main():
     cuts[column] = (cuts[column][0], float(value))
 
   rows = load_metrics(os.path.expanduser(args.input))
-  selected = sample_diverse(apply_cuts(rows, cuts), args.n)
+  selected = sample_diverse(apply_cuts(rows, cuts), args.n, cuts, args.max_per_scene)
 
-  list_path = write_selection(selected, args.output_dir, args.n)
+  list_path = write_selection(selected, args.output_dir)
 
   report(selected)
   print(f"\nEpisode list: {list_path}")

@@ -182,7 +182,7 @@ def render_2d_tracking_video(
 
   height, width = video_frames[0].shape[:2]
   pts = np.round(tracks).astype(np.int32)
-  in_frame = (tracks[..., 0] >= 0) & (tracks[..., 0] < width) & (tracks[..., 1] >= 0) & (tracks[..., 1] < height)
+  in_frame = core.geometry.in_frame(tracks[..., 0], tracks[..., 1], width, height)
   drawable = in_frame & visibility
 
   radius = int(linewidth * 2)

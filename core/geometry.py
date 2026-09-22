@@ -31,12 +31,34 @@ def project_points(points_world, K, T_cam2world):
   return u, v, z_cam
 
 
+def farthest_points(points, n_points, seeds=None):
+  """A greedy order that keeps the picks as far apart as they go, starting from the outermost.
+
+  Seeds are points someone else already took. They are never returned, but every pick keeps its distance
+  from them too, so a stretch of surface that is already covered is the last place this call looks."""
+  chosen = []
+  if seeds is None or not len(seeds):
+    nearest = np.sum((points - points.mean(axis=0)) ** 2, axis=1)
+  else:
+    nearest = np.sum((points[:, None] - seeds[None]) ** 2, axis=-1).min(axis=1)
+  for _ in range(min(n_points, len(points))):
+    pick = int(np.argmax(nearest))
+    chosen.append(pick)
+    nearest = np.minimum(nearest, np.sum((points - points[pick]) ** 2, axis=1))
+    nearest[pick] = -np.inf
+  return np.array(chosen, dtype=int)
+
+
+def in_frame(u, v, width, height):
+  """Whether a projection rounds to a pixel that exists: the image reaches half a pixel past each edge centre."""
+  return (u >= -0.5) & (u < width - 0.5) & (v >= -0.5) & (v < height - 0.5)
+
+
 def sample_depth(depth, u, v, z):
   height, width = depth.shape
   ui = np.clip(np.round(u).astype(int), 0, width - 1)
   vi = np.clip(np.round(v).astype(int), 0, height - 1)
-  in_frame = (u >= 0) & (u < width) & (v >= 0) & (v < height) & (z > 0)
-  return np.where(in_frame, depth[vi, ui], np.nan)
+  return np.where(in_frame(u, v, width, height) & (z > 0), depth[vi, ui], np.nan)
 
 
 def unproject_depth_torch(depth, img_rgb, K, T_cam2world, device):
