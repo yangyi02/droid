@@ -192,7 +192,7 @@ That last reprojection check is the sharpest one.
 Uploading is done by hand, outside this repository. The public layout is:
 
 ```
-gs://dm-tapnet/mv-tap/droid/tapvidmv/<episode_id>/...
+gs://dm-tapnet/tapvidmv/droid/<episode_id>/...
 ```
 
 ## Files
