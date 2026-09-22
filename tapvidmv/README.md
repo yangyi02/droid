@@ -127,7 +127,7 @@ bash tapvidmv/run_export.sh 16                                # 16 workers
 bash tapvidmv/run_export.sh 16 --limit 4                      # flags pass through to export.py
 
 python tapvidmv/export.py                                     # one process
-python tapvidmv/export.py --episode_list episodes_eval100.txt
+python tapvidmv/export.py --episode_list episodes_eval150.txt
 python tapvidmv/export.py --episode_id AUTOLab+5d05c5aa+2023-10-14-21h-59m-22s
 ```
 
