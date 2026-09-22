@@ -105,17 +105,27 @@ projected into every view.
 | `settle` | Drop labels that flip for one frame and flip straight back — nothing on a rigid arm is revealed and hidden again in a thirtieth of a second |
 | `never_seen_through` | Drop background points the depth map keeps looking through on more than `max_seen_through` of their clear-line frames: they sat on something that has since moved |
 
-**Holes in the stereo — a known limitation.** Stereo fails exactly where surfaces are dark,
-thin or textureless, and those are also the things that occlude. `sensor_slack` returns
-infinity where the depth map measured nothing, `project_tracks` turns that into a NaN, and
-`fmin` ignores it, so the rendered robot decides the label by itself. Where the robot is not
-in front of the point either, the margin is infinite and the point reads **visible** — a hole
-still counts as free space there. On the wrist camera that was measured at a fifth to a third
-of everything it called visible, which makes it the largest known source of wrong labels in
-the output.
+**A depth hole is the sensor failing, not the point hiding.** Stereo finds no match on dark,
+thin or textureless surfaces. An earlier rule dropped any point sitting on a hole in any
+camera and cost 17.6% of candidates — a wrist camera that could not measure a wall for
+fourteen frames killed tracks the other two saw perfectly. So a hole is read as no evidence
+either way, and the pipeline works around it in three places instead:
 
-`latch` does hold the previous label where the margin is NaN, but that happens when the point
-lands off the image or behind the camera, not when the stereo has a hole.
+- Stage 1 fills the wrist camera's worst holes — the metallic gripper — with a surface
+  distilled from the frames where it is closed.
+- Candidates are not seeded where depth is unreliable. A background pixel needs a second
+  camera to agree within `match_radius` and must not sit on a depth edge; a robot candidate
+  the sensor calls occluded on its own birth frame is dropped.
+- Where the sensor is silent the rendered robot answers alone: `sensor_slack` returns
+  infinity, `project_tracks` turns it into a NaN, and `fmin` ignores it. The URDF is exact,
+  and for a background point it is a foreign occluder that can only add occlusion.
+
+The arm is the thing that moves in front of points, and its geometry is known exactly. What
+is left over is a point occluded by something that is neither the robot nor measurable by
+stereo; it reads visible.
+
+The one margin that really is NaN — both readings missing — is a point that landed off the
+image or behind the camera, and `latch` holds its previous label there.
 
 A quota goes to a *camera* because a query is a pixel in one camera's video. Pooling the arm's
 quota across cameras hands points out by surface area instead, and the surface the wrist camera
