@@ -121,16 +121,12 @@ def blueprint(review, inspect, episode_id, fps):
   return rrb.Blueprint(
     rrb.Vertical(
       rrb.Spatial3DView(
-        # The episode is in the title because two recordings served together are told apart by nothing
-        # else on screen: they share an application id, and what is left is a random recording id.
         name=f"3D tracks — {episode_id}",
         origin="/",
         line_grid=False,
         background=rrb.Background(kind="GradientDark"),
         contents=["+ /scene/**", "+ /cameras/**", "+ /tracks", "+ /inspect/**"],
         eye_controls=rrb.EyeControls3D(
-          # No tracking_entity: it would pin the orbit to one track for good, and switching which
-          # track is shown does not move it. Double-click a point in the viewer to re-centre.
           kind="Orbital",
           look_target=center,
           position=center + np.array([1.2, -1.4, 0.9]) * max(extent * 0.4, 0.3),
@@ -310,10 +306,6 @@ def build_recording(episode, review, episode_id, review_root, cfg):
   staging = rrd + ".partial"
   inspect = inspect_tracks(review, cfg.n_inspect)
 
-  # One application id per episode. The viewer keeps a blueprint per application, so sharing one across
-  # episodes meant the first recording opened set the layout for the rest: its overrides name the track
-  # ids it inspects, and against another episode's ids they match nothing and every overlay comes up on
-  # at once. The plus signs would otherwise be migrated to an entry name behind our back.
   rec = rr.RecordingStream(episode_id.replace("+", "-"), recording_id=episode_id)
   try:
     rec.save(staging, default_blueprint=blueprint(review, inspect, episode_id, cfg.fps))

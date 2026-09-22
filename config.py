@@ -20,8 +20,6 @@ def get_config():
   # compared before anything is thrown away. Put this back to os.path.join(output, "tracks").
   config.paths.tracks = os.path.join(repo, "tapvidmv", "data", "tracks")
   config.paths.metrics = os.path.join(output, "metrics")
-  # Local disk, not the bucket: recordings are looked at once and thrown away, and the mount writes at
-  # 17 MB/s against local disk's 412, then pays it again because a rename there is a server-side copy.
   config.paths.review = os.path.join(repo, "tapvidmv", "data", "review")
   config.paths.episode_list = ""
 

@@ -57,8 +57,6 @@ def query_frames(episode, poses, pb_renderer, config):
       seen[view, frame] = resize_mask(drawn > 0, -config.tracks.mask_margin).sum()
 
   worst = (seen / np.maximum(seen.max(axis=1, keepdims=True), 1)).min(axis=0)
-  # The first stretch spends itself on frame 0 rather than on its best frame. Adding frame 0 on top of
-  # the five instead puts two queries a tenth of a second apart, which is one arm pose, not two.
   edges = np.linspace(0, reach, config.tracks.num_query_frames + 1).astype(int)
   return np.array([0] + [lo + int(np.argmax(worst[lo:hi])) for lo, hi in zip(edges[1:-1], edges[2:])])
 
@@ -264,17 +262,9 @@ def project_tracks(tracks_3d, n_robot, episode, poses, pb_renderer, config):
       urdf = urdf_gap(urdf_depth, u, v, z_pred)
       sensor = sensor_slack(cam_data["raw_depth"][t], u, v, z_pred, config)
 
-      # A frame where this camera measured nothing says nothing, and is left as no reading at all. The
-      # label then stays where it was rather than being answered by something else: asking the other
-      # cameras along the ray instead came back with "blocked" three times as often as this camera's
-      # own depth did, so a point flipped every time the map dropped out under it for a frame.
-      # The rendered arm is exact and still answers: fmin ignores the missing reading, not the robot.
       margin[view, t] = np.fmin(urdf / config.tracks.urdf_tolerance, np.where(np.isinf(sensor), np.nan, sensor))
       slack[view, t] = sensor
 
-  # Two lines for the arm, one for the background: the arm passes behind things and comes back, so its
-  # labels have to survive a reading that rests on the cut, while the background is read at the single
-  # cut it always was. Both hold their label through a frame with no reading.
   read = np.concatenate(
     [latch(margin[:, :, :n_robot], config.tracks.hysteresis), latch(margin[:, :, n_robot:], 0.0)], axis=2
   )
@@ -296,7 +286,7 @@ def latch(margin, band):
   hidden, shown = margin < -1 - band, margin > -1 + band
 
   vis = np.empty(margin.shape, dtype=bool)
-  vis[:, 0] = ~(margin[:, 0] < -1)  # a first frame with no reading starts visible: nothing said otherwise
+  vis[:, 0] = ~(margin[:, 0] < -1)
   for t in range(1, margin.shape[1]):
     vis[:, t] = np.where(hidden[:, t], False, np.where(shown[:, t], True, vis[:, t - 1]))
   return vis
@@ -416,10 +406,6 @@ def process_episode(episode_id, pb_renderer, config):
   local, parts, robot_view, robot_frame = find_robot_candidates(episode, poses, pb_renderer, queries, config)
   static_3d, static_view, static_frame = find_static_candidates(episode, poses, pb_renderer, queries, config)
 
-  # Sample before tracking, not after. Every candidate carried through the episode and projected into
-  # every view costs the same as one that is kept, and a hundred and forty of them are thrown away for
-  # each one that survives. Choosing needs only where a candidate sits and which camera and frame it
-  # was born on, all of which is already here.
   query_view = np.concatenate([robot_view, static_view])
   query_frame = np.concatenate([robot_frame, static_frame])
   is_robot = np.arange(len(query_view)) < local.shape[1]
@@ -443,9 +429,6 @@ def process_episode(episode_id, pb_renderer, config):
 
   uv, vis, slack = project_tracks(tracks_3d, n_robot, episode, poses, pb_renderer, config)
 
-  # What the sampling could not know without the whole episode: a background point the depth map keeps
-  # looking through sat on something that has since been moved, and a query the final labels call
-  # hidden on its own frame is not a query.
   keep = vis[query_view, query_frame, np.arange(len(query_view))]
   keep[n_robot:] &= never_seen_through(slack[:, :, n_robot:], config.tracks.max_seen_through)
 
