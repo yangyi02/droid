@@ -145,10 +145,9 @@ over thousands of episodes to keep fifty. Each episode is written under a
 `.partial` name and renamed once it is whole, so an interrupted run resumes by
 skipping the directories that are there and redoing the one it died inside.
 
-**Budget the disk.** `depth.npy` is float32 metres, twice the size of the uint16
-millimetres on disk, so one episode is ~1.9 GB at the median 170 frames and
-**fifty come to roughly 95 GB**. Check `df -h` first, or export in batches and
-upload as you go.
+**Budget the disk.** Depth ships as the uint16 millimetres stage 1 wrote, compressed,
+and the arm mask compresses to almost nothing, so fifty episodes come to roughly
+**18 GB** — most of it depth, then the JPEG frames.
 
 | Flag | Default | Description |
 |---|---|---|
@@ -169,8 +168,8 @@ Per episode the layout is:
     ├── intrinsics.npy          (4,)       fx, fy, cx, cy
     ├── extrinsics_w2c.npy      (frames, 4, 4)
     ├── visibility.npy          (frames, points)
-    ├── depth.npy               (frames, height, width)
-    └── foreground_mask.npy     (frames, height, width)   the arm as the URDF renders it
+    ├── depth.npz               "depth": (frames, height, width) uint16 millimetres, 0 = no reading
+    └── foreground_mask.npz     "mask":  (frames, height, width) bool, the arm as the URDF renders it
 ```
 
 ### Verify — [`verify.ipynb`](verify.ipynb)

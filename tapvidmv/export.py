@@ -82,11 +82,9 @@ def export_to_tapvid3d(
 
     np.save(os.path.join(view_dir, release.VISIBILITY), vis[view].astype(bool))
 
-    depth = cam_data["raw_depth"][:F].astype(np.float32)
-    depth[~np.isfinite(depth)] = 0.0
-    np.save(os.path.join(view_dir, release.DEPTH), depth)
-
-    np.save(os.path.join(view_dir, release.MASK), masks[cam_id][:F])
+    depth_mm = np.round(cam_data["raw_depth"][:F] * 1000).astype(np.uint16)
+    np.savez_compressed(os.path.join(view_dir, release.DEPTH), depth=depth_mm)
+    np.savez_compressed(os.path.join(view_dir, release.MASK), mask=masks[cam_id][:F])
 
     H, W = video[0].shape[:2]
     print(f"  view {view_id} [{cam_id}]: imgs({F},JPEG) intr(4,) extr({F},4,4) vis({F},{P}) depth+mask({F},{H},{W})")

@@ -13,8 +13,8 @@ IMAGES = "images_jpeg_bytes.npy"
 INTRINSICS = "intrinsics.npy"
 EXTRINSICS = "extrinsics_w2c.npy"
 VISIBILITY = "visibility.npy"
-DEPTH = "depth.npy"
-MASK = "foreground_mask.npy"
+DEPTH = "depth.npz"
+MASK = "foreground_mask.npz"
 
 
 def find_dataset():
@@ -76,17 +76,21 @@ class View:
   def image(self, frame):
     return decode_jpeg(self.jpegs[int(frame)])
 
-  def depth(self, frame):
+  @functools.cached_property
+  def depth_mm(self):
     path = self.path / DEPTH
-    if not path.exists():
-      return None
-    return np.asarray(np.load(path, mmap_mode="r")[int(frame)], dtype=np.float32)
+    return np.load(path)["depth"] if path.exists() else None
+
+  @functools.cached_property
+  def masks(self):
+    path = self.path / MASK
+    return np.load(path)["mask"] if path.exists() else None
+
+  def depth(self, frame):
+    return None if self.depth_mm is None else self.depth_mm[int(frame)].astype(np.float32) / 1000.0
 
   def foreground_mask(self, frame):
-    path = self.path / MASK
-    if not path.exists():
-      return None
-    return np.asarray(np.load(path, mmap_mode="r")[int(frame)])
+    return None if self.masks is None else self.masks[int(frame)]
 
   @functools.cached_property
   def centers(self):
