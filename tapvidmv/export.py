@@ -30,13 +30,13 @@ def export_to_tapvid3d(
   tracks_3d,
   uv,
   vis,
+  masks,
   query_view,
   query_frame,
   output_root=RELEASE_ROOT,
   jpeg_quality=95,
 ):
   episode_id = episode["meta"]["episode_id"]
-  wrist_cam_id = episode["meta"]["wrist_serial"]
   cam_ids = list(episode["camera"])
   F = tracks_3d.shape[0]
 
@@ -86,15 +86,10 @@ def export_to_tapvid3d(
     depth[~np.isfinite(depth)] = 0.0
     np.save(os.path.join(view_dir, release.DEPTH), depth)
 
-    if cam_id == wrist_cam_id:
-      mask = cam_data["sam_real_masks"][:F].astype(bool)
-      np.save(os.path.join(view_dir, release.MASK), mask)
+    np.save(os.path.join(view_dir, release.MASK), masks[cam_id][:F])
 
     H, W = video[0].shape[:2]
-    parts = [f"  view {view_id} [{cam_id}]: imgs({F},JPEG) intr(4,) extr({F},4,4) vis({F},{P}) depth({F},{H},{W})"]
-    if cam_id == wrist_cam_id:
-      parts.append(f" fg_mask({F},{H},{W})")
-    print("".join(parts))
+    print(f"  view {view_id} [{cam_id}]: imgs({F},JPEG) intr(4,) extr({F},4,4) vis({F},{P}) depth+mask({F},{H},{W})")
 
   shutil.rmtree(seq_dir, ignore_errors=True)
   os.rename(staging, seq_dir)
@@ -115,6 +110,7 @@ def process_episode(episode_id, args):
     tracks_3d=tracks["tracks_3d"],
     uv=tracks["uv"],
     vis=tracks["vis"],
+    masks=core.io.load_robot_masks(episode_id, args.tracks_root, episode["camera"]),
     query_view=tracks["query_view"],
     query_frame=tracks["query_frame"],
     output_root=args.output_root,

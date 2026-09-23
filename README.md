@@ -156,6 +156,7 @@ tracks_3d.npz                  # tracks_3d
 track_metadata.npz             # n_robot, n_static, query_view, query_frame
 <cam_serial>/
   tracks_2d.npz                # tracks_2d + vis_2d
+  robot_mask.npz               # the rendered arm, every frame
 ```
 
 > `config.paths.tracks` currently points at `tapvidmv/data/tracks/` rather than

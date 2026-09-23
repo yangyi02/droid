@@ -194,6 +194,7 @@ def project_tracks(tracks_3d, episode, poses, pb_renderer, config):
   margin = np.zeros((n_views, n_frames, n_points), dtype=np.float32)
   inside = np.zeros((n_views, n_frames, n_points), dtype=bool)
   slack = np.zeros((n_views, n_frames, n_points), dtype=np.float32)
+  masks = [np.zeros((n_frames, *cam_data["raw_depth"][0].shape), dtype=bool) for cam_data in episode["camera"].values()]
 
   for t in range(n_frames):
     pb_renderer.update_robot_pose(robot["joint_positions"][t], gripper_state=robot["gripper_positions"][t])
@@ -207,6 +208,7 @@ def project_tracks(tracks_3d, episode, poses, pb_renderer, config):
       K = cam_data["K"]
       T_cam2world = poses[cam_id]["extrinsics"][t]
       urdf_depth = drawn[view]
+      masks[view][t] = urdf_depth > 0
 
       height, width = cam_data["raw_depth"][t].shape
       u, v, z_pred = core.geometry.project_points(tracks_3d[t], K, T_cam2world)
@@ -219,7 +221,7 @@ def project_tracks(tracks_3d, episode, poses, pb_renderer, config):
       margin[view, t] = np.fmin(urdf / config.tracks.urdf_tolerance, np.where(np.isinf(sensor), np.nan, sensor))
       slack[view, t] = sensor
 
-  return uv, settle(latch(margin, config.tracks.hysteresis), inside), slack
+  return uv, settle(latch(margin, config.tracks.hysteresis), inside), slack, masks
 
 
 def latch(margin, band):
@@ -282,18 +284,17 @@ def sample_tracks(keep, home, query_view, query_frame, is_robot, queries, config
   return np.sort(np.concatenate([on_arm, in_scene]))
 
 
-def export_tracks(episode, tracks_3d, uv, vis, query_view, query_frame, n_robot, export_root):
+def export_tracks(episode, tracks_3d, uv, vis, masks, query_view, query_frame, n_robot, export_root):
   episode_id = episode["meta"]["episode_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode_id)))
   os.makedirs(ep_dir, exist_ok=True)
-
-  np.savez_compressed(os.path.join(ep_dir, "tracks_3d.npz"), tracks_3d=tracks_3d.astype(np.float32))
 
   for view, cam_id in enumerate(episode["camera"]):
     cam_dir = os.path.join(ep_dir, cam_id)
     os.makedirs(cam_dir, exist_ok=True)
 
     np.savez_compressed(os.path.join(cam_dir, "tracks_2d.npz"), tracks_2d=uv[view], vis_2d=vis[view])
+    np.savez_compressed(os.path.join(cam_dir, "robot_mask.npz"), mask=masks[view])
 
   np.savez_compressed(
     os.path.join(ep_dir, "track_metadata.npz"),
@@ -302,6 +303,7 @@ def export_tracks(episode, tracks_3d, uv, vis, query_view, query_frame, n_robot,
     query_view=query_view,
     query_frame=query_frame,
   )
+  np.savez_compressed(os.path.join(ep_dir, "tracks_3d.npz"), tracks_3d=tracks_3d.astype(np.float32))
 
 
 def process_episode(episode_id, pb_renderer, config):
@@ -335,7 +337,7 @@ def process_episode(episode_id, pb_renderer, config):
   query_view, query_frame = query_view[idx], query_frame[idx]
   n_robot = len(on_arm)
 
-  uv, vis, slack = project_tracks(tracks_3d, episode, poses, pb_renderer, config)
+  uv, vis, slack, masks = project_tracks(tracks_3d, episode, poses, pb_renderer, config)
 
   keep = vis[query_view, query_frame, np.arange(len(query_view))]
   keep[n_robot:] &= never_seen_through(slack[:, :, n_robot:], config.tracks.max_seen_through)
@@ -351,6 +353,7 @@ def process_episode(episode_id, pb_renderer, config):
     tracks_3d[:, keep],
     uv[:, :, keep],
     vis[:, :, keep],
+    masks,
     query_view[keep],
     query_frame[keep],
     n_robot,

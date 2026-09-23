@@ -170,7 +170,7 @@ Per episode the layout is:
     ├── extrinsics_w2c.npy      (frames, 4, 4)
     ├── visibility.npy          (frames, points)
     ├── depth.npy               (frames, height, width)
-    └── foreground_mask.npy     (frames, height, width)   wrist view only
+    └── foreground_mask.npy     (frames, height, width)   the arm as the URDF renders it
 ```
 
 ### Verify — [`verify.ipynb`](verify.ipynb)
