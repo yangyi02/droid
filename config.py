@@ -72,7 +72,7 @@ def get_config():
   config.review = ml_collections.ConfigDict()
   config.review.depth_stride = 4
   config.review.scene_radius = 0.003
-  config.review.n_inspect = 40
+  config.review.n_inspect = 30
   config.review.fps = 30
 
   return config

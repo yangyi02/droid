@@ -9,6 +9,11 @@ from tqdm import tqdm
 import core.geometry
 
 
+def occlusion_colors(is_robot, visible):
+  palette = np.array([[34, 220, 100], [255, 65, 65], [56, 189, 248], [250, 204, 21]], dtype=np.uint8)
+  return palette[2 * np.asarray(is_robot, dtype=int) + ~np.asarray(visible, dtype=bool)]
+
+
 def draw_label(img, text, org, scale, colour, thickness, outline):
   cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), outline)
   cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, colour, thickness)

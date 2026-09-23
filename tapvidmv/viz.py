@@ -3,6 +3,7 @@ import matplotlib
 import numpy as np
 
 import release
+from core.visualization import occlusion_colors
 
 
 def track_colors(track_ids, colormap="turbo"):
@@ -19,11 +20,6 @@ def hex_colors(colors):
 
 def ascii_only(text):
   return text.encode("ascii", "replace").decode("ascii")
-
-
-def occlusion_colors(is_robot, visible):
-  palette = np.array([[34, 220, 100], [255, 65, 65], [56, 189, 248], [250, 204, 21]], dtype=np.uint8)
-  return palette[2 * np.asarray(is_robot, dtype=int) + ~np.asarray(visible, dtype=bool)]
 
 
 def view_color(view):
@@ -62,8 +58,6 @@ def draw_points(image, xy, *, visible=None, colors=None, radius=4):
     color = tuple(int(c) for c in colors[index % len(colors)])
     is_visible = True if visible is None else bool(visible[index])
     cv2.circle(canvas, (x, y), radius, color, -1 if is_visible else 1, cv2.LINE_AA)
-    if is_visible:
-      cv2.circle(canvas, (x, y), radius, (255, 255, 255), 1, cv2.LINE_AA)
   return canvas
 
 

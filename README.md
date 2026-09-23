@@ -189,20 +189,22 @@ python compute_review.py --config.runner.limit=5    # ~1 min and ~370 MB per epi
 rerun tapvidmv/data/review/<episode_id>.rrd
 ```
 
-The 3D view holds every camera's depth cloud, the moving frustums, and every track — cyan for
-the arm, amber for the background. Below it sits one 2D view per camera. Scrub the timeline and
+The 3D view holds every camera's depth cloud, the moving frustums, and every track — blue for
+the arm, green for the background. The camera views colour every track by what that camera
+calls it: blue and green where it is visible, yellow for the arm and red for the background
+where it is occluded — the same four colours as the TAPVid-MV picker and verify notebook. Below it sits one 2D view per camera. Scrub the timeline and
 a bad track shows up as a point sliding off its texture, or as a colour that disagrees with
 what the image plainly shows.
 
 `config.review.n_inspect` tracks are sampled at random (seeded, so an episode always shows the
 same ones) and singled out for closer reading:
 
-- **Every camera view** carries all of them as numbered dots — green where stage 3 called the
-  point visible in that camera, red where it did not — plus a yellow cross at the query pixel
-  of any born on this frame in this camera. The gap between cross and dot is reprojection error.
+- **Every camera view** labels each of them with its number, plus a magenta cross at
+  the query pixel of any born on this frame in this camera. The gap between cross and dot is
+  reprojection error.
 - **The 3D view** carries one at a time at `/inspect/<track>`: the point in magenta, a ray to
-  every camera centre coloured green/red/blue (visible, hidden, outside that camera's frustum —
-  a different thing from occluded), and one line of text with every verdict at once, e.g.
+  every camera centre coloured as the camera views colour the point, or grey where it falls
+  outside that camera's frustum — a different thing from occluded, and one line of text with every verdict at once, e.g.
   `31 (robot) | cam0 hidden | cam1 visible | cam2 off-frame`. `*` marks the query frame, `!` a
   camera calling a point visible while it lands outside the image. Only the first tree starts
   visible: read a number off a camera view, tick that tree on and the previous one off.

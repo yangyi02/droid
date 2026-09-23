@@ -10,16 +10,12 @@ import config
 import core.geometry
 import core.io
 import core.runner
+import core.visualization
 
 JPEG_QUALITY = 95
 
-ROBOT = [56, 189, 248]
-STATIC = [250, 204, 21]
-VISIBLE = [34, 220, 100]
-NOT_VISIBLE = [255, 65, 65]
-OUTSIDE = [90, 120, 255]
+OUTSIDE = [150, 150, 150]
 INSPECT = [255, 40, 235]
-QUERY = [255, 205, 30]
 
 TRACK_RADIUS_M = 0.003
 INSPECT_RADIUS_M = 0.006
@@ -57,8 +53,12 @@ class Review:
     return len(self.K)
 
   @property
+  def is_robot(self):
+    return np.arange(self.n_points) < self.n_robot
+
+  @property
   def track_colors(self):
-    return np.where(np.arange(self.n_points)[:, None] < self.n_robot, ROBOT, STATIC).astype(np.uint8)
+    return core.visualization.occlusion_colors(self.is_robot, True)
 
 
 def inspect_tracks(review, n_inspect):
@@ -87,7 +87,7 @@ def ray_color(review, view, t, track):
   inside, _ = frame_status(review, view, t, track)
   if not inside:
     return OUTSIDE
-  return VISIBLE if review.vis[view, t, track] else NOT_VISIBLE
+  return core.visualization.occlusion_colors(track < review.n_robot, review.vis[view, t, track])
 
 
 def query_cross(review, track):
@@ -131,7 +131,6 @@ def blueprint(review, inspect, episode_id, fps):
             name=f"Camera {view}",
             origin=f"/views/{view}",
             visual_bounds=rrb.VisualBounds2D(x_range=[0, int(wh[0])], y_range=[0, int(wh[1])]),
-            overrides={f"/views/{view}/tracks": rrb.EntityBehavior(visible=False)},
           )
           for view, wh in enumerate(review.image_wh)
         ]
@@ -185,7 +184,7 @@ def log_cameras(rec, review, episode, cfg):
         f"/views/{view}/tracks",
         rr.Points2D(
           np.stack([u[inside], v[inside]], axis=1) + 0.5,
-          colors=review.track_colors[inside],
+          colors=core.visualization.occlusion_colors(review.is_robot[inside], visible[inside]),
           radii=rr.Radius.ui_points(3),
           labels=[str(point) for point in np.flatnonzero(inside)],
           show_labels=False,
@@ -267,11 +266,11 @@ def log_inspect_views(rec, review, inspect):
         f"/views/{view}/inspect",
         rr.Points2D(
           np.stack([u[inside], v[inside]], axis=1) + 0.5,
-          colors=np.where(visible[inside, None], VISIBLE, NOT_VISIBLE).astype(np.uint8),
-          radii=rr.Radius.ui_points(5),
+          colors=core.visualization.occlusion_colors(review.is_robot[inspect][inside], visible[inside]),
+          radii=rr.Radius.ui_points(3),
           labels=[labels[i] for i in np.flatnonzero(inside)],
           show_labels=True,
-          draw_order=22,
+          draw_order=21,
         ),
       )
       born = (query_frame == t) & (query_view == view)
@@ -279,7 +278,7 @@ def log_inspect_views(rec, review, inspect):
         f"/views/{view}/query",
         rr.LineStrips2D(
           [cross for i in np.flatnonzero(born) for cross in query_cross(review, int(inspect[i]))],
-          colors=QUERY,
+          colors=INSPECT,
           radii=0.8,
           draw_order=23,
         ),
