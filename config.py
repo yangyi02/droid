@@ -55,11 +55,10 @@ def get_config():
 
   config.tracks = ml_collections.ConfigDict()
   config.tracks.num_query_frames = 3
-  config.tracks.points_per_class = 33
+  config.tracks.points_per_class = 16
   config.tracks.min_gap = 0.005
   config.tracks.match_radius = 0.02
   config.tracks.max_edge_step = 0.05
-  config.tracks.max_depth = 2.0
   config.tracks.mask_margin = 10
   config.tracks.urdf_tolerance = 0.006
   config.tracks.sensor_tolerance_base = 0.02

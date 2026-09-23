@@ -119,7 +119,7 @@ def depth_steps(depth, window=5):
 
 def find_static_candidates(episode, poses, pb_renderer, queries, config):
   robot = episode["robot"]
-  match_radius, max_depth = config.tracks.match_radius, config.tracks.max_depth
+  match_radius = config.tracks.match_radius
   max_step = config.tracks.max_edge_step
 
   points_3d, query_view, query_frame = [], [], []
@@ -136,7 +136,7 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
       depth = cam_data["raw_depth"][frame]
       K, T_cam2world = cam_data["K"], poses[src_cam]["extrinsics"][frame]
 
-      on_env = ~resize_mask(drawn[src_cam] > 0, config.tracks.mask_margin) & (depth > 0) & (depth <= max_depth)
+      on_env = ~resize_mask(drawn[src_cam] > 0, config.tracks.mask_margin) & (depth > 0)
       vs, us = np.where(on_env & (steps[src_cam] <= max_step))
 
       points = core.geometry.unproject_pixels(
@@ -155,7 +155,7 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
 
         speaks = np.isfinite(z_other) & (z_other > 0) & ~behind_arm
         agrees = np.abs(z_other - z) < match_radius
-        confirmed |= speaks & agrees & (z_other <= max_depth)
+        confirmed |= speaks & agrees
         doubted |= speaks & (~agrees | ~(step <= max_step))
 
       cell = spread_cells(points[confirmed & ~doubted], config.tracks.min_gap)
