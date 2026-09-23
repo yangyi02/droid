@@ -307,7 +307,6 @@ droid/
 │   ├── runner.py              #   Episode sharding + resume-aware batch loop
 │   └── visualization.py       #   Point clouds, tracking videos, 4D orbit
 ├── tapvidmv/                  # The released evaluation set -- see its own README
-├── reports/                   # Tech-report stats and figures (stale, unmaintained)
 ├── assets/                    # Franka + Robotiq URDF and meshes
 └── third_party/               # Gitignored: submodule source + downloaded weights
 ```
