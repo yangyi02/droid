@@ -54,13 +54,14 @@ def get_config():
   config.extrinsics.max_depth = 1.5
 
   config.tracks = ml_collections.ConfigDict()
-  config.tracks.num_query_frames = 3
+  config.tracks.num_query_frames = 2
   config.tracks.points_per_class = 10
   config.tracks.min_gap = 0.005
   config.tracks.match_radius = 0.02
   config.tracks.max_edge_step = 0.05
-  config.tracks.max_depth = 3.0
+  config.tracks.max_depth = 2.0
   config.tracks.mask_margin = 10
+  config.tracks.edge_margin = 64
   config.tracks.urdf_tolerance = 0.006
   config.tracks.sensor_tolerance_floor = 0.025
   config.tracks.disparity_tolerance = 3.0

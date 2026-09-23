@@ -136,7 +136,7 @@ it is what that camera films.
 Distances are measured at the first frame's pose, where the same spot on a link always lands in
 the same place whatever the arm is doing. A stretch of surface covered on an earlier query
 frame is the last place the next one looks, so the gripper — in view on every query frame — is
-covered once rather than five times.
+covered once rather than on every query frame.
 
 | Knob | |
 |---|---|
@@ -146,6 +146,7 @@ covered once rather than five times.
 | `urdf_tolerance` | How far behind the rendered robot a point may sit and still count as visible. Swept over ten episodes, the two errors it trades exchange about one for one anywhere between 0.5 cm and 1 cm and turn sharply worse outside that. The gripper's fingers are thinner than the tolerance, so a value covering pose error also covers a whole finger |
 | `sensor_tolerance_floor`, `disparity_tolerance` | The same against measured depth, as `max(floor, range² × disparity_tolerance / (fx × baseline))`. Stereo measures disparity, so its error in metres grows with the square of range and differs per camera; the floor is the metric error of the pose the point is projected with, which does not shrink up close |
 | `hysteresis` | How far past the cut a point's margin must go before its label changes. Without it a point resting on the cut flips every few frames: an arm point passing behind things, or a background point next to a shallow depth edge |
+| `edge_margin` | Pixels. No query is born this close to the edge of its own image, nor of any fixed camera that sees it on its birth frame — which, for a background point, is where it stays for the whole episode. Farthest-point sampling reaches for the rim of whatever it is offered, and the image border is part of that rim |
 | `max_seen_through`, `gripper_clearance`, `match_radius`, `max_edge_step`, `mask_margin` | Thresholds for the steps above |
 
 **Output** — `config.paths.tracks/<episode_id>/`

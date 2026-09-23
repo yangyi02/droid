@@ -18,6 +18,21 @@ def resize_mask(mask, margin):
   return morph(mask.astype(np.uint8), kernel).astype(bool)
 
 
+def near_edge(u, v, width, height, margin):
+  rim = np.minimum.reduce([u, v, width - 1 - u, height - 1 - v]) < margin
+  return core.geometry.in_frame(u, v, width, height) & rim
+
+
+def on_fixed_rim(points, episode, poses, frame, src_cam, margin):
+  rim = np.zeros(len(points), dtype=bool)
+  for cam_id, cam_data in episode["camera"].items():
+    if cam_id in (src_cam, episode["meta"]["wrist_serial"]):
+      continue
+    u, v, z = core.geometry.project_points(points, cam_data["K"], poses[cam_id]["extrinsics"][frame])
+    rim |= (z > 0) & near_edge(u, v, *cam_data["raw_depth"][frame].shape[::-1], margin)
+  return rim
+
+
 def query_frames(episode, poses, pb_renderer, config):
   robot = episode["robot"]
   reach = len(robot["joint_positions"])
@@ -82,11 +97,13 @@ def find_robot_candidates(episode, poses, pb_renderer, queries, config):
 
       u, v, z = us.astype(np.float32), vs.astype(np.float32), urdf_depth[vs, us]
       sensor = sensor_slack(cam_data, frame, u, v, z, config)
-      lit = np.isinf(sensor) | (sensor >= -1)
+      lit = (np.isinf(sensor) | (sensor >= -1)) & ~near_edge(u, v, width, height, config.tracks.edge_margin)
 
-      surface = core.geometry.unproject_pixels(u[lit], v[lit], z[lit], K, T_cam2world)
+      surface = core.geometry.unproject_pixels(u, v, z, K, T_cam2world)
+      keep = lit & ~on_fixed_rim(surface, episode, poses, frame, src_cam, config.tracks.edge_margin)
+      surface = surface[keep]
       cell = spread_cells(surface, config.tracks.min_gap)
-      on_parts = np.stack([obj_ids[vs, us][lit], link_ids[vs, us][lit]], axis=1)[cell]
+      on_parts = np.stack([obj_ids[vs, us][keep], link_ids[vs, us][keep]], axis=1)[cell]
 
       local.append(link_local(surface[cell], on_parts))
       parts.append(on_parts)
@@ -145,7 +162,8 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
       )
 
       confirmed = np.zeros(len(points), dtype=bool)
-      doubted = np.zeros(len(points), dtype=bool)
+      doubted = near_edge(us, vs, *depth.shape[::-1], config.tracks.edge_margin)
+      doubted |= on_fixed_rim(points, episode, poses, frame, src_cam, config.tracks.edge_margin)
       for other_cam, other_data in episode["camera"].items():
         if other_cam == src_cam:
           continue
