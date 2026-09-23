@@ -203,7 +203,7 @@ gs://dm-tapnet/tapvidmv/droid/<episode_id>/...
 | `shortlist.ipynb` | Steps 1 & 2 — calibrate the cuts, draw the pool |
 | `review.ipynb` | Step 3 — the human pass, ground truth drawn on every clip |
 | `export.py` | Step 4 — pipeline outputs → release layout; owns `RELEASE_ROOT` |
-| `run_export.sh` | Step 4 in parallel — one worker per shard, logs under `logs/` |
+| `run_export.sh` | Step 4 in parallel — one worker per shard, logs under `logs/`, then `droid_file_list.txt` at the release root: every file in it, one relative path per line |
 | `verify.ipynb` | Verification — reads the export, seven ways of asking whether it is right |
 | `release.py` | Reads the release layout: `View`/`Episode`, projection, unprojection |
 | `viz.py` | Drawing primitives: points, trails, montage, frame reading |
