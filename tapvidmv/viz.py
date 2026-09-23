@@ -33,6 +33,11 @@ def pick_tracks(vis, count=24, *, frame=None, require_views=2, seed=7):
   return np.sort(np.random.default_rng(seed).choice(candidates, count, replace=False))
 
 
+def occlusion_colors(is_robot, visible):
+  palette = np.array([[34, 220, 100], [255, 65, 65], [56, 189, 248], [250, 204, 21]], dtype=np.uint8)
+  return palette[2 * np.asarray(is_robot, dtype=int) + ~np.asarray(visible, dtype=bool)]
+
+
 def view_color(view):
   palette = np.array([[228, 92, 74], [74, 160, 228], [96, 200, 110], [220, 170, 60]])
   return palette[view % len(palette)]
