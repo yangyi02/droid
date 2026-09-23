@@ -21,18 +21,6 @@ def ascii_only(text):
   return text.encode("ascii", "replace").decode("ascii")
 
 
-def pick_tracks(vis, count=24, *, frame=None, require_views=2, seed=7):
-  seen_anywhere = vis.any(axis=1)
-  eligible = seen_anywhere.sum(axis=0) >= require_views
-  if frame is not None:
-    eligible &= vis[:, frame].any(axis=0)
-
-  candidates = np.flatnonzero(eligible)
-  if len(candidates) <= count:
-    return candidates
-  return np.sort(np.random.default_rng(seed).choice(candidates, count, replace=False))
-
-
 def occlusion_colors(is_robot, visible):
   palette = np.array([[34, 220, 100], [255, 65, 65], [56, 189, 248], [250, 204, 21]], dtype=np.uint8)
   return palette[2 * np.asarray(is_robot, dtype=int) + ~np.asarray(visible, dtype=bool)]
@@ -409,29 +397,83 @@ def covisibility_matrix(visibility):
   return (flat.T @ flat) / flat.shape[0]
 
 
-def crossview_gap_px(episode, source, target, frames):
+def crossview_reprojection(episode, source, target, frame):
   import core.geometry
 
   source_data, target_data = episode.views[source], episode.views[target]
   xy_source, z_source = episode.project(source)
   xy_target, z_target = episode.project(target)
+  depth = source_data.depth(frame)
+  both = source_data.visibility[frame] & target_data.visibility[frame] & (z_source[frame] > 0) & (z_target[frame] > 0)
+  tracks = np.flatnonzero(both)
+  if depth is None or not len(tracks):
+    return tracks[:0], np.zeros((0, 2)), np.zeros((0, 2)), np.zeros(0)
+  uv = xy_source[frame][tracks]
+  seen_z = core.geometry.sample_depth(depth, uv[:, 0], uv[:, 1], z_source[frame][tracks])
+  fx, fy, cx, cy = [float(v) for v in source_data.intrinsics]
+  camera_points = np.stack([(uv[:, 0] - cx) / fx * seen_z, (uv[:, 1] - cy) / fy * seen_z, seen_z], axis=-1)
+  rotation, translation = source_data.extrinsics_w2c[frame][:3, :3], source_data.extrinsics_w2c[frame][:3, 3]
+  world = (camera_points - translation) @ rotation
+  target_w2c = target_data.extrinsics_w2c[frame][None]
+  reprojected, z_re = release.project_tracks(world[None], target_data.intrinsics, target_w2c)
+  keep = np.isfinite(seen_z) & (seen_z > 0) & (z_re[0] > 0)
+  behind = seen_z[keep] - z_source[frame][tracks[keep]]
+  return tracks[keep], xy_target[frame][tracks[keep]], reprojected[0][keep], behind
+
+
+def crossview_gap_px(episode, source, target, frames):
   gaps = []
   for frame in frames:
-    depth = source_data.depth(frame)
-    if depth is None:
-      continue
-    both = source_data.visibility[frame] & target_data.visibility[frame] & (z_source[frame] > 0) & (z_target[frame] > 0)
-    if not both.any():
-      continue
-    uv = xy_source[frame][both]
-    seen_z = core.geometry.sample_depth(depth, uv[:, 0], uv[:, 1], z_source[frame][both])
-    fx, fy, cx, cy = [float(v) for v in source_data.intrinsics]
-    camera_points = np.stack([(uv[:, 0] - cx) / fx * seen_z, (uv[:, 1] - cy) / fy * seen_z, seen_z], axis=-1)
-    rotation, translation = source_data.extrinsics_w2c[frame][:3, :3], source_data.extrinsics_w2c[frame][:3, 3]
-    world = (camera_points - translation) @ rotation
-    reprojected, z_re = release.project_tracks(
-      world[None], target_data.intrinsics, target_data.extrinsics_w2c[frame][None]
-    )
-    keep = np.isfinite(seen_z) & (seen_z > 0) & (z_re[0] > 0)
-    gaps.append(np.linalg.norm(reprojected[0][keep] - xy_target[frame][both][keep], axis=-1))
+    _, truth, reprojected, _ = crossview_reprojection(episode, source, target, frame)
+    gaps.append(np.linalg.norm(reprojected - truth, axis=-1))
   return np.concatenate(gaps) if gaps else np.zeros(0)
+
+
+def moving_tracks(tracks_xyz):
+  return np.abs(tracks_xyz - tracks_xyz[:1]).max(axis=(0, 2)) > 0
+
+
+def gap_video(episode, *, cell_width=560, min_gap_px=20.0, suspect_behind_m=0.05):
+  source_colors = [(255, 255, 255), (255, 140, 0), (0, 220, 255)]
+  segments = {}
+  behind, counted = np.zeros(episode.num_tracks), np.zeros(episode.num_tracks)
+  for frame in range(episode.num_frames):
+    for source in range(episode.num_views):
+      for target in range(episode.num_views):
+        if source == target:
+          continue
+        tracks, truth, reprojected, depth_behind = crossview_reprojection(episode, source, target, frame)
+        if source != 0:
+          np.add.at(behind, tracks, depth_behind)
+          np.add.at(counted, tracks, 1)
+        far = np.linalg.norm(reprojected - truth, axis=-1) > min_gap_px
+        segments.setdefault((frame, target), []).extend(
+          (start, end, source_colors[source]) for start, end in zip(truth[far], reprojected[far])
+        )
+  suspects = np.flatnonzero(behind / np.maximum(counted, 1) > suspect_behind_m)
+
+  is_robot = moving_tracks(episode.tracks_xyz)
+  projected = [episode.project(view) for view in range(episode.num_views)]
+  frames = []
+  for frame in range(episode.num_frames):
+    panels = []
+    for view in range(episode.num_views):
+      data = episode.views[view]
+      canvas = data.image(frame)
+      scale = cell_width / canvas.shape[1]
+      canvas = cv2.resize(canvas, (cell_width, int(round(canvas.shape[0] * scale))), interpolation=cv2.INTER_AREA)
+      xy, z = projected[view]
+      xy, front = xy[frame] * scale, z[frame] > 0
+      colors = occlusion_colors(is_robot[front], data.visibility[frame, front])
+      canvas = draw_points(canvas, xy[front], colors=colors, radius=3)
+      for track in suspects[front[suspects]]:
+        center = tuple(int(round(c)) for c in xy[track])
+        cv2.circle(canvas, center, 9, (255, 0, 255), 2, cv2.LINE_AA)
+        label = (center[0] + 10, center[1] - 8)
+        cv2.putText(canvas, str(track), label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 255), 1, cv2.LINE_AA)
+      for start, end, color in segments.get((frame, view), []):
+        start, end = tuple(int(round(c)) for c in start * scale), tuple(int(round(c)) for c in end * scale)
+        cv2.line(canvas, start, end, color, 1, cv2.LINE_AA)
+      panels.append(header_panel(canvas, f"view {view} ({data.kind})  frame {frame}/{episode.num_frames - 1}"))
+    frames.append(montage(panels, columns=episode.num_views, cell_width=cell_width))
+  return np.stack(frames), suspects
