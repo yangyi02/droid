@@ -95,9 +95,9 @@ def query_cross(review, track):
   return [[[x - 7, y], [x + 7, y]], [[x, y - 7], [x, y + 7]]]
 
 
-def depth_cloud(depth, img_rgb, K, T_cam2world, stride, max_depth):
+def depth_cloud(depth, img_rgb, K, T_cam2world, stride):
   strided = depth[::stride, ::stride]
-  v, u = np.nonzero((strided > 0) & (strided <= max_depth))
+  v, u = np.nonzero(strided > 0)
   v, u = v * stride, u * stride
   points_world = core.geometry.unproject_pixels(
     u.astype(np.float32), v.astype(np.float32), depth[v, u], K, T_cam2world
@@ -193,9 +193,7 @@ def log_cameras(rec, review, episode, cfg):
         ),
       )
 
-      points_world, colors = depth_cloud(
-        cam_data["raw_depth"][t], img_rgb, K, T_cam2world, cfg.depth_stride, cfg.max_depth
-      )
+      points_world, colors = depth_cloud(cam_data["raw_depth"][t], img_rgb, K, T_cam2world, cfg.depth_stride)
       rec.log(f"/scene/{view}", rr.Points3D(points_world, colors=colors, radii=cfg.scene_radius))
       n_scene_points += len(points_world)
 

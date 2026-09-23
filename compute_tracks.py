@@ -41,10 +41,11 @@ def spread_cells(points, min_gap):
   return order[first]
 
 
-def sensor_slack(depth, u, v, z_pred, config):
-  z = core.geometry.sample_depth(depth, u, v, z_pred)
+def sensor_slack(cam_data, frame, u, v, z_pred, config):
+  z = core.geometry.sample_depth(cam_data["raw_depth"][frame], u, v, z_pred)
   gap = np.where(z == 0, np.inf, z) - z_pred
-  return gap / (config.tracks.sensor_tolerance_base + config.tracks.sensor_tolerance_slope * z_pred)
+  stereo = z_pred**2 * config.tracks.disparity_tolerance / (cam_data["K"][0, 0] * cam_data["baseline"])
+  return gap / np.maximum(config.tracks.sensor_tolerance_floor, stereo)
 
 
 def urdf_gap(depth, u, v, z_pred):
@@ -80,7 +81,7 @@ def find_robot_candidates(episode, poses, pb_renderer, queries, config):
       vs, us = np.where(resize_mask(obj_ids == pb_renderer.robot_id, -config.tracks.mask_margin))
 
       u, v, z = us.astype(np.float32), vs.astype(np.float32), urdf_depth[vs, us]
-      sensor = sensor_slack(cam_data["raw_depth"][frame], u, v, z, config)
+      sensor = sensor_slack(cam_data, frame, u, v, z, config)
       lit = np.isinf(sensor) | (sensor >= -1)
 
       surface = core.geometry.unproject_pixels(u[lit], v[lit], z[lit], K, T_cam2world)
@@ -119,7 +120,7 @@ def depth_steps(depth, window=5):
 
 def find_static_candidates(episode, poses, pb_renderer, queries, config):
   robot = episode["robot"]
-  match_radius = config.tracks.match_radius
+  match_radius, max_depth = config.tracks.match_radius, config.tracks.max_depth
   max_step = config.tracks.max_edge_step
 
   points_3d, query_view, query_frame = [], [], []
@@ -136,7 +137,7 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
       depth = cam_data["raw_depth"][frame]
       K, T_cam2world = cam_data["K"], poses[src_cam]["extrinsics"][frame]
 
-      on_env = ~resize_mask(drawn[src_cam] > 0, config.tracks.mask_margin) & (depth > 0)
+      on_env = ~resize_mask(drawn[src_cam] > 0, config.tracks.mask_margin) & (depth > 0) & (depth <= max_depth)
       vs, us = np.where(on_env & (steps[src_cam] <= max_step))
 
       points = core.geometry.unproject_pixels(
@@ -155,7 +156,7 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
 
         speaks = np.isfinite(z_other) & (z_other > 0) & ~behind_arm
         agrees = np.abs(z_other - z) < match_radius
-        confirmed |= speaks & agrees
+        confirmed |= speaks & agrees & (z_other <= max_depth)
         doubted |= speaks & (~agrees | ~(step <= max_step))
 
       cell = spread_cells(points[confirmed & ~doubted], config.tracks.min_gap)
@@ -166,7 +167,7 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
   return np.concatenate(points_3d).astype(np.float32), np.concatenate(query_view), np.concatenate(query_frame)
 
 
-def project_tracks(tracks_3d, n_robot, episode, poses, pb_renderer, config):
+def project_tracks(tracks_3d, episode, poses, pb_renderer, config):
   robot = episode["robot"]
   n_frames, n_points, _ = tracks_3d.shape
   n_views = len(episode["camera"])
@@ -195,15 +196,12 @@ def project_tracks(tracks_3d, n_robot, episode, poses, pb_renderer, config):
       inside[view, t] = core.geometry.in_frame(u, v, width, height) & (z_pred > 0)
 
       urdf = urdf_gap(urdf_depth, u, v, z_pred)
-      sensor = sensor_slack(cam_data["raw_depth"][t], u, v, z_pred, config)
+      sensor = sensor_slack(cam_data, t, u, v, z_pred, config)
 
       margin[view, t] = np.fmin(urdf / config.tracks.urdf_tolerance, np.where(np.isinf(sensor), np.nan, sensor))
       slack[view, t] = sensor
 
-  read = np.concatenate(
-    [latch(margin[:, :, :n_robot], config.tracks.hysteresis), latch(margin[:, :, n_robot:], 0.0)], axis=2
-  )
-  return uv, settle(read, inside), slack
+  return uv, settle(latch(margin, config.tracks.hysteresis), inside), slack
 
 
 def latch(margin, band):
@@ -319,7 +317,7 @@ def process_episode(episode_id, pb_renderer, config):
   query_view, query_frame = query_view[idx], query_frame[idx]
   n_robot = len(on_arm)
 
-  uv, vis, slack = project_tracks(tracks_3d, n_robot, episode, poses, pb_renderer, config)
+  uv, vis, slack = project_tracks(tracks_3d, episode, poses, pb_renderer, config)
 
   keep = vis[query_view, query_frame, np.arange(len(query_view))]
   keep[n_robot:] &= never_seen_through(slack[:, :, n_robot:], config.tracks.max_seen_through)

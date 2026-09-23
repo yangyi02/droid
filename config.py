@@ -55,14 +55,15 @@ def get_config():
 
   config.tracks = ml_collections.ConfigDict()
   config.tracks.num_query_frames = 3
-  config.tracks.points_per_class = 16
+  config.tracks.points_per_class = 10
   config.tracks.min_gap = 0.005
   config.tracks.match_radius = 0.02
   config.tracks.max_edge_step = 0.05
+  config.tracks.max_depth = 3.0
   config.tracks.mask_margin = 10
   config.tracks.urdf_tolerance = 0.006
-  config.tracks.sensor_tolerance_base = 0.02
-  config.tracks.sensor_tolerance_slope = 0.012
+  config.tracks.sensor_tolerance_floor = 0.025
+  config.tracks.disparity_tolerance = 3.0
   config.tracks.hysteresis = 0.5
   config.tracks.max_seen_through = 0.02
   config.tracks.gripper_clearance = 0.08
@@ -70,7 +71,6 @@ def get_config():
   config.review = ml_collections.ConfigDict()
   config.review.depth_stride = 4
   config.review.scene_radius = 0.003
-  config.review.max_depth = 2.0
   config.review.n_inspect = 40
   config.review.fps = 30
 

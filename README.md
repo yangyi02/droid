@@ -30,7 +30,7 @@ Every path, threshold and optimizer setting lives in `config.py`, read through
 `ml_collections.config_flags`, so any field can be overridden on the command line:
 
 ```bash
-python compute_tracks.py --config.tracks.sensor_tolerance_base=0.03 --config.tracks.points_per_class=30
+python compute_tracks.py --config.tracks.disparity_tolerance=3 --config.tracks.points_per_class=30
 python compute_extrinsics.py --config.extrinsics.lr=0.005 --config.extrinsics.n_steps=800
 python compute_depth.py --config.depth.max_frames=400 --config.runner.limit=20
 python compute_tracks.py --config.render.gpu=False   # CPU rasteriser, for a box with no EGL
@@ -95,13 +95,13 @@ projected into every view.
 | Step | |
 |---|---|
 | `query_frames` | Frame 0, plus the best frame in each equal stretch of the rest: the one where the camera that sees the least of the arm sees the most of it. Frame 0 is there because a forward-only model has nothing to track from without it, and it takes the first stretch's place rather than being added, so no two queries sit a tenth of a second apart. Choosing beats spacing — on one episode an evenly spaced frame left a camera 53 candidates for a quota of 20 while another frame in the same stretch offered 2243. The cameras share the frames: each lands within a few percent of its own best, and it thirds the distinct query times a tracker must run a pass for |
-| `find_static_candidates` | Background pixels that no camera puts on a depth edge, and that every camera able to see the place agrees about within `match_radius`. A camera abstains where it measured nothing, where the arm is in the way, or where the place is off its image; one that reads a surface *elsewhere* is reporting the point is not where we think |
+| `find_static_candidates` | Background pixels within `max_depth` that no camera puts on a depth edge, and that every camera able to see the place agrees about within `match_radius`. A camera abstains where it measured nothing, where the arm is in the way, or where the place is off its image; one that reads a surface *elsewhere* is reporting the point is not where we think |
 | `find_robot_candidates` | Robot-mask pixels, kept in the frame of the link they sit on. No second camera is asked — the position comes from kinematics, not depth. A candidate the depth map calls hidden on its own birth frame is dropped: it could never be a query |
 | `out_of_reach` | Drop background candidates the gripper ever closes within `gripper_clearance` of: those are the ones it carries away. It reads only 3D positions and robot poses, so it runs before the sampling |
 | `sample_tracks` | Per camera per query frame, `points_per_class` on the arm and as many on the background, every pick as far as it goes from everything taken before it |
 | `carry_robot` | The chosen arm points on every frame, by forward kinematics |
 | `project_tracks` | Every point in every view at every frame: where it lands, and how far behind it the nearest surface sits — the rendered robot in units of `urdf_tolerance`, the depth map in units of its own noise at that range |
-| `latch` | Turn that margin into a label. The arm gets two lines `hysteresis` either side of the cut so a point resting on it stops flickering; the background keeps the single cut |
+| `latch` | Turn that margin into a label. Two lines `hysteresis` either side of the cut, so a point resting on it stops flickering |
 | `settle` | Drop labels that flip for one frame and flip straight back — nothing on a rigid arm is revealed and hidden again in a thirtieth of a second |
 | `never_seen_through` | Drop background points the depth map keeps looking through on more than `max_seen_through` of their clear-line frames: they sat on something that has since moved |
 
@@ -144,8 +144,8 @@ covered once rather than five times.
 | `points_per_class` | Points per class per camera per query frame. An episode holds `num_query_frames × views × 2 × points_per_class`. Area is deliberately not part of this: it decides how many candidates exist, not how many are wanted |
 | `min_gap` | Metres between two candidates on the surface. Metres, not pixels: the wrist camera sits 15 cm from the gripper and the room cameras 65 cm from the arm, so a pixel grid hands the gripper six times the density of everything else |
 | `urdf_tolerance` | How far behind the rendered robot a point may sit and still count as visible. Swept over ten episodes, the two errors it trades exchange about one for one anywhere between 0.5 cm and 1 cm and turn sharply worse outside that. The gripper's fingers are thinner than the tolerance, so a value covering pose error also covers a whole finger |
-| `sensor_tolerance_base`, `sensor_tolerance_slope` | The same against measured depth, as `base + slope × range`. Stereo error grows with distance — binned by range, the gap between sensor noise and real occlusion sits near 2.5 cm at half a metre and near 4 cm at a metre and a half. Setting it by range also does away with naming the wrist camera; it is simply the close one |
-| `hysteresis` | How far past the cut an arm point's margin must go before its label changes. Without it a point resting on the cut flips every few frames — and the worst affected are the ones that really do pass behind things, exactly the ones worth keeping |
+| `sensor_tolerance_floor`, `disparity_tolerance` | The same against measured depth, as `max(floor, range² × disparity_tolerance / (fx × baseline))`. Stereo measures disparity, so its error in metres grows with the square of range and differs per camera; the floor is the metric error of the pose the point is projected with, which does not shrink up close |
+| `hysteresis` | How far past the cut a point's margin must go before its label changes. Without it a point resting on the cut flips every few frames: an arm point passing behind things, or a background point next to a shallow depth edge |
 | `max_seen_through`, `gripper_clearance`, `match_radius`, `max_edge_step`, `mask_margin` | Thresholds for the steps above |
 
 **Output** — `config.paths.tracks/<episode_id>/`
@@ -212,7 +212,6 @@ every stage uses, so `--config.runner.limit=5` is the five episodes stage 3 ran 
 |---|---|
 | `depth_stride` | Every nth pixel of the depth map becomes a scene point. 4 is ~20 M points and ~370 MB for a 150-frame three-camera episode; 2 is four times that, and the whole recording must reach the viewer before it is useful |
 | `scene_radius` | Metres. About half the spacing the stride leaves on the surface (`stride × range / focal`, ~2.7 mm at a metre with stride 4), or the cloud is full of gaps and an occluder cannot be told from empty air |
-| `max_depth` | Metres. 2 m is the DROID tabletop; past it is the rest of the room |
 | `n_inspect` | How many tracks get the closer reading above |
 | `fps` | Playback speed in the viewer, not a claim about the source |
 
