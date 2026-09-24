@@ -75,11 +75,15 @@ robot.npz                      # joint_positions, T_ee_base_all, T_cam_ee_init, 
 
 ### Stage 2 — `compute_extrinsics.py`
 
-The robot is rasterised from each camera's current pose estimate and the resulting cloud is
-aligned against the observed depth: `init_camera_states` reads the dataset's pre-calibrated
-extrinsics from metadata, `per_camera_alignment` refines each camera on its own, and
-`global_joint_alignment` optimises all of them together against a Chamfer term between camera
-pairs plus a depth term per camera.
+The robot is rasterised from each camera's current pose estimate and compared with the observed
+depth. `init_camera_states` reads the dataset's pre-calibrated extrinsics from metadata, then
+`joint_alignment` moves all cameras together for two rounds (re-rendering between them) against
+`Σ chamfer_px + 0.6 × Σ disparity`: a pixel-space Chamfer term between camera pairs and a robot
+disparity residual per camera, truncated at 100 px, with points that leave the image charged the
+full 100 px.
+
+The previous route, A0 (`per_camera_alignment` on depth L1, then a joint depth L1 + metric Chamfer
+stage), is deprecated and kept only for comparison: `--config.extrinsics.method=a0`.
 
 **Output** — `extrinsics/<episode_id>/<cam_serial>/extrinsics.json`, holding `base_extrinsic`
 (4×4) and `extrinsics` (N×4×4). Both are **cam2world**; the export inverts them.
@@ -173,9 +177,11 @@ bash run_parallel.sh tracks "" --config.paths.episode_list=tapvidmv/episodes_eva
 ### Stage 4 — `compute_metrics.py`
 
 One `metrics/<episode_id>/metrics.json` per episode, so ranks never share a file and a crash
-costs only its own episode. It holds stage 2's own objective read at the pose it converged to
-— `chamfer_*` and `overlap_*` per camera pair, `robot_loss_*` per camera — plus site, scene,
-camera count and frame count. Nothing is reduced to a single "worst camera" number; whatever
+costs only its own episode. It holds, at the poses stage 2 converged to, `chamfer_px_*` and
+`overlap_px_*` per camera pair (one camera's depth points against another's dense disparity map,
+in pixels), the metric `chamfer_*` and `overlap_*` per camera pair (3D, 5 cm match radius), and
+`robot_loss_*` per camera (depth L1 on the rendered arm) — plus site, scene, camera count and
+frame count. Nothing is reduced to a single "worst camera" number; whatever
 reads them decides which view condemns an episode.
 
 ### Stage 5 — `compute_review.py`
@@ -305,8 +311,8 @@ droid/
 │   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
 │   ├── geometry.py            #   project, unproject, poses, farthest-point sampling
 │   ├── io.py                  #   Metadata, depth/extrinsics/track loading
-│   ├── physics.py             #   PyBulletRenderer: depth, mask and segmentation renders
-│   ├── pointcloud.py          #   Robot/scene clouds, chamfer + overlap, depth loss
+│   ├── physics.py             #   PyBulletRenderer and RenderPool: depth, mask and segmentation renders
+│   ├── pointcloud.py          #   Robot/scene clouds, chamfer(_px) + overlap(_px), depth and disparity losses
 │   ├── runner.py              #   Episode sharding + resume-aware batch loop
 │   └── visualization.py       #   Point clouds, tracking videos, 4D orbit
 ├── tapvidmv/                  # The released evaluation set -- see its own README

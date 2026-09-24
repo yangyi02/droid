@@ -1,4 +1,5 @@
 import importlib.util
+import multiprocessing
 import os
 
 import numpy as np
@@ -12,8 +13,8 @@ GRIPPER_WIDTH_OFFSET = 0.08
 
 
 def metric_depth(depth_buf, height, width):
-  buf = np.reshape(depth_buf, (height, width))
-  return (FAR_PLANE * NEAR_PLANE) / (FAR_PLANE - buf * (FAR_PLANE - NEAR_PLANE))
+  buf = np.reshape(depth_buf, (height, width)).astype(np.float32)
+  return np.float32(FAR_PLANE * NEAR_PLANE) / (np.float32(FAR_PLANE) - buf * np.float32(FAR_PLANE - NEAR_PLANE))
 
 
 def link_transform(obj_id, link_id):
@@ -48,6 +49,7 @@ class PyBulletRenderer:
     if not pybullet.isNumpyEnabled():
       raise RuntimeError("pybullet was built without NumPy: getCameraImage is 2x slower. Rerun bash setup.sh")
 
+    self.urdf = urdf
     self.gpu = bool(gpu) and _load_egl()
     if gpu and not self.gpu:
       raise RuntimeError("EGL requested but the plugin did not load. --config.render.gpu=False")
@@ -126,8 +128,43 @@ class PyBulletRenderer:
   def render_segmentation(self, T_cam2world, K, width, height):
     depth_buf, seg_buf = self._render_raw(T_cam2world, K, width, height)
     metric = metric_depth(depth_buf, height, width)
-    metric = np.where(metric < FAR_PLANE * 0.99, metric, 0.0)
+    metric = np.where(metric < FAR_PLANE * 0.99, metric, np.float32(0.0))
     seg_array = np.reshape(seg_buf, (height, width)).astype(np.int32)
     obj_ids = seg_array & 0xFFFFFF
     link_ids = (seg_array >> 24) - 1
     return obj_ids, link_ids, metric
+
+
+_worker = None
+
+
+def _start_worker(urdf, gpu):
+  global _worker
+  _worker = PyBulletRenderer(urdf, gpu)
+
+
+def _render_frame(task):
+  joint_positions, gripper_position, T_cam2world, K, width, height = task
+  _worker.update_robot_pose(joint_positions, gripper_position)
+  _, link_ids, depth = _worker.render_segmentation(T_cam2world, K, width, height)
+  return link_ids.astype(np.int16), depth
+
+
+class RenderPool:
+  def __init__(self, renderer, workers):
+    self.gripper_links = renderer.gripper_links
+    self.pool = multiprocessing.get_context("spawn").Pool(workers, _start_worker, (renderer.urdf, renderer.gpu))
+
+  def render(self, robot, T_cam2world, K, width, height):
+    tasks = [
+      (robot["joint_positions"][t], robot["gripper_positions"][t], T_cam2world[t], K, width, height)
+      for t in range(len(T_cam2world))
+    ]
+    frames = self.pool.map(_render_frame, tasks, chunksize=8)
+    return np.stack([f[0] for f in frames]), np.stack([f[1] for f in frames])
+
+  def render_cameras(self, episode, poses):
+    return {
+      cam_id: self.render(episode["robot"], poses[cam_id]["extrinsics"], cam_data["K"], *cam_data["raw_depth"].shape[:0:-1])
+      for cam_id, cam_data in episode["camera"].items()
+    }

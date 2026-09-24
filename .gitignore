@@ -6,3 +6,4 @@ logs/
 previews/
 venv/
 third_party/
+tmp/
