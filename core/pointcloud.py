@@ -15,17 +15,10 @@ def sample_camera_points(mask, z, K, n_points):
   return core.geometry.unproject_camera_frame(u, v, z[v, u], K)
 
 
-def extract_robot_clouds(cam_id, episode, rendered, gripper_links, base_extrinsic, device, depth_batch, n_points):
-  is_wrist = cam_id == episode["meta"]["wrist_serial"]
-  K = episode["camera"][cam_id]["K"]
-  link_ids, rendered_depth = rendered
-
+def extract_robot_clouds(K, rendered, base_extrinsic, device, depth_batch, n_points):
   cache_X, kept = [], []
-  for t in range(len(rendered_depth)):
-    visible = rendered_depth[t] > 0
-    if is_wrist:
-      visible &= np.isin(link_ids[t], gripper_links)
-    points_cam = sample_camera_points(visible, rendered_depth[t], K, n_points)
+  for t in range(len(rendered)):
+    points_cam = sample_camera_points(rendered[t] > 0, rendered[t], K, n_points)
     if points_cam is None:
       continue
 
@@ -35,12 +28,12 @@ def extract_robot_clouds(cam_id, episode, rendered, gripper_links, base_extrinsi
   return torch.stack(cache_X), depth_batch[kept]
 
 
-def robot_clouds(episode, poses, renders, gripper_links, device, n_points):
+def robot_clouds(episode, poses, renders, device, n_points):
   robot_points, depth_batch, K = {}, {}, {}
   for cam_id, cam_data in episode["camera"].items():
     observed = torch.tensor(np.asarray(cam_data["raw_depth"], dtype=np.float32), device=device).unsqueeze(1)
     robot_points[cam_id], depth_batch[cam_id] = extract_robot_clouds(
-      cam_id, episode, renders[cam_id], gripper_links, poses[cam_id]["base_extrinsic"], device, observed, n_points
+      cam_data["K"], renders[cam_id], poses[cam_id]["base_extrinsic"], device, observed, n_points
     )
     K[cam_id] = torch.tensor(cam_data["K"], dtype=torch.float32, device=device)
 

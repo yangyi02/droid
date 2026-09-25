@@ -146,13 +146,11 @@ def _start_worker(urdf, gpu):
 def _render_frame(task):
   joint_positions, gripper_position, T_cam2world, K, width, height = task
   _worker.update_robot_pose(joint_positions, gripper_position)
-  _, link_ids, depth = _worker.render_segmentation(T_cam2world, K, width, height)
-  return link_ids.astype(np.int16), depth
+  return _worker.render_depth(T_cam2world, K, width, height)
 
 
 class RenderPool:
   def __init__(self, renderer, workers):
-    self.gripper_links = renderer.gripper_links
     self.pool = multiprocessing.get_context("spawn").Pool(workers, _start_worker, (renderer.urdf, renderer.gpu))
 
   def render(self, robot, T_cam2world, K, width, height):
@@ -160,8 +158,7 @@ class RenderPool:
       (robot["joint_positions"][t], robot["gripper_positions"][t], T_cam2world[t], K, width, height)
       for t in range(len(T_cam2world))
     ]
-    frames = self.pool.map(_render_frame, tasks, chunksize=8)
-    return np.stack([f[0] for f in frames]), np.stack([f[1] for f in frames])
+    return np.stack(self.pool.map(_render_frame, tasks, chunksize=8))
 
   def render_cameras(self, episode, poses):
     return {

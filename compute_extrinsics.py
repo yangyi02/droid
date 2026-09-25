@@ -57,7 +57,7 @@ def per_camera_alignment(episode, render_pool, prev_poses, device, config):
 
   for cam_id in episode["camera"]:
     is_wrist = cam_id == wrist_cam_id
-    mode = "wrist (gripper-only)" if is_wrist else "external (full body)"
+    mode = "wrist" if is_wrist else "external"
     print(f"\n  Optimizing [{mode}] camera: [{cam_id}] ...")
 
     cam_data = episode["camera"][cam_id]
@@ -75,7 +75,7 @@ def per_camera_alignment(episode, render_pool, prev_poses, device, config):
         episode["robot"], world_extrinsics(T_cam2mount, T_ee_base_all, is_wrist), cam_data["K"], *cam_data["raw_depth"].shape[:0:-1]
       )
       robot_points, depth_batch = core.pointcloud.extract_robot_clouds(
-        cam_id, episode, rendered, render_pool.gripper_links, T_cam2mount, device, depth_full, n_points
+        cam_data["K"], rendered, T_cam2mount, device, depth_full, n_points
       )
       for _ in range(inner_steps):
         optimizer.zero_grad()
@@ -191,7 +191,7 @@ def joint_alignment(episode, prev_poses, render_pool, stage, device, config):
   for _ in range(stage.rounds):
     renders = render_pool.render_cameras(episode, poses)
     data["robot_points"], data["depth_batch"], data["K"] = core.pointcloud.robot_clouds(
-      episode, poses, renders, render_pool.gripper_links, device, n_points
+      episode, poses, renders, device, n_points
     )
 
     base = {c: torch.tensor(poses[c]["base_extrinsic"], dtype=torch.float32, device=device) for c in cam_ids}

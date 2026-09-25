@@ -25,7 +25,7 @@ def evaluate_extrinsics(episode, poses, device, render_pool, config):
   n_points, max_depth = config.extrinsics.n_points, config.extrinsics.max_depth
   renders = render_pool.render_cameras(episode, poses)
   robot_points, depth_batch, K = core.pointcloud.robot_clouds(
-    episode, poses, renders, render_pool.gripper_links, device, n_points
+    episode, poses, renders, device, n_points
   )
   env, ee_poses, frames = core.pointcloud.scene_clouds(episode, device, n_points, max_depth)
 
