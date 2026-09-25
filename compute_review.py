@@ -62,7 +62,7 @@ class Review:
 
 
 def inspect_tracks(review, n_inspect):
-  return sorted(np.random.default_rng(0).choice(review.n_points, min(n_inspect, review.n_points), replace=False).tolist())
+  return sorted(np.random.choice(review.n_points, min(n_inspect, review.n_points), replace=False).tolist())
 
 
 def verdict(visible, inside, z, at_query):

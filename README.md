@@ -202,8 +202,7 @@ where it is occluded — the same four colours as the TAPVid-MV picker and verif
 a bad track shows up as a point sliding off its texture, or as a colour that disagrees with
 what the image plainly shows.
 
-`config.review.n_inspect` tracks are sampled at random (seeded, so an episode always shows the
-same ones) and singled out for closer reading:
+`config.review.n_inspect` tracks are sampled at random and singled out for closer reading:
 
 - **Every camera view** labels each of them with its number, plus a magenta cross at
   the query pixel of any born on this frame in this camera. The gap between cross and dot is
@@ -215,7 +214,7 @@ same ones) and singled out for closer reading:
   camera calling a point visible while it lands outside the image. Only the first tree starts
   visible: read a number off a camera view, tick that tree on and the previous one off.
 
-Nothing pins the orbit — double-click a point to centre on it. Sharding is the same shuffle
+Nothing pins the orbit — double-click a point to centre on it. Sharding is the same name order
 every stage uses, so `--config.runner.limit=5` is the five episodes stage 3 ran first.
 
 | Knob | |

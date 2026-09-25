@@ -247,7 +247,7 @@ def plot_tracks_3d(
       if not len(points):
         continue
       if len(points) > max_cloud_points:
-        keep = np.random.default_rng(7).choice(len(points), max_cloud_points, replace=False)
+        keep = np.random.choice(len(points), max_cloud_points, replace=False)
         points, point_colors = points[keep], point_colors[keep]
       figure.add_trace(
         go.Scatter3d(

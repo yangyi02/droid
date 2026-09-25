@@ -208,8 +208,6 @@ def joint_alignment(episode, prev_poses, render_pool, stage, device, config):
 
 
 def align_episode(episode, extrinsics_db, render_pool, device, config):
-  np.random.seed(config.extrinsics.seed)
-  torch.manual_seed(config.extrinsics.seed)
   method = config.extrinsics.method
 
   poses = init_camera_states(episode, extrinsics_db)

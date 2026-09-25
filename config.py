@@ -47,7 +47,6 @@ def get_config():
 
   config.extrinsics = ml_collections.ConfigDict()
   config.extrinsics.method = "x15"
-  config.extrinsics.seed = 0
   config.extrinsics.lr = 0.001
   config.extrinsics.n_steps = 500
   config.extrinsics.n_points = 2000
