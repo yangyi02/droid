@@ -3,6 +3,7 @@ import glob
 import json
 import operator
 import os
+import re
 import sys
 from collections import Counter
 
@@ -45,7 +46,7 @@ def cut_value(row, column, op):
   if column in row:
     return safe_float(row[column])
 
-  values = [v for v in (safe_float(v) for k, v in row.items() if k.startswith(f"{column}_")) if not np.isnan(v)]
+  values = [v for v in (safe_float(v) for k, v in row.items() if re.fullmatch(rf"{column}(_\d+)+", k)) if not np.isnan(v)]
   if not values:
     return float("nan")
   return min(values) if op == ">=" else max(values)
