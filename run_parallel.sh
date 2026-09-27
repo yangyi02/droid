@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-STAGE=${1:?usage: run_parallel.sh <depth|extrinsics|tracks|metrics> [limit] [--config.x=y ...]}
+STAGE=${1:?usage: run_parallel.sh <depth|extrinsics|scene|tracks|metrics> [limit] [--config.x=y ...]}
 LIMIT=${2:-}
 EXTRA=("${@:3}")
 GPUS=$(nvidia-smi -L | wc -l)

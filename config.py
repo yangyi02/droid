@@ -19,6 +19,7 @@ def get_config():
   # TEMPORARY: stage 3 writes beside the old tracks rather than over them, so the two runs can be
   # compared before anything is thrown away. Put this back to os.path.join(output, "tracks").
   config.paths.tracks = os.path.join(repo, "tapvidmv", "data", "tracks")
+  config.paths.scene = os.path.join(output, "scene")
   config.paths.metrics = os.path.join(output, "metrics")
   config.paths.review = os.path.join(repo, "tapvidmv", "data", "review")
   config.paths.episode_list = ""
@@ -68,6 +69,14 @@ def get_config():
   config.extrinsics.a0.rounds = 1
   config.extrinsics.a0.robot_weight = 1.0
   config.extrinsics.a0.scene_max_depth = 1.5
+
+  config.scene = ml_collections.ConfigDict()
+  config.scene.tolerance = 0.5
+  config.scene.max_seen_through = 0.1
+  config.scene.stride = 1
+  config.scene.pose_error = 0.005
+  config.scene.halo = 6
+  config.scene.window = 2
 
   config.tracks = ml_collections.ConfigDict()
   config.tracks.num_query_frames = 2

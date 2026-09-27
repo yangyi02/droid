@@ -29,7 +29,7 @@ def on_fixed_rim(points, episode, poses, frame, src_cam, margin):
     if cam_id in (src_cam, episode["meta"]["wrist_serial"]):
       continue
     u, v, z = core.geometry.project_points(points, cam_data["K"], poses[cam_id]["extrinsics"][frame])
-    rim |= (z > 0) & near_edge(u, v, *cam_data["raw_depth"][frame].shape[::-1], margin)
+    rim |= (z > 0) & near_edge(u, v, *cam_data["depth"][frame].shape[::-1], margin)
   return rim
 
 
@@ -41,7 +41,7 @@ def query_frames(episode, poses, pb_renderer, config):
   for frame in range(reach):
     pb_renderer.update_robot_pose(robot["joint_positions"][frame], gripper_state=robot["gripper_positions"][frame])
     for view, (cam_id, cam_data) in enumerate(episode["camera"].items()):
-      height, width = cam_data["raw_depth"][frame].shape
+      height, width = cam_data["depth"][frame].shape
       drawn = pb_renderer.render_depth(poses[cam_id]["extrinsics"][frame], cam_data["K"], width, height)
       seen[view, frame] = resize_mask(drawn > 0, -config.tracks.mask_margin).sum()
 
@@ -57,7 +57,7 @@ def spread_cells(points, min_gap):
 
 
 def sensor_slack(cam_data, frame, u, v, z_pred, config):
-  z = core.geometry.sample_depth(cam_data["raw_depth"][frame], u, v, z_pred)
+  z = core.geometry.sample_depth(cam_data["depth"][frame], u, v, z_pred)
   gap = np.where(z == 0, np.inf, z) - z_pred
   stereo = z_pred**2 * config.tracks.disparity_tolerance / (cam_data["K"][0, 0] * cam_data["baseline"])
   return gap / np.maximum(config.tracks.sensor_tolerance_floor, stereo)
@@ -89,7 +89,7 @@ def find_robot_candidates(episode, poses, pb_renderer, queries, config):
       pb_renderer.update_robot_pose(robot["joint_positions"][frame], gripper_state=robot["gripper_positions"][frame])
 
       K = cam_data["K"]
-      height, width = cam_data["raw_depth"][frame].shape
+      height, width = cam_data["depth"][frame].shape
       T_cam2world = poses[src_cam]["extrinsics"][frame]
 
       obj_ids, link_ids, urdf_depth = pb_renderer.render_segmentation(T_cam2world, K, width, height)
@@ -146,12 +146,12 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
 
     drawn, steps = {}, {}
     for cam_id, cam_data in episode["camera"].items():
-      height, width = cam_data["raw_depth"][frame].shape
+      height, width = cam_data["depth"][frame].shape
       drawn[cam_id] = pb_renderer.render_depth(poses[cam_id]["extrinsics"][frame], cam_data["K"], width, height)
-      steps[cam_id] = depth_steps(cam_data["raw_depth"][frame])
+      steps[cam_id] = depth_steps(cam_data["depth"][frame])
 
     for view, (src_cam, cam_data) in enumerate(episode["camera"].items()):
-      depth = cam_data["raw_depth"][frame]
+      depth = cam_data["depth"][frame]
       K, T_cam2world = cam_data["K"], poses[src_cam]["extrinsics"][frame]
 
       on_env = ~resize_mask(drawn[src_cam] > 0, config.tracks.mask_margin) & (depth > 0) & (depth <= max_depth)
@@ -168,7 +168,7 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
         if other_cam == src_cam:
           continue
         u, v, z = core.geometry.project_points(points, other_data["K"], poses[other_cam]["extrinsics"][frame])
-        z_other = core.geometry.sample_depth(other_data["raw_depth"][frame], u, v, z)
+        z_other = core.geometry.sample_depth(other_data["depth"][frame], u, v, z)
         step = core.geometry.sample_depth(steps[other_cam], u, v, z)
         behind_arm = core.geometry.sample_depth(drawn[other_cam], u, v, z) > 0
 
@@ -194,13 +194,13 @@ def project_tracks(tracks_3d, episode, poses, pb_renderer, config):
   margin = np.zeros((n_views, n_frames, n_points), dtype=np.float32)
   inside = np.zeros((n_views, n_frames, n_points), dtype=bool)
   slack = np.zeros((n_views, n_frames, n_points), dtype=np.float32)
-  masks = [np.zeros((n_frames, *cam_data["raw_depth"][0].shape), dtype=bool) for cam_data in episode["camera"].values()]
+  masks = [np.zeros((n_frames, *cam_data["depth"][0].shape), dtype=bool) for cam_data in episode["camera"].values()]
 
   for t in range(n_frames):
     pb_renderer.update_robot_pose(robot["joint_positions"][t], gripper_state=robot["gripper_positions"][t])
 
     drawn = [
-      pb_renderer.render_depth(poses[cam_id]["extrinsics"][t], cam_data["K"], *cam_data["raw_depth"][t].shape[::-1])
+      pb_renderer.render_depth(poses[cam_id]["extrinsics"][t], cam_data["K"], *cam_data["depth"][t].shape[::-1])
       for cam_id, cam_data in episode["camera"].items()
     ]
 
@@ -210,7 +210,7 @@ def project_tracks(tracks_3d, episode, poses, pb_renderer, config):
       urdf_depth = drawn[view]
       masks[view][t] = urdf_depth > 0
 
-      height, width = cam_data["raw_depth"][t].shape
+      height, width = cam_data["depth"][t].shape
       u, v, z_pred = core.geometry.project_points(tracks_3d[t], K, T_cam2world)
       uv[view, t] = np.stack([u, v], axis=1)
       inside[view, t] = core.geometry.in_frame(u, v, width, height) & (z_pred > 0)
@@ -307,7 +307,7 @@ def export_tracks(episode, tracks_3d, uv, vis, masks, query_view, query_frame, n
 
 
 def process_episode(episode_id, pb_renderer, config):
-  episode = core.io.load_depth_data(episode_id, config.paths.depth)
+  episode = core.io.load_scene_depth(core.io.load_depth_data(episode_id, config.paths.depth), config.paths.scene)
   poses = core.io.load_extrinsics(episode, config.paths.extrinsics)
   robot = episode["robot"]
   n_frames = len(robot["joint_positions"])
@@ -365,7 +365,7 @@ def main(_):
   config = config_flag.value
   pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=config.render.gpu)
 
-  available = core.runner.list_episode_dirs(config.paths.extrinsics)
+  available = core.runner.list_episode_dirs(config.paths.scene)
   if config.paths.episode_list:
     available &= core.io.read_episode_list(config.paths.episode_list)
 

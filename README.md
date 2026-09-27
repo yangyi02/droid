@@ -20,6 +20,7 @@ bash mount_gcs.sh          # mount the input and output buckets
 
 bash run_parallel.sh depth        # Stage 1
 bash run_parallel.sh extrinsics   # Stage 2
+bash run_parallel.sh scene        # Stage 2+
 bash run_parallel.sh tracks       # Stage 3
 bash run_parallel.sh metrics      # Stage 4 (needs stage 2, not stage 3)
 
@@ -45,6 +46,7 @@ Cloned without `--recurse-submodules`? `bash setup.sh` runs
 |---|---|---|---|
 | 1. Depth | `compute_depth.py` | raw SVO + `trajectory.h5` | `depth/` |
 | 2. Extrinsics | `compute_extrinsics.py` | `depth/` | `extrinsics/` |
+| 2+. Scene | `compute_scene.py` | `depth/`, `extrinsics/` | `scene/` |
 | 3. Tracks | `compute_tracks.py` | `depth/`, `extrinsics/` | `tracks/` |
 | 4. Metrics | `compute_metrics.py` | `depth/`, `extrinsics/` | `metrics/` |
 | 5. Review | `compute_review.py` | all of the above | `review/*.rrd` |
@@ -88,10 +90,60 @@ stage), is deprecated and kept only for comparison: `--config.extrinsics.method=
 **Output** — `extrinsics/<episode_id>/<cam_serial>/extrinsics.json`, holding `base_extrinsic`
 (4×4) and `extrinsics` (N×4×4). Both are **cam2world**; the export inverts them.
 
+### Stage 2+ — `compute_scene.py`
+
+Better depth in every frame of each of the three views: less noise, fewer holes, and holes filled only
+where the fill can be trusted. Each camera works from its own frames plus the robot's URDF render at
+stage 2's poses; no 3D model is built, because tracks only need depth in these views.
+
+**Static depth.** A static point is one that is never seen through. Every measured non-arm point of
+every frame is projected into the camera's other frames; a frame agrees when it measures the point
+within tolerance and sees through it when it measures something farther. A point seen by at least two
+frames and seen through by no more than `max_seen_through` of them is static. A pixel takes the
+nearest static point on its ray and averages those within tolerance of it; points measured from the
+same pose come first and reprojected ones only fill gaps. For a fixed camera this is the farthest
+surface the pixel keeps seeing, averaged over the episode.
+
+**Depth of each frame**, from four signals — the measurement, the static depth, and the URDF's
+segmentation and depth:
+
+| Pixel | Depth |
+|---|---|
+| measurement not clearly in front of the static depth (within 3 × tolerance) | static depth, averaged over the episode: single-frame jitter of a still surface does not count as something in front |
+| on the arm | URDF depth, shifted per link and frame by the median gap to the stereo inside the link, so a small pose error does not bias it; kept as measured where something sits in front of the arm, or where, within `halo` of the arm's outline, stereo sees past a slightly oversized render |
+| within `halo` outside the arm, at the arm's depth | static depth: stereo spilling past the arm's edge |
+| anything else measured, in front of the static scene | averaged with the frames within `window` that measure the same point (the same pixel for a fixed camera; the same pixel or the pose-warped point for the wrist, which carries what it holds); dropped as noise only when neither those frames nor half its eight neighbours agree, and then replaced by the static depth |
+| a hole | on the arm, URDF depth. Otherwise the pixel follows its nearest measured pixel. If that is solid foreground (in front of the static scene after an opening that removes bands a few pixels wide, such as flicker along edges), the hole sits on something that is not the static scene: it takes the readings of the same pixel in the `window` frames either side (warped by pose for a moving camera) when at least two agree, and otherwise stays a hole rather than being filled with the scene behind it. Anything else gets static depth |
+
+**Aligning the cameras.** Each camera's stereo carries its own small bias, which no amount of
+averaging within that camera removes: on a static surface the three cameras disagree by a few
+millimetres. Each camera gets one disparity offset for the episode, found by making every camera's
+static depth agree with the others where they see the same place, and the measured arm agree with its
+URDF render inside the link. The robot is the only metric ruler in the scene, so it fixes where the
+whole set sits. The loss is Cauchy with `tolerance` as its scale, so occlusions and moved objects do not
+pull. A constant disparity offset changes no gap within one camera, so it is applied to both outputs
+last: depth becomes `f·B / (f·B / depth + offset)`.
+
+Tolerance is `tolerance` in disparity pixels plus `f·B · pose_error / z²` between different poses,
+which is zero for a fixed camera. Stages 2 and 4 keep reading the raw depth; stage 3 reads `depth.npz`.
+
+| Knob | |
+|---|---|
+| `tolerance` | Disparity pixels, stereo noise between two measurements of one surface |
+| `max_seen_through` | Share of the frames seeing a point that may see through it |
+| `stride` | Every nth frame takes part in the static depth |
+| `pose_error` | Metres, relative pose error between two frames of a moving camera |
+| `halo` | Pixels around the arm's rendered outline where the render and stereo may disagree |
+| `window` | Frames either side that settle a moving surface |
+
+**Output** — `scene/<episode_id>/<cam_serial>/depth.npz`, every frame, and `static_depth.npz`, one
+frame for a fixed camera and every frame for the wrist. uint16 mm like `raw_depth.npz`, 0 where
+unknown.
+
 ### Stage 3 — `compute_tracks.py`
 
 Dense multi-view 3D tracks from a static background prior plus URDF forward kinematics — no
-tracking model. It samples *before* it tracks: picking a point needs only where it sits and
+tracking model. Depth is stage 2+'s `depth.npz`, so stage 2+ runs first. It samples *before* it tracks: picking a point needs only where it sits and
 which camera and frame it was born on, so tens of thousands of candidates never enter the
 expensive pass, and only the few hundred that survive are carried through the episode and
 projected into every view.
@@ -297,6 +349,7 @@ droid/
 ├── pipeline.ipynb             # Whole pipeline, one episode at a time
 ├── compute_depth.py           # Stage 1
 ├── compute_extrinsics.py      # Stage 2
+├── compute_scene.py           # Stage 2+
 ├── compute_tracks.py          # Stage 3
 ├── compute_metrics.py         # Stage 4
 ├── compute_review.py          # Stage 5
@@ -313,6 +366,7 @@ droid/
 │   ├── physics.py             #   PyBulletRenderer and RenderPool: depth, mask and segmentation renders
 │   ├── pointcloud.py          #   Robot/scene clouds, chamfer(_px) + overlap(_px), depth and disparity losses
 │   ├── runner.py              #   Episode sharding + resume-aware batch loop
+│   ├── scene.py               #   Per-view depth refinement: static depth, URDF, temporal settling
 │   └── visualization.py       #   Point clouds, tracking videos, 4D orbit
 ├── tapvidmv/                  # The released evaluation set -- see its own README
 ├── assets/                    # Franka + Robotiq URDF and meshes
