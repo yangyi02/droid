@@ -247,7 +247,7 @@ python compute_review.py --config.runner.limit=5    # ~1 min and ~370 MB per epi
 rerun tapvidmv/data/review/<episode_id>.rrd
 ```
 
-The 3D view holds every camera's depth cloud, the moving frustums, and every track — blue for
+The 3D view holds every camera's depth cloud (stage 2+'s depth, the same depth stage 3 read), the moving frustums, and every track — blue for
 the arm, green for the background. The camera views colour every track by what that camera
 calls it: blue and green where it is visible, yellow for the arm and red for the background
 where it is occluded — the same four colours as the TAPVid-MV picker and verify notebook. Below it sits one 2D view per camera. Scrub the timeline and

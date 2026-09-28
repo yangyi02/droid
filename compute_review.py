@@ -192,7 +192,7 @@ def log_cameras(rec, review, episode, cfg):
         ),
       )
 
-      points_world, colors = depth_cloud(cam_data["raw_depth"][t], img_rgb, K, T_cam2world, cfg.depth_stride)
+      points_world, colors = depth_cloud(cam_data["depth"][t], img_rgb, K, T_cam2world, cfg.depth_stride)
       rec.log(f"/scene/{view}", rr.Points3D(points_world, colors=colors, radii=cfg.scene_radius))
       n_scene_points += len(points_world)
 
@@ -315,7 +315,7 @@ def build_recording(episode, review, episode_id, review_root, cfg):
 
 
 def process_episode(episode_id, config):
-  episode = core.io.load_depth_data(episode_id, config.paths.depth, load_video=True)
+  episode = core.io.load_scene_depth(core.io.load_depth_data(episode_id, config.paths.depth, load_video=True), config.paths.scene)
   poses = core.io.load_extrinsics(episode, config.paths.extrinsics)
   tracks = core.io.load_track_data(episode_id, config.paths.tracks)
 
