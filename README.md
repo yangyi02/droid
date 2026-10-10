@@ -375,13 +375,13 @@ droid/
 
 ## Data
 
-The pipeline reads raw DROID data from one GCS bucket and writes to another; `mount_gcs.sh`
-mounts both via [gcsfuse](https://cloud.google.com/storage/docs/gcsfuse-cli).
+The pipeline reads raw DROID data from a GCS bucket, which `mount_gcs.sh` mounts via
+[gcsfuse](https://cloud.google.com/storage/docs/gcsfuse-cli), and writes to local disk.
 
-| Mount | Bucket / prefix | Local path |
+| | Source | Local path |
 |---|---|---|
 | Input | `gs://gresearch/robotics/droid_raw` | `data/input/robotics/droid_raw` |
-| Output | `gs://dm-tapnet/tmp/droid` | `data/output/droid` |
+| Output | local disk | `data/output/droid` |
 
 Unmount by hand with `fusermount -u <local path>`.
 

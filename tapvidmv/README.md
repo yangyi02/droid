@@ -135,10 +135,9 @@ No GPU is involved — the work is decoding video, encoding JPEG and writing, ab
 19 s per 95-frame episode. `run_export.sh` shards by `--rank` / `--world_size`,
 the same split the pipeline stages use, and logs one file per rank under `logs/`.
 
-Writes the release layout into **`tapvidmv/data/release/`** — local disk, not the gcsfuse
-mount the pipeline writes to. The export re-encodes every frame to JPEG and
-writes the depth maps, which is far too many bytes to push through fuse, and
-publishing is a separate step done by hand.
+Writes the release layout into **`tapvidmv/data/release/`**. The export re-encodes
+every frame to JPEG and writes the depth maps, and publishing is a separate step
+done by hand.
 
 It runs after selection, not before: exporting first would mean paying that cost
 over thousands of episodes to keep fifty. Each episode is written under a
