@@ -7,6 +7,7 @@ def decode_disparity(disp, fx, baseline):
   z = np.zeros_like(disp)
   valid_mask = disp > 0
   z[valid_mask] = (fx * baseline) / disp[valid_mask]
+  z[~np.isfinite(z)] = 0.0
   return z
 
 

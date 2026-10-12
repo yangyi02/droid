@@ -1,0 +1,10 @@
+.git
+data
+logs
+previews
+venv
+tmp
+third_party
+**/__pycache__
+**/*.ipynb
+**/.ipynb_checkpoints

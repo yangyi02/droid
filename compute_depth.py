@@ -70,7 +70,10 @@ def extract_svo_video(episode, min_frames, max_frames):
   episode_path = episode["meta"]["episode_path"]
 
   for cam_id in episode["camera"]:
-    svo_file = glob.glob(os.path.join(episode_path, f"**/{cam_id}.svo"), recursive=True)[0]
+    svo_files = glob.glob(os.path.join(episode_path, f"**/{cam_id}.svo"), recursive=True)
+    if not svo_files:
+      raise core.runner.SkipEpisode(f"{cam_id}: missing SVO in {episode_path}")
+    svo_file = svo_files[0]
 
     zed, init_params = sl.Camera(), sl.InitParameters()
     init_params.set_from_svo_file(svo_file)
