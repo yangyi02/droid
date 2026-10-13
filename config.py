@@ -16,13 +16,10 @@ def get_config():
   config.paths.urdf = os.path.join(repo, "assets", "franka_description", "franka_panda_robotiq_2f85_og.urdf")
   config.paths.depth = os.path.join(output, "depth")
   config.paths.extrinsics = os.path.join(output, "extrinsics")
-  # TEMPORARY: stage 3 writes beside the old tracks rather than over them, so the two runs can be
-  # compared before anything is thrown away. Put this back to os.path.join(output, "tracks").
   config.paths.tracks = os.path.join(repo, "tapvidmv", "data", "tracks")
   config.paths.scene = os.path.join(output, "scene")
   config.paths.metrics = os.path.join(output, "metrics")
   config.paths.review = os.path.join(repo, "tapvidmv", "data", "review")
-  config.paths.episode_list = ""
 
   config.urls = ml_collections.ConfigDict()
   config.urls.meta = "https://huggingface.co/KarlP/droid/resolve/main"

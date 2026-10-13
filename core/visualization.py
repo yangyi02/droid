@@ -40,7 +40,7 @@ def fuse_cameras(episode, poses, t, device="cpu", max_depth=None):
     if max_depth is not None:
       depth = np.where(depth < max_depth, depth, 0)
     clouds.append(
-      core.geometry.unproject_depth_torch(depth, cam["video_rgb"][t], cam["K"], poses[cam_id]["extrinsics"][t], device)
+      core.geometry.unproject_depth_torch(depth, cam["video_rgb"][t], cam["K"], poses[cam_id]["T_cam2world"][t], device)
     )
   points, colors = zip(*clouds, strict=True)
   return torch.cat(points), torch.cat(colors)
@@ -96,7 +96,7 @@ def show_distilled_gripper_3d(median_depth, K, img_rgb):
 
 
 def show_gripper_refinement(episode, t=0):
-  wrist_cam_id = episode["meta"]["wrist_serial"]
+  wrist_cam_id = episode["meta"]["wrist_cam_id"]
   cam_data = episode["camera"][wrist_cam_id]
   rgb = cam_data["video_rgb"][t]
 
@@ -217,7 +217,7 @@ def render_segmentation_video(episode, poses, pb_renderer, tgt_width=1200, max_f
     robot["joint_positions"],
     robot["gripper_positions"],
     *(cam["video_rgb"] for cam in episode["camera"].values()),
-    *(poses[cam_id]["extrinsics"] for cam_id in episode["camera"]),
+    *(poses[cam_id]["T_cam2world"] for cam_id in episode["camera"]),
     max_frames=max_frames,
   )
 
@@ -228,7 +228,7 @@ def render_segmentation_video(episode, poses, pb_renderer, tgt_width=1200, max_f
     for cam_id, cam_data in episode["camera"].items():
       img_rgb = cam_data["video_rgb"][t]
       height, width = img_rgb.shape[:2]
-      robot_mask = pb_renderer.render_mask(poses[cam_id]["extrinsics"][t], cam_data["K"], width, height) > 0
+      robot_mask = pb_renderer.render_mask(poses[cam_id]["T_cam2world"][t], cam_data["K"], width, height) > 0
       overlay = img_rgb.copy()
       overlay[robot_mask] = [50, 150, 255]
       blended = cv2.addWeighted(img_rgb, 0.6, overlay, 0.4, 0)
@@ -242,7 +242,7 @@ def render_segmentation_video(episode, poses, pb_renderer, tgt_width=1200, max_f
 def render_cross_camera_axes(episode, poses, max_frames=None, tgt_width=1200, axis_len=0.15):
   cam_ids = list(episode["camera"])
   n_frames = common_frames(
-    *(poses[cam_id]["extrinsics"] for cam_id in cam_ids),
+    *(poses[cam_id]["T_cam2world"] for cam_id in cam_ids),
     *(episode["camera"][cam_id]["video_rgb"] for cam_id in cam_ids),
     max_frames=max_frames,
   )
@@ -255,12 +255,12 @@ def render_cross_camera_axes(episode, poses, max_frames=None, tgt_width=1200, ax
       cam_data = episode["camera"][obs_cam]
       img_rgb = cam_data["video_rgb"][t].copy()
       height, width = img_rgb.shape[:2]
-      T_world2obs = np.linalg.inv(poses[obs_cam]["extrinsics"][t])
+      T_world2obs = np.linalg.inv(poses[obs_cam]["T_cam2world"][t])
 
       for tgt_cam in cam_ids:
         if tgt_cam == obs_cam:
           continue
-        points_cam = (T_world2obs @ poses[tgt_cam]["extrinsics"][t] @ axes_3d)[:3, :]
+        points_cam = (T_world2obs @ poses[tgt_cam]["T_cam2world"][t] @ axes_3d)[:3, :]
         if points_cam[2, 0] < 0:
           continue
         uv = cam_data["K"] @ points_cam
@@ -375,7 +375,7 @@ def render_4d_orbit_with_tracks(
   device = "cuda" if torch.cuda.is_available() else "cpu"
   cam_ids = sorted(episode["camera"])
   n_frames = common_frames(
-    *(poses[cam_id]["extrinsics"] for cam_id in cam_ids),
+    *(poses[cam_id]["T_cam2world"] for cam_id in cam_ids),
     *(
       stream
       for cam_id in cam_ids
@@ -417,7 +417,7 @@ def render_4d_orbit_with_tracks(
         trail_colors = np.tile(track_colors, (len(trail) - 1, 1))
         layers.append(line_layer(starts[moved], ends[moved], trail_colors[moved], max(track_size - 2, 0), device))
 
-    extrinsics = np.stack([poses[cam_id]["extrinsics"][t] for cam_id in cam_ids])
+    extrinsics = np.stack([poses[cam_id]["T_cam2world"][t] for cam_id in cam_ids])
     corners = corners_cam @ extrinsics[:, :3, :3].transpose(0, 2, 1) + extrinsics[:, None, :3, 3]
     layers.append(
       line_layer(

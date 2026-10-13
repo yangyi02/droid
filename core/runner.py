@@ -11,21 +11,18 @@ def list_episode_dirs(root):
   return set(os.listdir(root)) if os.path.isdir(root) else set()
 
 
-def shard_episodes(episode_ids, rank, world_size, limit):
+def select_episodes(episode_ids, config):
   episode_ids = sorted(episode_ids)
-  if limit > 0:
-    episode_ids = episode_ids[:limit]
-  return episode_ids[rank::world_size]
+  if config.runner.limit > 0:
+    episode_ids = episode_ids[: config.runner.limit]
+  return episode_ids[config.runner.rank :: config.runner.world_size]
 
 
-def run_episodes(episode_ids, process, rank, world_size, done, stage):
+def run_episodes(episode_ids, process, done, stage):
   done = set(done)
   todo = [episode_id for episode_id in episode_ids if episode_id not in done]
   already_done = len(episode_ids) - len(todo)
-  print(
-    f"Rank {rank}/{world_size}: {len(todo)} episodes to process"
-    + (f" ({already_done} already done)" if already_done else "")
-  )
+  print(f"{len(todo)} episodes to process" + (f" ({already_done} already done)" if already_done else ""))
 
   succeeded, skipped, failed = [], [], []
   for idx, episode_id in enumerate(todo):

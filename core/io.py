@@ -34,8 +34,8 @@ def load_depth_data(episode_id, depth_root, load_video=False):
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(depth_root, episode_id)))
 
   robot_data = np.load(os.path.join(ep_dir, "robot.npz"))
-  wrist_cam_id = str(robot_data["wrist_serial"])
-  robot_keys = ("joint_positions", "gripper_positions", "T_ee_base_all", "T_cam_ee_init")
+  wrist_cam_id = str(robot_data["wrist_cam_id"])
+  robot_keys = ("joint_positions", "gripper_positions", "T_ee2base", "T_cam2ee")
 
   camera = {}
   for cam_id in sorted(d for d in os.listdir(ep_dir) if os.path.isdir(os.path.join(ep_dir, d))):
@@ -43,7 +43,7 @@ def load_depth_data(episode_id, depth_root, load_video=False):
     calib = np.load(os.path.join(cam_path, "calibration.npz"))
 
     cam_data = {
-      "K": calib["K_calib_left"].astype(np.float32),
+      "K": calib["K"].astype(np.float32),
       "baseline": float(calib["baseline"]),
       "raw_depth": np.load(os.path.join(cam_path, "raw_depth.npz"))["depth"].astype(np.float32) / 1000.0,
     }
@@ -63,7 +63,7 @@ def load_depth_data(episode_id, depth_root, load_video=False):
     camera[cam_id] = cam_data
 
   return {
-    "meta": {"episode_id": episode_id, "wrist_serial": wrist_cam_id},
+    "meta": {"episode_id": episode_id, "wrist_cam_id": wrist_cam_id},
     "robot": {key: robot_data[key].astype(np.float32) for key in robot_keys},
     "camera": camera,
   }
@@ -86,16 +86,11 @@ def load_extrinsics(episode, extrinsics_root):
       payload = json.load(f)
 
     poses[cam_id] = {
-      "base_extrinsic": np.array(payload["base_extrinsic"], dtype=np.float32),
-      "extrinsics": np.array(payload["extrinsics"], dtype=np.float32),
+      "T_cam2mount": np.array(payload["T_cam2mount"], dtype=np.float32),
+      "T_cam2world": np.array(payload["T_cam2world"], dtype=np.float32),
     }
 
   return poses
-
-
-def read_episode_list(path):
-  with open(os.path.abspath(os.path.expanduser(path))) as f:
-    return {line.split("#")[0].strip() for line in f if line.split("#")[0].strip()}
 
 
 def build_queries(uv, query_view, query_frame):

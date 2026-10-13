@@ -26,9 +26,9 @@ def near_edge(u, v, width, height, margin):
 def on_fixed_rim(points, episode, poses, frame, src_cam, margin):
   rim = np.zeros(len(points), dtype=bool)
   for cam_id, cam_data in episode["camera"].items():
-    if cam_id in (src_cam, episode["meta"]["wrist_serial"]):
+    if cam_id in (src_cam, episode["meta"]["wrist_cam_id"]):
       continue
-    u, v, z = core.geometry.project_points(points, cam_data["K"], poses[cam_id]["extrinsics"][frame])
+    u, v, z = core.geometry.project_points(points, cam_data["K"], poses[cam_id]["T_cam2world"][frame])
     rim |= (z > 0) & near_edge(u, v, *cam_data["depth"][frame].shape[::-1], margin)
   return rim
 
@@ -42,7 +42,7 @@ def query_frames(episode, poses, pb_renderer, config):
     pb_renderer.update_robot_pose(robot["joint_positions"][frame], gripper_state=robot["gripper_positions"][frame])
     for view, (cam_id, cam_data) in enumerate(episode["camera"].items()):
       height, width = cam_data["depth"][frame].shape
-      drawn = pb_renderer.render_depth(poses[cam_id]["extrinsics"][frame], cam_data["K"], width, height)
+      drawn = pb_renderer.render_depth(poses[cam_id]["T_cam2world"][frame], cam_data["K"], width, height)
       seen[view, frame] = resize_mask(drawn > 0, -config.tracks.mask_margin).sum()
 
   worst = (seen / np.maximum(seen.max(axis=1, keepdims=True), 1)).min(axis=0)
@@ -90,7 +90,7 @@ def find_robot_candidates(episode, poses, pb_renderer, queries, config):
 
       K = cam_data["K"]
       height, width = cam_data["depth"][frame].shape
-      T_cam2world = poses[src_cam]["extrinsics"][frame]
+      T_cam2world = poses[src_cam]["T_cam2world"][frame]
 
       obj_ids, link_ids, urdf_depth = pb_renderer.render_segmentation(T_cam2world, K, width, height)
       vs, us = np.where(resize_mask(obj_ids == pb_renderer.robot_id, -config.tracks.mask_margin))
@@ -147,12 +147,12 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
     drawn, steps = {}, {}
     for cam_id, cam_data in episode["camera"].items():
       height, width = cam_data["depth"][frame].shape
-      drawn[cam_id] = pb_renderer.render_depth(poses[cam_id]["extrinsics"][frame], cam_data["K"], width, height)
+      drawn[cam_id] = pb_renderer.render_depth(poses[cam_id]["T_cam2world"][frame], cam_data["K"], width, height)
       steps[cam_id] = depth_steps(cam_data["depth"][frame])
 
     for view, (src_cam, cam_data) in enumerate(episode["camera"].items()):
       depth = cam_data["depth"][frame]
-      K, T_cam2world = cam_data["K"], poses[src_cam]["extrinsics"][frame]
+      K, T_cam2world = cam_data["K"], poses[src_cam]["T_cam2world"][frame]
 
       on_env = ~resize_mask(drawn[src_cam] > 0, config.tracks.mask_margin) & (depth > 0) & (depth <= max_depth)
       vs, us = np.where(on_env & (steps[src_cam] <= max_step))
@@ -167,7 +167,7 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
       for other_cam, other_data in episode["camera"].items():
         if other_cam == src_cam:
           continue
-        u, v, z = core.geometry.project_points(points, other_data["K"], poses[other_cam]["extrinsics"][frame])
+        u, v, z = core.geometry.project_points(points, other_data["K"], poses[other_cam]["T_cam2world"][frame])
         z_other = core.geometry.sample_depth(other_data["depth"][frame], u, v, z)
         step = core.geometry.sample_depth(steps[other_cam], u, v, z)
         behind_arm = core.geometry.sample_depth(drawn[other_cam], u, v, z) > 0
@@ -200,13 +200,13 @@ def project_tracks(tracks_3d, episode, poses, pb_renderer, config):
     pb_renderer.update_robot_pose(robot["joint_positions"][t], gripper_state=robot["gripper_positions"][t])
 
     drawn = [
-      pb_renderer.render_depth(poses[cam_id]["extrinsics"][t], cam_data["K"], *cam_data["depth"][t].shape[::-1])
+      pb_renderer.render_depth(poses[cam_id]["T_cam2world"][t], cam_data["K"], *cam_data["depth"][t].shape[::-1])
       for cam_id, cam_data in episode["camera"].items()
     ]
 
     for view, (cam_id, cam_data) in enumerate(episode["camera"].items()):
       K = cam_data["K"]
-      T_cam2world = poses[cam_id]["extrinsics"][t]
+      T_cam2world = poses[cam_id]["T_cam2world"][t]
       urdf_depth = drawn[view]
       masks[view][t] = urdf_depth > 0
 
@@ -366,29 +366,14 @@ def main(_):
   pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=config.render.gpu)
 
   available = core.runner.list_episode_dirs(config.paths.scene)
-  if config.paths.episode_list:
-    available &= core.io.read_episode_list(config.paths.episode_list)
-
-  target = core.runner.shard_episodes(
-    available,
-    config.runner.rank,
-    config.runner.world_size,
-    config.runner.limit,
-  )
+  target = core.runner.select_episodes(available, config)
   export_root = os.path.abspath(os.path.expanduser(config.paths.tracks))
   done = {e for e in target if os.path.exists(os.path.join(export_root, e, "tracks_3d.npz"))}
 
   def run_one(episode_id):
     process_episode(episode_id, pb_renderer, config)
 
-  core.runner.run_episodes(
-    target,
-    run_one,
-    rank=config.runner.rank,
-    world_size=config.runner.world_size,
-    done=done,
-    stage="Stage 3",
-  )
+  core.runner.run_episodes(target, run_one, done=done, stage="Stage 3")
 
 
 if __name__ == "__main__":

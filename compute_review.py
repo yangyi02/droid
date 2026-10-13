@@ -33,7 +33,7 @@ class Review:
     for cam_id, cam_data in episode["camera"].items():
       height, width = cam_data["raw_depth"][0].shape
       K.append(cam_data["K"])
-      T_cam2world.append(poses[cam_id]["extrinsics"][: self.n_frames])
+      T_cam2world.append(poses[cam_id]["T_cam2world"][: self.n_frames])
       image_wh.append([width, height])
 
     self.K = np.asarray(K, dtype=np.float32)
@@ -327,29 +327,14 @@ def main(_):
   config = config_flag.value
 
   available = core.runner.list_episode_dirs(config.paths.tracks)
-  if config.paths.episode_list:
-    available &= core.io.read_episode_list(config.paths.episode_list)
-
-  target = core.runner.shard_episodes(
-    available,
-    config.runner.rank,
-    config.runner.world_size,
-    config.runner.limit,
-  )
+  target = core.runner.select_episodes(available, config)
   review_root = os.path.abspath(os.path.expanduser(config.paths.review))
   done = {e for e in target if os.path.exists(os.path.join(review_root, f"{e}.rrd"))}
 
   def run_one(episode_id):
     process_episode(episode_id, config)
 
-  core.runner.run_episodes(
-    target,
-    run_one,
-    rank=config.runner.rank,
-    world_size=config.runner.world_size,
-    done=done,
-    stage="Review",
-  )
+  core.runner.run_episodes(target, run_one, done=done, stage="Review")
 
 
 if __name__ == "__main__":

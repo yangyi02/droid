@@ -17,10 +17,10 @@ import core.runner
 
 @torch.no_grad()
 def evaluate_extrinsics(episode, poses, device, render_pool, config):
-  wrist_cam_id = episode["meta"]["wrist_serial"]
+  wrist_cam_id = episode["meta"]["wrist_cam_id"]
   cam_ids = sorted(episode["camera"])
   pairs = list(itertools.combinations(cam_ids, 2))
-  base = {c: torch.tensor(poses[c]["base_extrinsic"], dtype=torch.float32, device=device) for c in cam_ids}
+  base = {c: torch.tensor(poses[c]["T_cam2mount"], dtype=torch.float32, device=device) for c in cam_ids}
 
   n_points, max_depth = config.extrinsics.n_points, config.extrinsics.max_depth
   renders = render_pool.render_cameras(episode, poses)
@@ -62,7 +62,7 @@ def scene_metadata(episode):
     "scene": scene,
     "n_cameras": len(episode["camera"]),
     "n_frames": int(len(episode["robot"]["joint_positions"])),
-    "wrist_serial": episode["meta"]["wrist_serial"],
+    "wrist_cam_id": episode["meta"]["wrist_cam_id"],
   }
 
 
@@ -104,17 +104,10 @@ def main(_):
   def run_one(episode_id):
     process_episode(episode_id, device, render_pool, config)
 
-  target = core.runner.shard_episodes(available, config.runner.rank, config.runner.world_size, config.runner.limit)
+  target = core.runner.select_episodes(available, config)
   done = {e for e in target if os.path.exists(os.path.join(export_root, e, "metrics.json"))}
 
-  core.runner.run_episodes(
-    target,
-    run_one,
-    rank=config.runner.rank,
-    world_size=config.runner.world_size,
-    done=done,
-    stage="Evaluation",
-  )
+  core.runner.run_episodes(target, run_one, done=done, stage="Evaluation")
 
 
 if __name__ == "__main__":

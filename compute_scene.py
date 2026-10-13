@@ -13,7 +13,7 @@ import core.scene
 
 
 def refine(episode, poses, renders, cam_id, device, config):
-  cam_data, extrinsics = episode["camera"][cam_id], poses[cam_id]["extrinsics"]
+  cam_data, extrinsics = episode["camera"][cam_id], poses[cam_id]["T_cam2world"]
   raw = torch.tensor(cam_data["raw_depth"], device=device)
   segmentation = torch.tensor(renders[cam_id], device=device)
   focal_baseline = float(cam_data["K"][0, 0] * cam_data["baseline"])
@@ -45,7 +45,7 @@ def align_cameras(episode, poses, renders, depths, device, config):
       "raw": torch.tensor(cam_data["raw_depth"], device=device),
       "segmentation": torch.tensor(renders[cam_id], device=device),
       "K": cam_data["K"],
-      "extrinsics": poses[cam_id]["extrinsics"],
+      "T_cam2world": poses[cam_id]["T_cam2world"],
       "focal_baseline": float(cam_data["K"][0, 0] * cam_data["baseline"]),
     }
     for cam_id, cam_data in episode["camera"].items()
@@ -65,24 +65,14 @@ def main(_):
   )
 
   available = core.runner.list_episode_dirs(config.paths.extrinsics)
-  if config.paths.episode_list:
-    available &= core.io.read_episode_list(config.paths.episode_list)
-
-  target = core.runner.shard_episodes(available, config.runner.rank, config.runner.world_size, config.runner.limit)
+  target = core.runner.select_episodes(available, config)
   export_root = os.path.abspath(os.path.expanduser(config.paths.scene))
   done = {e for e in target if os.path.isdir(os.path.join(export_root, e))}
 
   def run_one(episode_id):
     process_episode(episode_id, render_pool, device, config)
 
-  core.runner.run_episodes(
-    target,
-    run_one,
-    rank=config.runner.rank,
-    world_size=config.runner.world_size,
-    done=done,
-    stage="Stage 2+",
-  )
+  core.runner.run_episodes(target, run_one, done=done, stage="Stage 2+")
 
 
 if __name__ == "__main__":

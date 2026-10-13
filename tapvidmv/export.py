@@ -76,7 +76,7 @@ def export_to_tapvid3d(
     intrinsics = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]], dtype=np.float32)
     np.save(os.path.join(view_dir, release.INTRINSICS), intrinsics)
 
-    c2w = poses[cam_id]["extrinsics"][:F]
+    c2w = poses[cam_id]["T_cam2world"][:F]
     w2c = np.linalg.inv(c2w).astype(np.float32)
     np.save(os.path.join(view_dir, release.EXTRINSICS), w2c)
 
@@ -120,7 +120,6 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Export DROID pipeline outputs to TAPVid-3D format")
   parser.add_argument("--rank", type=int, default=0)
   parser.add_argument("--world_size", type=int, default=1)
-  parser.add_argument("--limit", type=int, default=-1)
   parser.add_argument(
     "--episode_id",
     type=str,
@@ -154,20 +153,15 @@ if __name__ == "__main__":
       available = with_tracks
       print(f"Exporting all {len(available)} episodes with tracks")
     else:
-      available = core.io.read_episode_list(args.episode_list)
+      with open(os.path.abspath(os.path.expanduser(args.episode_list))) as f:
+        available = {line.split("#")[0].strip() for line in f if line.split("#")[0].strip()}
       print(f"Read {len(available)} episodes from {args.episode_list}")
 
     def run_one(episode_id):
       process_episode(episode_id, args)
 
-    target = core.runner.shard_episodes(available, args.rank, args.world_size, args.limit)
+    config.runner.rank, config.runner.world_size = args.rank, args.world_size
+    target = core.runner.select_episodes(available, config)
     done = core.runner.list_episode_dirs(args.output_root)
 
-    core.runner.run_episodes(
-      target,
-      run_one,
-      rank=args.rank,
-      world_size=args.world_size,
-      done=done,
-      stage="Export",
-    )
+    core.runner.run_episodes(target, run_one, done=done, stage="Export")

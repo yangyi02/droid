@@ -16,7 +16,7 @@ python3 -m venv venv && source venv/bin/activate
 bash setup.sh              # everything, including the Stage 1 depth toolchain
 bash setup.sh --no-depth   # skip s2m2, Segment Anything, the ZED SDK and the weights
 
-bash mount_gcs.sh          # mount the input and output buckets
+bash mount_gcs.sh          # mount the input bucket
 
 bash run_parallel.sh depth        # Stage 1
 bash run_parallel.sh extrinsics   # Stage 2
@@ -26,6 +26,9 @@ bash run_parallel.sh metrics      # Stage 4 (needs stage 2, not stage 3)
 
 python compute_review.py --config.runner.limit=5   # Stage 5, then open the .rrd
 ```
+
+`run_parallel.sh` runs a stage on every GPU of the machine; `python compute_<stage>.py` runs it
+on one.
 
 Every path, threshold and optimizer setting lives in `config.py`, read through
 `ml_collections.config_flags`, so any field can be overridden on the command line:
@@ -65,10 +68,10 @@ the gripper.
 **Output** — `depth/<episode_id>/`
 
 ```
-robot.npz                      # joint_positions, T_ee_base_all, T_cam_ee_init, wrist_serial
+robot.npz                      # joint_positions, gripper_positions, T_ee2base, T_cam2ee, wrist_cam_id
 <cam_serial>/
-  calibration.npz              # K, baseline, distortion (rectified and raw)
-  video_left.mp4               # also _right, _left_raw, _right_raw
+  calibration.npz              # K, baseline
+  video_left.mp4               # also _right
   raw_depth.npz                # refined depth, uint16 mm
   original_raw_depth.npz       # pre-injection backup   ] wrist
   gripper_mask.npz             # SAM consensus mask     ] camera
@@ -87,8 +90,9 @@ full 100 px.
 The previous route, A0 (`per_camera_alignment` on depth L1, then a joint depth L1 + metric Chamfer
 stage), is deprecated and kept only for comparison: `--config.extrinsics.method=a0`.
 
-**Output** — `extrinsics/<episode_id>/<cam_serial>/extrinsics.json`, holding `base_extrinsic`
-(4×4) and `extrinsics` (N×4×4). Both are **cam2world**; the export inverts them.
+**Output** — `extrinsics/<episode_id>/<cam_serial>/extrinsics.json`, holding `T_cam2mount`
+(4×4, the camera in what it is mounted on: the robot base for a fixed camera, the end effector for
+the wrist) and `T_cam2world` (N×4×4, one per frame); the export inverts `T_cam2world`.
 
 ### Stage 2+ — `compute_scene.py`
 
@@ -217,14 +221,7 @@ track_metadata.npz             # n_robot, n_static, query_view, query_frame
 
 > `config.paths.tracks` currently points at `tapvidmv/data/tracks/` rather than
 > `data/output/droid/tracks/`, so this run can be compared against the old one before either
-> is thrown away. `config.py` carries the note to put it back.
-
-Stage 3 is the expensive stage and the evaluation set is a small slice of stage 2's output, so
-point it at a selection:
-
-```bash
-bash run_parallel.sh tracks "" --config.paths.episode_list=tapvidmv/episodes_eval150.txt
-```
+> is thrown away. Put it back to `os.path.join(output, "tracks")` in `config.py` afterwards.
 
 ### Stage 4 — `compute_metrics.py`
 
@@ -266,8 +263,8 @@ what the image plainly shows.
   camera calling a point visible while it lands outside the image. Only the first tree starts
   visible: read a number off a camera view, tick that tree on and the previous one off.
 
-Nothing pins the orbit — double-click a point to centre on it. Sharding is the same name order
-every stage uses, so `--config.runner.limit=5` is the five episodes stage 3 ran first.
+Nothing pins the orbit — double-click a point to centre on it. Episodes are taken in the same name
+order by every stage, so `--config.runner.limit=5` is the five episodes stage 3 ran first.
 
 | Knob | |
 |---|---|
@@ -337,11 +334,6 @@ The two dicts threaded through every stage are `episode` (one episode's loaded d
 `robot`, `camera`) and `poses` (per-camera extrinsics — what stage 2 estimates and stage 4
 measures).
 
-**On-disk keys are frozen and may disagree with the code.** `robot.npz` still says
-`wrist_serial`, `T_ee_base_all` and `T_cam_ee_init`; `extrinsics.json` still says
-`base_extrinsic` and `extrinsics`. 255 episodes are already computed and stage 1 is too
-expensive to re-run for a name. `core/io.py` translates at the boundary.
-
 ## Layout
 
 ```
@@ -355,7 +347,7 @@ droid/
 ├── compute_review.py          # Stage 5
 ├── config.py                  # Paths, buckets and every hyperparameter (ConfigDict)
 ├── setup.sh                   # Dependencies + weights (--no-depth skips Stage 1's toolchain)
-├── mount_gcs.sh               # Mount the input and output buckets
+├── mount_gcs.sh               # Mount the input bucket
 ├── run_parallel.sh            # One worker per GPU, episodes sharded by rank
 ├── serve_review.sh            # Serve one recording to a browser on your laptop
 ├── episodes_success.txt       # Episode ids pipeline.ipynb samples from
@@ -365,9 +357,12 @@ droid/
 │   ├── io.py                  #   Metadata, depth/extrinsics/track loading
 │   ├── physics.py             #   PyBulletRenderer and RenderPool: depth, mask and segmentation renders
 │   ├── pointcloud.py          #   Robot/scene clouds, chamfer(_px) + overlap(_px), depth and disparity losses
-│   ├── runner.py              #   Episode sharding + resume-aware batch loop
+│   ├── runner.py              #   Episode selection + resume-aware batch loop
 │   ├── scene.py               #   Per-view depth refinement: static depth, URDF, temporal settling
 │   └── visualization.py       #   Point clouds, tracking videos, 4D orbit
+├── xm/
+│   ├── Dockerfile             #   Container image with ZED SDK, PyBullet EGL, S2M2 and SAM
+│   └── launch.py              #   XManager GCP multi-worker launcher
 ├── tapvidmv/                  # The released evaluation set -- see its own README
 ├── assets/                    # Franka + Robotiq URDF and meshes
 └── third_party/               # Gitignored: submodule source + downloaded weights
@@ -388,11 +383,10 @@ Unmount by hand with `fusermount -u <local path>`.
 ## Running
 
 ```bash
-bash run_parallel.sh <stage> [limit] [--config.x=y ...]
+bash run_parallel.sh <stage> [--config.x=y ...]
 
-bash run_parallel.sh depth          # all episodes
-bash run_parallel.sh depth 32       # first 32
-bash run_parallel.sh tracks "" --config.paths.episode_list=tapvidmv/episodes_eval150.txt
+bash run_parallel.sh depth
+bash run_parallel.sh depth --config.runner.limit=32   # the first 32 episodes by name
 ```
 
 One worker per GPU detected by `nvidia-smi`, episodes sharded by rank, per-rank logs under

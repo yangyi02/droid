@@ -187,7 +187,7 @@ def shift(depth, focal_baseline, offset):
 
 def pair_samples(source, target, config, stride=8, every=10):
   samples = []
-  frames = [0] if is_fixed(source["extrinsics"]) and is_fixed(target["extrinsics"]) else range(0, len(source["extrinsics"]), every)
+  frames = [0] if is_fixed(source["T_cam2world"]) and is_fixed(target["T_cam2world"]) else range(0, len(source["T_cam2world"]), every)
   for t in frames:
     depth = source["static"][min(t, len(source["static"]) - 1)]
     height, width = target["static"].shape[1:]
@@ -195,8 +195,8 @@ def pair_samples(source, target, config, stride=8, every=10):
     u, v = u * stride, v * stride
     K = source["K"]
     ray = torch.stack([(u - float(K[0, 2])) / float(K[0, 0]), (v - float(K[1, 2])) / float(K[1, 1]), torch.ones_like(u, dtype=torch.float32)], -1)
-    T_source = torch.tensor(source["extrinsics"][t], device=depth.device)
-    T_target = torch.tensor(target["extrinsics"][t], device=depth.device)
+    T_source = torch.tensor(source["T_cam2world"][t], device=depth.device)
+    T_target = torch.tensor(target["T_cam2world"][t], device=depth.device)
     relative = torch.linalg.inv(T_target) @ T_source
     points = ray * depth[v, u, None]
     index, z, inside = project(points @ T_source[:3, :3].T + T_source[:3, 3], target["K"], T_target, height, width)

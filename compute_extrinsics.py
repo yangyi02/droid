@@ -26,23 +26,23 @@ def world_extrinsics(base, ee_poses, is_wrist):
 
 def init_camera_states(episode, extrinsics_db):
   print("  Initializing camera 3D states...")
-  wrist_cam_id = episode["meta"]["wrist_serial"]
+  wrist_cam_id = episode["meta"]["wrist_cam_id"]
   robot_data = episode["robot"]
-  n_frames = len(robot_data["T_ee_base_all"])
+  n_frames = len(robot_data["T_ee2base"])
 
   episode_extrinsics = extrinsics_db[episode["meta"]["episode_id"]]
 
   poses = {}
   for cam_id in episode["camera"]:
     if cam_id == wrist_cam_id:
-      T_cam2mount = robot_data["T_cam_ee_init"]
-      cam_trajectory = robot_data["T_ee_base_all"] @ T_cam2mount
+      T_cam2mount = robot_data["T_cam2ee"]
+      cam_trajectory = robot_data["T_ee2base"] @ T_cam2mount
     else:
       T_cam2mount = core.geometry.pose_from_euler(episode_extrinsics[cam_id])
       cam_trajectory = np.tile(T_cam2mount, (n_frames, 1, 1))
       print(f"    Loaded pre-calibrated extrinsics for camera [{cam_id}] from metadata.")
 
-    poses[cam_id] = {"base_extrinsic": T_cam2mount, "extrinsics": cam_trajectory}
+    poses[cam_id] = {"T_cam2mount": T_cam2mount, "T_cam2world": cam_trajectory}
 
   return poses
 
@@ -51,9 +51,9 @@ def per_camera_alignment(episode, render_pool, prev_poses, device, config):
   print("\nUnified camera-robot alignment (external + wrist)...")
   outer_steps, inner_steps = config.extrinsics.a0.outer_steps, config.extrinsics.a0.inner_steps
   n_points, max_depth = config.extrinsics.n_points, config.extrinsics.max_depth
-  wrist_cam_id = episode["meta"]["wrist_serial"]
+  wrist_cam_id = episode["meta"]["wrist_cam_id"]
   poses = copy.deepcopy(prev_poses)
-  T_ee_base_all = episode["robot"]["T_ee_base_all"]
+  T_ee2base = episode["robot"]["T_ee2base"]
 
   for cam_id in episode["camera"]:
     is_wrist = cam_id == wrist_cam_id
@@ -62,7 +62,7 @@ def per_camera_alignment(episode, render_pool, prev_poses, device, config):
 
     cam_data = episode["camera"][cam_id]
     K = torch.tensor(cam_data["K"], dtype=torch.float32, device=device)
-    T_cam2mount_init = torch.tensor(prev_poses[cam_id]["base_extrinsic"], dtype=torch.float32, device=device)
+    T_cam2mount_init = torch.tensor(prev_poses[cam_id]["T_cam2mount"], dtype=torch.float32, device=device)
     depth_full = torch.tensor(np.asarray(cam_data["raw_depth"], dtype=np.float32), device=device).unsqueeze(1)
     delta = torch.zeros(6, requires_grad=True, device=device)
     optimizer = optim.Adam([delta], lr=config.extrinsics.lr)
@@ -72,7 +72,7 @@ def per_camera_alignment(episode, render_pool, prev_poses, device, config):
       with torch.no_grad():
         T_cam2mount = (T_cam2mount_init @ core.geometry.pose_from_axis_angle(delta, device)).cpu().numpy()
       rendered = render_pool.render(
-        episode["robot"], world_extrinsics(T_cam2mount, T_ee_base_all, is_wrist), cam_data["K"], *cam_data["raw_depth"].shape[:0:-1]
+        episode["robot"], world_extrinsics(T_cam2mount, T_ee2base, is_wrist), cam_data["K"], *cam_data["raw_depth"].shape[:0:-1]
       )
       robot_points, depth_batch = core.pointcloud.extract_robot_clouds(
         cam_data["K"], rendered, T_cam2mount, device, depth_full, n_points
@@ -104,8 +104,8 @@ def per_camera_alignment(episode, render_pool, prev_poses, device, config):
       rot_deg = torch.norm(delta[3:]).item() * (180.0 / np.pi)
       print(f"  [{cam_id}] Alignment done! Loss: {loss_rob.item():.4f} (shift: {shift_mm:.2f}mm, rot: {rot_deg:.2f}°)")
 
-      poses[cam_id]["base_extrinsic"] = T_cam2mount_final
-      poses[cam_id]["extrinsics"] = world_extrinsics(T_cam2mount_final, T_ee_base_all, is_wrist)
+      poses[cam_id]["T_cam2mount"] = T_cam2mount_final
+      poses[cam_id]["T_cam2world"] = world_extrinsics(T_cam2mount_final, T_ee2base, is_wrist)
 
   return poses
 
@@ -174,12 +174,12 @@ def joint_alignment(episode, prev_poses, render_pool, stage, device, config):
   n_points = config.extrinsics.n_points
   print(f"\nJoint optimization ({stage.losses}, {stage.optimizer}, {stage.rounds} rounds)...")
 
-  wrist_cam_id = episode["meta"]["wrist_serial"]
+  wrist_cam_id = episode["meta"]["wrist_cam_id"]
   cam_ids = [c for c in episode["camera"] if c != wrist_cam_id] + [wrist_cam_id]
   pairs = list(itertools.combinations(cam_ids, 2))
   fixed_cam_ids = [c for c in cam_ids if c != wrist_cam_id]
   label = {c: str(i + 1) for i, c in enumerate(fixed_cam_ids)} | {wrist_cam_id: "W"}
-  T_ee2base = episode["robot"]["T_ee_base_all"]
+  T_ee2base = episode["robot"]["T_ee2base"]
 
   data = {"baseline": {c: episode["camera"][c]["baseline"] for c in cam_ids}}
   if losses & {"chamfer_m", "chamfer_px"}:
@@ -194,12 +194,12 @@ def joint_alignment(episode, prev_poses, render_pool, stage, device, config):
       episode, poses, renders, device, n_points
     )
 
-    base = {c: torch.tensor(poses[c]["base_extrinsic"], dtype=torch.float32, device=device) for c in cam_ids}
+    base = {c: torch.tensor(poses[c]["T_cam2mount"], dtype=torch.float32, device=device) for c in cam_ids}
     final = optimize_round(base, data, losses, stage, wrist_cam_id, pairs, label, device, config)
     poses = {
       cam_id: {
-        "base_extrinsic": final[cam_id].cpu().numpy(),
-        "extrinsics": world_extrinsics(final[cam_id].cpu().numpy(), T_ee2base, cam_id == wrist_cam_id),
+        "T_cam2mount": final[cam_id].cpu().numpy(),
+        "T_cam2world": world_extrinsics(final[cam_id].cpu().numpy(), T_ee2base, cam_id == wrist_cam_id),
       }
       for cam_id in cam_ids
     }
@@ -218,7 +218,7 @@ def align_episode(episode, extrinsics_db, render_pool, device, config):
 
 def export_extrinsics(episode, poses, export_root):
   episode_id = episode["meta"]["episode_id"]
-  wrist_cam_id = episode["meta"]["wrist_serial"]
+  wrist_cam_id = episode["meta"]["wrist_cam_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode_id)))
   fname = "extrinsics.json"
 
@@ -227,8 +227,8 @@ def export_extrinsics(episode, poses, export_root):
     os.makedirs(cam_dir, exist_ok=True)
 
     payload = {
-      "base_extrinsic": state["base_extrinsic"].astype(np.float64).tolist(),
-      "extrinsics": state["extrinsics"].astype(np.float64).tolist(),
+      "T_cam2mount": state["T_cam2mount"].astype(np.float64).tolist(),
+      "T_cam2world": state["T_cam2world"].astype(np.float64).tolist(),
       "is_wrist": (cam_id == wrist_cam_id),
     }
 
@@ -264,29 +264,14 @@ def main(_):
   )
 
   available = core.runner.list_episode_dirs(config.paths.depth)
-  if config.paths.episode_list:
-    available &= core.io.read_episode_list(config.paths.episode_list)
-
-  target = core.runner.shard_episodes(
-    available,
-    config.runner.rank,
-    config.runner.world_size,
-    config.runner.limit,
-  )
+  target = core.runner.select_episodes(available, config)
   export_root = os.path.abspath(os.path.expanduser(config.paths.extrinsics))
   done = {e for e in target if _has_final_extrinsics(os.path.join(export_root, e))}
 
   def run_one(episode_id):
     process_episode(episode_id, render_pool, extrinsics_db, device, config)
 
-  core.runner.run_episodes(
-    target,
-    run_one,
-    rank=config.runner.rank,
-    world_size=config.runner.world_size,
-    done=done,
-    stage="Stage 2",
-  )
+  core.runner.run_episodes(target, run_one, done=done, stage="Stage 2")
 
 
 if __name__ == "__main__":

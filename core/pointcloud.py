@@ -15,14 +15,14 @@ def sample_camera_points(mask, z, K, n_points):
   return core.geometry.unproject_camera_frame(u, v, z[v, u], K)
 
 
-def extract_robot_clouds(K, rendered, base_extrinsic, device, depth_batch, n_points):
+def extract_robot_clouds(K, rendered, T_cam2mount, device, depth_batch, n_points):
   cache_X, kept = [], []
   for t in range(len(rendered)):
     points_cam = sample_camera_points(rendered[t] > 0, rendered[t], K, n_points)
     if points_cam is None:
       continue
 
-    cache_X.append(torch.tensor((base_extrinsic @ points_cam)[:3, :].T, dtype=torch.float32, device=device))
+    cache_X.append(torch.tensor((T_cam2mount @ points_cam)[:3, :].T, dtype=torch.float32, device=device))
     kept.append(t)
 
   return torch.stack(cache_X), depth_batch[kept]
@@ -33,7 +33,7 @@ def robot_clouds(episode, poses, renders, device, n_points):
   for cam_id, cam_data in episode["camera"].items():
     observed = torch.tensor(np.asarray(cam_data["raw_depth"], dtype=np.float32), device=device).unsqueeze(1)
     robot_points[cam_id], depth_batch[cam_id] = extract_robot_clouds(
-      cam_data["K"], renders[cam_id], poses[cam_id]["base_extrinsic"], device, observed, n_points
+      cam_data["K"], renders[cam_id], poses[cam_id]["T_cam2mount"], device, observed, n_points
     )
     K[cam_id] = torch.tensor(cam_data["K"], dtype=torch.float32, device=device)
 
@@ -48,7 +48,7 @@ def camera_frame_points(t, cam_data, n_points, max_depth):
 
 def scene_clouds(episode, device, n_points, max_depth):
   cameras = episode["camera"]
-  T_ee2base = episode["robot"]["T_ee_base_all"]
+  T_ee2base = episode["robot"]["T_ee2base"]
 
   cache = {cam_id: [] for cam_id in cameras}
   cache_ee, frames = [], []

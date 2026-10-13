@@ -169,7 +169,7 @@ class RenderPool:
 
   def render_cameras(self, episode, poses, frame=_render_frame):
     return {
-      cam_id: self.render(episode["robot"], poses[cam_id]["extrinsics"], cam_data["K"], *cam_data["raw_depth"].shape[:0:-1], frame)
+      cam_id: self.render(episode["robot"], poses[cam_id]["T_cam2world"], cam_data["K"], *cam_data["raw_depth"].shape[:0:-1], frame)
       for cam_id, cam_data in episode["camera"].items()
     }
 

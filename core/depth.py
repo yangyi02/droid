@@ -11,7 +11,7 @@ def get_s2m2_disparity(img_left, img_right, s2m2_model, run_stereo_matching, dev
   left_torch = torch.from_numpy(img_left).permute(2, 0, 1).unsqueeze(0).to(device)
   right_torch = torch.from_numpy(img_right).permute(2, 0, 1).unsqueeze(0).to(device)
 
-  pred_disp, _, pred_conf, _, _ = run_stereo_matching(s2m2_model, left_torch, right_torch, device, N_repeat=3)
+  pred_disp, _, pred_conf, _, _ = run_stereo_matching(s2m2_model, left_torch, right_torch, device)
 
   disp = pred_disp.cpu().numpy().squeeze()
   conf = pred_conf.cpu().numpy().squeeze()
@@ -90,7 +90,7 @@ def compute_consensus_mask(masks_list, consensus_thresh):
 def build_universal_gripper_mask(
   episode, sam_predictor, consensus_thresh, gripper_closed_thresh, mask_area_min, mask_area_max
 ):
-  cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
+  cam_data = episode["camera"][episode["meta"]["wrist_cam_id"]]
   gripper_states = episode["robot"]["gripper_positions"]
   closed_indices = np.where(gripper_states < gripper_closed_thresh)[0]
 
@@ -109,7 +109,7 @@ def build_universal_gripper_mask(
 
 
 def distill_empirical_gripper_depth(episode, max_depth_thresh, gripper_closed_thresh):
-  cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
+  cam_data = episode["camera"][episode["meta"]["wrist_cam_id"]]
   gripper_states = episode["robot"]["gripper_positions"]
   closed_indices = np.where(gripper_states < gripper_closed_thresh)[0]
   height, width = cam_data["video_rgb"][0].shape[:2]
@@ -130,7 +130,7 @@ def distill_empirical_gripper_depth(episode, max_depth_thresh, gripper_closed_th
 
 
 def inject_gripper_depth(episode, gripper_closed_thresh):
-  cam_data = episode["camera"][episode["meta"]["wrist_serial"]]
+  cam_data = episode["camera"][episode["meta"]["wrist_cam_id"]]
   gripper_states = episode["robot"]["gripper_positions"]
   empirical_depth = cam_data["empirical_gripper_depth"]
 

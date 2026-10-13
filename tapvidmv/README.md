@@ -96,12 +96,6 @@ python tapvidmv/shortlist.py --n 150 --cut chamfer=0.047 --cut robot_loss=0.014 
 | `--input` | `config.paths.metrics` | Directory of per-episode metrics |
 | `--output_dir` | this directory | Where the list is written |
 
-Stage 3 reads the list it writes, so the expensive stage only runs on the selection:
-
-```bash
-bash run_parallel.sh tracks "" --config.paths.episode_list=tapvidmv/episodes_eval150.txt
-```
-
 ### Step 3 — [`review.ipynb`](review.ipynb)
 
 Work through the pool by eye. Each candidate plays as a three-view clip with the
@@ -124,7 +118,6 @@ so the picker does not wait on video decoding.
 ```bash
 bash tapvidmv/run_export.sh                                   # episodes_eval50.txt, 8 workers
 bash tapvidmv/run_export.sh 16                                # 16 workers
-bash tapvidmv/run_export.sh 16 --limit 4                      # flags pass through to export.py
 
 python tapvidmv/export.py                                     # one process
 python tapvidmv/export.py --episode_list episodes_eval150.txt
@@ -152,7 +145,6 @@ and the arm mask compresses to almost nothing, so fifty episodes come to roughly
 |---|---|---|
 | `--episode_list` | `episodes_eval50.txt` | List to export, or `all` for everything with tracks |
 | `--episode_id` | — | A single episode, overriding the list |
-| `--limit` | all | Max episodes |
 | `--output_root` | `tapvidmv/data/release` | Where the release is written |
 | `--jpeg_quality` | 95 | |
 

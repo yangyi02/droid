@@ -26,24 +26,19 @@ RUN wget -q -O /tmp/zed_sdk.run "https://download.stereolabs.com/zedsdk/5.2/cu12
 COPY requirements.txt requirements-depth.txt /tmp/
 RUN pip install --upgrade pip \
  && pip install -r /tmp/requirements.txt \
- && pip install -r /tmp/requirements-depth.txt \
- && pip install requests google-cloud-storage
+ && pip install -r /tmp/requirements-depth.txt
 
-RUN cd /tmp && python /usr/local/zed/get_python_api.py && rm -f /tmp/*.whl
+RUN cd /tmp && python /usr/local/zed/get_python_api.py && rm -f /tmp/*.whl \
+ && pip install --force-reinstall --no-deps requests urllib3 charset-normalizer idna certifi
 
-RUN pip install --force-reinstall --no-deps --no-binary pybullet --no-build-isolation pybullet \
- && python -c "import pybullet, importlib.util as u; assert pybullet.isNumpyEnabled(); assert u.find_spec('eglRenderer')"
-
-RUN pip install --force-reinstall --no-deps requests urllib3 charset-normalizer idna certifi \
- && python -c "from google.cloud import storage; from google.cloud.storage import transfer_manager; import requests.adapters"
+RUN pip install --force-reinstall --no-deps --no-binary pybullet --no-build-isolation pybullet
 
 ENV HOME=/tmp \
     MPLCONFIGDIR=/tmp/matplotlib \
     TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor \
     TRITON_CACHE_DIR=/tmp/triton \
-    XDG_CACHE_HOME=/tmp/.cache
-
-ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/nvidia/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH}
+    XDG_CACHE_HOME=/tmp/.cache \
+    LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/nvidia/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH}
 
 WORKDIR /app
 
@@ -59,23 +54,15 @@ RUN mkdir -p data/meta/1.0.1 \
       wget -q -O "data/meta/1.0.1/$f" "https://huggingface.co/KarlP/droid/resolve/main/$f"; \
     done
 
-RUN python -c "import json; m='data/meta/1.0.1/'; d=json.load(open(m+'camera_serials.json')); x=json.load(open(m+'cam2base_extrinsic_superset.json')); s={str(v) for e in d.values() for v in e.values()} | {str(k) for e in x.values() for k in e}; print(chr(10).join(sorted(v for v in s if v.isdigit())))" > /tmp/serials.txt \
- && mkdir -p /usr/local/zed/settings \
- && while read -r sn; do \
-      f="/usr/local/zed/settings/SN${sn}.conf"; \
-      wget -q -O "$f" "https://calib.stereolabs.com/?SN=${sn}" || true; \
-      if [ ! -s "$f" ] || [ "$(stat -c %s "$f")" -lt 500 ]; then echo "no calibration for ${sn}"; rm -f "$f"; fi; \
-    done < /tmp/serials.txt \
- && echo "ZED calibrations: $(ls /usr/local/zed/settings | wc -l) / $(wc -l < /tmp/serials.txt) serials" \
+RUN mkdir -p /usr/local/zed/settings \
+ && grep -oE '"[0-9]+"' data/meta/1.0.1/camera_serials.json data/meta/1.0.1/cam2base_extrinsic_superset.json \
+  | cut -d'"' -f2 | sort -u \
+  | while read -r sn; do \
+      wget -q -O "/usr/local/zed/settings/SN${sn}.conf" "https://calib.stereolabs.com/?SN=${sn}" || true; \
+      [ "$(stat -c %s "/usr/local/zed/settings/SN${sn}.conf" 2>/dev/null || echo 0)" -ge 500 ] || rm -f "/usr/local/zed/settings/SN${sn}.conf"; \
+    done \
  && chmod -R a+rwX /usr/local/zed
-ENV ZED_REQUIRE_LOCAL_CALIB=1
 
-COPY assets ./assets
-COPY core ./core
-COPY tapvidmv ./tapvidmv
-COPY config.py compute_depth.py compute_extrinsics.py compute_scene.py compute_tracks.py \
-     compute_metrics.py compute_review.py episodes_success.txt ./
-COPY xm/run_stage.py ./xm/run_stage.py
-COPY xm/entrypoint.sh /entrypoint.sh
+COPY . .
 
-ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]
+ENTRYPOINT ["python", "-u"]
