@@ -76,15 +76,15 @@ def export_to_tapvid3d(
     intrinsics = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]], dtype=np.float32)
     np.save(os.path.join(view_dir, release.INTRINSICS), intrinsics)
 
-    c2w = poses[cam_id]["T_cam2world"][:F]
+    c2w = poses[cam_id]["T_cam2world"]
     w2c = np.linalg.inv(c2w).astype(np.float32)
     np.save(os.path.join(view_dir, release.EXTRINSICS), w2c)
 
     np.save(os.path.join(view_dir, release.VISIBILITY), vis[view].astype(bool))
 
-    depth_mm = np.round(cam_data["raw_depth"][:F] * 1000).astype(np.uint16)
+    depth_mm = np.round(cam_data["raw_depth"] * 1000).astype(np.uint16)
     np.savez_compressed(os.path.join(view_dir, release.DEPTH), depth=depth_mm)
-    np.savez_compressed(os.path.join(view_dir, release.MASK), mask=masks[cam_id][:F])
+    np.savez_compressed(os.path.join(view_dir, release.MASK), mask=masks[cam_id])
 
     H, W = video[0].shape[:2]
     print(f"  view {view_id} [{cam_id}]: imgs({F},JPEG) intr(4,) extr({F},4,4) vis({F},{P}) depth+mask({F},{H},{W})")
