@@ -149,29 +149,19 @@ def _render_frame(task):
   return _worker.render_depth(T_cam2world, K, width, height)
 
 
-def _segment_frame(task):
-  joint_positions, gripper_position, T_cam2world, K, width, height = task
-  _worker.update_robot_pose(joint_positions, gripper_position)
-  _, link_ids, depth = _worker.render_segmentation(T_cam2world, K, width, height)
-  return np.stack([depth, np.where(depth > 0, link_ids, -2).astype(np.float32)])
-
-
 class RenderPool:
   def __init__(self, renderer, workers):
     self.pool = multiprocessing.get_context("spawn").Pool(workers, _start_worker, (renderer.urdf, renderer.gpu))
 
-  def render(self, robot, T_cam2world, K, width, height, frame=_render_frame):
+  def render(self, robot, T_cam2world, K, width, height):
     tasks = [
       (robot["joint_positions"][t], robot["gripper_positions"][t], T_cam2world[t], K, width, height)
       for t in range(len(T_cam2world))
     ]
-    return np.stack(self.pool.map(frame, tasks, chunksize=8))
+    return np.stack(self.pool.map(_render_frame, tasks, chunksize=8))
 
-  def render_cameras(self, episode, poses, frame=_render_frame):
+  def render_cameras(self, episode, poses):
     return {
-      cam_id: self.render(episode["robot"], poses[cam_id]["T_cam2world"], cam_data["K"], *cam_data["raw_depth"].shape[:0:-1], frame)
+      cam_id: self.render(episode["robot"], poses[cam_id]["T_cam2world"], cam_data["K"], *cam_data["raw_depth"].shape[:0:-1])
       for cam_id, cam_data in episode["camera"].items()
     }
-
-  def segment_cameras(self, episode, poses):
-    return self.render_cameras(episode, poses, _segment_frame)

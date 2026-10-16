@@ -1,4 +1,3 @@
-import copy
 import gc
 import itertools
 import json
@@ -47,115 +46,38 @@ def init_camera_states(episode, extrinsics_db):
   return poses
 
 
-def per_camera_alignment(episode, render_pool, prev_poses, device, config):
-  print("\nUnified camera-robot alignment (external + wrist)...")
-  outer_steps, inner_steps = config.extrinsics.a0.outer_steps, config.extrinsics.a0.inner_steps
-  n_points, max_depth = config.extrinsics.n_points, config.extrinsics.max_depth
-  wrist_cam_id = episode["meta"]["wrist_cam_id"]
-  poses = copy.deepcopy(prev_poses)
-  T_ee2base = episode["robot"]["T_ee2base"]
-
-  for cam_id in episode["camera"]:
-    is_wrist = cam_id == wrist_cam_id
-    mode = "wrist" if is_wrist else "external"
-    print(f"\n  Optimizing [{mode}] camera: [{cam_id}] ...")
-
-    cam_data = episode["camera"][cam_id]
-    K = torch.tensor(cam_data["K"], dtype=torch.float32, device=device)
-    T_cam2mount_init = torch.tensor(prev_poses[cam_id]["T_cam2mount"], dtype=torch.float32, device=device)
-    depth_full = torch.tensor(np.asarray(cam_data["raw_depth"], dtype=np.float32), device=device).unsqueeze(1)
-    delta = torch.zeros(6, requires_grad=True, device=device)
-    optimizer = optim.Adam([delta], lr=config.extrinsics.lr)
-
-    print(f"      {outer_steps} x {inner_steps} steps, re-rendering the cloud between them...")
-    for outer in range(outer_steps):
-      with torch.no_grad():
-        T_cam2mount = (T_cam2mount_init @ core.geometry.pose_from_axis_angle(delta, device)).cpu().numpy()
-      rendered = render_pool.render(
-        episode["robot"], world_extrinsics(T_cam2mount, T_ee2base, is_wrist), cam_data["K"], *cam_data["raw_depth"].shape[:0:-1]
-      )
-      robot_points, depth_batch = core.pointcloud.extract_robot_clouds(
-        cam_data["K"], rendered, T_cam2mount, device, depth_full, n_points
-      )
-      for _ in range(inner_steps):
-        optimizer.zero_grad()
-        loss_rob = core.pointcloud.depth_loss_batched(
-          robot_points,
-          T_cam2mount_init @ core.geometry.pose_from_axis_angle(delta, device),
-          K,
-          depth_batch,
-          max_depth,
-        )
-        loss_rob.backward()
-        optimizer.step()
-
-      with torch.no_grad():
-        rot_deg = torch.norm(delta[3:]).item() * (180.0 / np.pi)
-        shift_mm = torch.norm(delta[:3]).item() * 1000.0
-      print(
-        f"        Outer {outer + 1}/{outer_steps} | frames "
-        f"{len(robot_points)} | Loss: {loss_rob.item():.4f} | "
-        f"Shift: {shift_mm:.2f}mm | Rot: {rot_deg:.2f}°"
-      )
-
-    with torch.no_grad():
-      T_cam2mount_final = (T_cam2mount_init @ core.geometry.pose_from_axis_angle(delta, device)).cpu().numpy()
-      shift_mm = torch.norm(delta[:3]).item() * 1000.0
-      rot_deg = torch.norm(delta[3:]).item() * (180.0 / np.pi)
-      print(f"  [{cam_id}] Alignment done! Loss: {loss_rob.item():.4f} (shift: {shift_mm:.2f}mm, rot: {rot_deg:.2f}°)")
-
-      poses[cam_id]["T_cam2mount"] = T_cam2mount_final
-      poses[cam_id]["T_cam2world"] = world_extrinsics(T_cam2mount_final, T_ee2base, is_wrist)
-
-  return poses
-
-
-def alignment_terms(losses, pose, data, wrist_cam_id, pairs, label, stage, config):
-  terms = {}
-  if "chamfer_m" in losses:
-    chamfer, _ = core.pointcloud.chamfer_overlap(
-      data["env"], data["ee_poses"], pose, wrist_cam_id, pairs, config.extrinsics.chamfer_match_radius
+def alignment_terms(pose, data, wrist_cam_id, pairs, label, config):
+  chamfer, _ = core.pointcloud.chamfer_overlap_px(
+    data["env"], data["ee_poses"], pose, wrist_cam_id, pairs, data["K"], data["baseline"], data["disparity"],
+    config.extrinsics.chamfer_px_radius,
+  )
+  terms = {("chamfer_px", label[a] + label[b]): value for (a, b), value in chamfer.items()}
+  for cam_id, points in data["robot_points"].items():
+    terms["disparity", label[cam_id]] = core.pointcloud.disparity_loss_batched(
+      points, pose[cam_id], data["K"][cam_id], data["depth_batch"][cam_id], data["baseline"][cam_id],
+      config.extrinsics.disparity_truncation,
     )
-    terms |= {("chamfer_m", label[a] + label[b]): value for (a, b), value in chamfer.items()}
-  if "chamfer_px" in losses:
-    chamfer, _ = core.pointcloud.chamfer_overlap_px(
-      data["env"], data["ee_poses"], pose, wrist_cam_id, pairs, data["K"], data["baseline"], data["disparity"],
-      config.extrinsics.chamfer_px_radius,
-    )
-    terms |= {("chamfer_px", label[a] + label[b]): value for (a, b), value in chamfer.items()}
-  if "depth_l1" in losses:
-    depth = core.pointcloud.robot_depth_loss(
-      data["robot_points"], data["depth_batch"], data["K"], pose, config.extrinsics.max_depth
-    )
-    terms |= {("depth_l1", label[cam_id]): value for cam_id, value in depth.items()}
-  if "disparity" in losses:
-    for cam_id, points in data["robot_points"].items():
-      terms["disparity", label[cam_id]] = core.pointcloud.disparity_loss_batched(
-        points, pose[cam_id], data["K"][cam_id], data["depth_batch"][cam_id], data["baseline"][cam_id],
-        stage.disparity_truncation,
-      )
   return terms
 
 
-def optimize_round(base, data, losses, stage, wrist_cam_id, pairs, label, device, config):
+def optimize_poses(base, data, wrist_cam_id, pairs, label, device, config):
   n_steps = config.extrinsics.n_steps
   delta = {cam_id: torch.zeros(6, requires_grad=True, device=device) for cam_id in base}
 
   def objective():
     pose = {cam_id: base[cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id], device) for cam_id in base}
-    return alignment_terms(losses, pose, data, wrist_cam_id, pairs, label, stage, config)
+    return alignment_terms(pose, data, wrist_cam_id, pairs, label, config)
 
-  weight = {"depth_l1": stage.robot_weight, "disparity": stage.robot_weight}
+  weight = {"disparity": config.extrinsics.robot_weight}
 
   optimizer = optim.Adam(list(delta.values()), lr=config.extrinsics.lr)
-  schedule = optim.lr_scheduler.CosineAnnealingLR(optimizer, n_steps) if stage.optimizer == "adam_cosine" else None
+  schedule = optim.lr_scheduler.CosineAnnealingLR(optimizer, n_steps)
   for step in range(n_steps):
     optimizer.zero_grad()
     terms = objective()
     sum(weight.get(key[0], 1.0) * value for key, value in terms.items()).backward()
     optimizer.step()
-    if schedule is not None:
-      schedule.step()
+    schedule.step()
 
     if step % 100 == 0 or step == n_steps - 1:
       totals = {}
@@ -169,10 +91,9 @@ def optimize_round(base, data, losses, stage, wrist_cam_id, pairs, label, device
     return {cam_id: base[cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id], device) for cam_id in base}
 
 
-def joint_alignment(episode, prev_poses, render_pool, stage, device, config):
-  losses = set(stage.losses.split(","))
+def joint_alignment(episode, prev_poses, render_pool, device, config):
   n_points = config.extrinsics.n_points
-  print(f"\nJoint optimization ({stage.losses}, {stage.optimizer}, {stage.rounds} rounds)...")
+  print("\nJoint optimization...")
 
   wrist_cam_id = episode["meta"]["wrist_cam_id"]
   cam_ids = [c for c in episode["camera"] if c != wrist_cam_id] + [wrist_cam_id]
@@ -182,41 +103,26 @@ def joint_alignment(episode, prev_poses, render_pool, stage, device, config):
   T_ee2base = episode["robot"]["T_ee2base"]
 
   data = {"baseline": {c: episode["camera"][c]["baseline"] for c in cam_ids}}
-  if losses & {"chamfer_m", "chamfer_px"}:
-    data["env"], data["ee_poses"], frames = core.pointcloud.scene_clouds(episode, device, n_points, stage.scene_max_depth)
-  if "chamfer_px" in losses:
-    data["disparity"] = core.pointcloud.disparity_maps(episode, frames, device)
+  data["env"], data["ee_poses"], frames = core.pointcloud.scene_clouds(episode, device, n_points)
+  data["disparity"] = core.pointcloud.disparity_maps(episode, frames, device)
 
-  poses = prev_poses
-  for _ in range(stage.rounds):
-    renders = render_pool.render_cameras(episode, poses)
-    data["robot_points"], data["depth_batch"], data["K"] = core.pointcloud.robot_clouds(
-      episode, poses, renders, device, n_points
-    )
+  renders = render_pool.render_cameras(episode, prev_poses)
+  data["robot_points"], data["depth_batch"], data["K"] = core.pointcloud.robot_clouds(
+    episode, prev_poses, renders, device, n_points
+  )
 
-    base = {c: torch.tensor(poses[c]["T_cam2mount"], dtype=torch.float32, device=device) for c in cam_ids}
-    final = optimize_round(base, data, losses, stage, wrist_cam_id, pairs, label, device, config)
-    poses = {
-      cam_id: {
-        "T_cam2mount": final[cam_id].cpu().numpy(),
-        "T_cam2world": world_extrinsics(final[cam_id].cpu().numpy(), T_ee2base, cam_id == wrist_cam_id),
-      }
-      for cam_id in cam_ids
+  base = {c: torch.tensor(prev_poses[c]["T_cam2mount"], dtype=torch.float32, device=device) for c in cam_ids}
+  final = optimize_poses(base, data, wrist_cam_id, pairs, label, device, config)
+  return {
+    cam_id: {
+      "T_cam2mount": final[cam_id].cpu().numpy(),
+      "T_cam2world": world_extrinsics(final[cam_id].cpu().numpy(), T_ee2base, cam_id == wrist_cam_id),
     }
-
-  return poses
-
-
-def align_episode(episode, extrinsics_db, render_pool, device, config):
-  method = config.extrinsics.method
-
-  poses = init_camera_states(episode, extrinsics_db)
-  if method == "a0":
-    poses = per_camera_alignment(episode, render_pool, poses, device, config)
-  return joint_alignment(episode, poses, render_pool, config.extrinsics[method], device, config)
+    for cam_id in cam_ids
+  }
 
 
-def export_extrinsics(episode, poses, export_root):
+def export_extrinsics(episode, poses, metrics, export_root):
   episode_id = episode["meta"]["episode_id"]
   wrist_cam_id = episode["meta"]["wrist_cam_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode_id)))
@@ -236,20 +142,77 @@ def export_extrinsics(episode, poses, export_root):
     with open(out_path, "w") as f:
       json.dump(payload, f, indent=2)
 
-  print(f"  Extrinsics saved to {ep_dir}/*/{fname}")
+  payload = {k: None if isinstance(v, float) and not np.isfinite(v) else v for k, v in metrics.items()}
+  with open(os.path.join(ep_dir, "metrics.json"), "w") as f:
+    json.dump(payload, f, indent=2)
+
+  print(f"  Extrinsics and metrics saved to {ep_dir}")
 
 
-def _has_final_extrinsics(ep_dir):
-  return os.path.isdir(ep_dir) and any(
-    os.path.exists(os.path.join(ep_dir, cam_id, "extrinsics.json")) for cam_id in os.listdir(ep_dir)
+@torch.no_grad()
+def evaluate_extrinsics(episode, poses, render_pool, device, config):
+  wrist_cam_id = episode["meta"]["wrist_cam_id"]
+  cam_ids = sorted(episode["camera"])
+  pairs = list(itertools.combinations(cam_ids, 2))
+  base = {c: torch.tensor(poses[c]["T_cam2mount"], dtype=torch.float32, device=device) for c in cam_ids}
+
+  n_points, max_depth = config.extrinsics.n_points, config.extrinsics.max_depth
+  renders = render_pool.render_cameras(episode, poses)
+  robot_points, depth_batch, K = core.pointcloud.robot_clouds(episode, poses, renders, device, n_points)
+  env, ee_poses, frames = core.pointcloud.scene_clouds(episode, device, n_points, max_depth)
+
+  chamfer, overlap = core.pointcloud.chamfer_overlap(
+    env, ee_poses, base, wrist_cam_id, pairs, config.extrinsics.chamfer_match_radius
+  )
+  chamfer_px, overlap_px = core.pointcloud.chamfer_overlap_px(
+    env,
+    ee_poses,
+    base,
+    wrist_cam_id,
+    pairs,
+    K,
+    {c: episode["camera"][c]["baseline"] for c in cam_ids},
+    core.pointcloud.disparity_maps(episode, frames, device),
+    config.extrinsics.chamfer_px_radius,
+  )
+  robot = core.pointcloud.robot_depth_loss(robot_points, depth_batch, K, base, max_depth)
+
+  return (
+    {f"chamfer_{a}_{b}": chamfer[a, b].item() for a, b in pairs}
+    | {f"overlap_{a}_{b}": overlap[a, b].item() * 100 for a, b in pairs}
+    | {f"chamfer_px_{a}_{b}": chamfer_px[a, b].item() for a, b in pairs}
+    | {f"overlap_px_{a}_{b}": overlap_px[a, b].item() * 100 for a, b in pairs}
+    | {f"robot_loss_{cam_id}": robot[cam_id].item() for cam_id in cam_ids}
+  )
+
+
+def scene_metadata(episode):
+  site, scene, _ = episode["meta"]["episode_id"].split("+")
+
+  return {
+    "site": site,
+    "scene": scene,
+    "n_cameras": len(episode["camera"]),
+    "n_frames": int(len(episode["robot"]["joint_positions"])),
+    "wrist_cam_id": episode["meta"]["wrist_cam_id"],
+  }
+
+
+def episode_metrics(episode, poses, render_pool, device, config):
+  return (
+    {"episode_id": episode["meta"]["episode_id"]}
+    | scene_metadata(episode)
+    | evaluate_extrinsics(episode, poses, render_pool, device, config)
   )
 
 
 def process_episode(episode_id, render_pool, extrinsics_db, device, config):
   episode = core.io.load_depth_data(episode_id, config.paths.depth)
-  poses = align_episode(episode, extrinsics_db, render_pool, device, config)
+  poses = init_camera_states(episode, extrinsics_db)
+  poses = joint_alignment(episode, poses, render_pool, device, config)
+  metrics = episode_metrics(episode, poses, render_pool, device, config)
 
-  export_extrinsics(episode, poses, export_root=config.paths.extrinsics)
+  export_extrinsics(episode, poses, metrics, export_root=config.paths.extrinsics)
 
   gc.collect()
   torch.cuda.empty_cache()
@@ -266,7 +229,7 @@ def main(_):
   available = core.runner.list_episode_dirs(config.paths.depth)
   target = core.runner.select_episodes(available, config)
   export_root = os.path.abspath(os.path.expanduser(config.paths.extrinsics))
-  done = {e for e in target if _has_final_extrinsics(os.path.join(export_root, e))}
+  done = {e for e in target if os.path.exists(os.path.join(export_root, e, "metrics.json"))}
 
   def run_one(episode_id):
     process_episode(episode_id, render_pool, extrinsics_db, device, config)

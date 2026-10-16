@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-STAGE=${1:?usage: run_parallel.sh <depth|extrinsics|scene|tracks|metrics> [--config.x=y ...]}
+STAGE=${1:?usage: run_parallel.sh <depth|extrinsics|tracks> [--config.x=y ...]}
 shift
 GPUS=$(nvidia-smi -L | wc -l)
 

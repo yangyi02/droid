@@ -43,9 +43,6 @@ def safe_float(value):
 
 
 def cut_value(row, column, op):
-  if column in row:
-    return safe_float(row[column])
-
   values = [v for v in (safe_float(v) for k, v in row.items() if re.fullmatch(rf"{column}(_\d+)+", k)) if not np.isnan(v)]
   if not values:
     return float("nan")
@@ -140,8 +137,8 @@ def report(selected):
 
 
 def main():
-  parser = argparse.ArgumentParser(description="Select evaluation episodes from metrics CSV")
-  parser.add_argument("--input", default=config.paths.metrics, help="Directory of per-episode metrics")
+  parser = argparse.ArgumentParser(description="Select evaluation episodes from per-episode metrics")
+  parser.add_argument("--input", default=config.paths.extrinsics, help="Directory of per-episode metrics")
   parser.add_argument("--n", type=int, default=150, help="Size of the candidate pool to hand to the human pass")
   parser.add_argument("--max_per_scene", type=int, default=6, help="Cap on how many episodes one scene may contribute")
   parser.add_argument(

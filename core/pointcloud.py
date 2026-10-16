@@ -46,7 +46,7 @@ def camera_frame_points(t, cam_data, n_points, max_depth):
   return sample_camera_points(mask, depth, cam_data["K"], n_points)
 
 
-def scene_clouds(episode, device, n_points, max_depth):
+def scene_clouds(episode, device, n_points, max_depth=np.inf):
   cameras = episode["camera"]
   T_ee2base = episode["robot"]["T_ee2base"]
 

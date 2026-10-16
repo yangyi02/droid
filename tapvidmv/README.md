@@ -14,13 +14,12 @@ gitignored).
 
 ## Prerequisites
 
-All four pipeline stages, over every episode:
+Stages 1–3, over every episode:
 
 ```bash
 bash run_parallel.sh depth
 bash run_parallel.sh extrinsics
 bash run_parallel.sh tracks
-bash run_parallel.sh metrics
 ```
 
 ## The four steps
@@ -93,7 +92,7 @@ python tapvidmv/shortlist.py --n 150 --cut chamfer=0.047 --cut robot_loss=0.014 
 | `--n` | 150 | Size of the candidate pool. Fewer come out when the cuts and the per-scene cap cannot fill it |
 | `--max_per_scene` | 6 | Cap on how many episodes one scene may contribute |
 | `--cut COLUMN=VALUE` | — | Move one threshold; repeatable |
-| `--input` | `config.paths.metrics` | Directory of per-episode metrics |
+| `--input` | `config.paths.extrinsics` | Directory of per-episode metrics |
 | `--output_dir` | this directory | Where the list is written |
 
 ### Step 3 — [`review.ipynb`](review.ipynb)
@@ -189,7 +188,7 @@ gs://dm-tapnet/tapvidmv/droid/<episode_id>/...
 
 | File | Role |
 |---|---|
-| `shortlist.py` | Quality cuts (`CUTS`, `judge`), scene-stratified sampling, list + CSV writing |
+| `shortlist.py` | Quality cuts (`CUTS`, `judge`), scene-stratified sampling, episode list writing |
 | `shortlist.ipynb` | Steps 1 & 2 — calibrate the cuts, draw the pool |
 | `review.ipynb` | Step 3 — the human pass, ground truth drawn on every clip |
 | `export.py` | Step 4 — pipeline outputs → release layout; owns `RELEASE_ROOT` |
