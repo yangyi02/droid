@@ -69,13 +69,6 @@ def load_depth_data(episode_id, depth_root, load_video=False):
   }
 
 
-def load_scene_depth(episode, scene_root):
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(scene_root, episode["meta"]["episode_id"])))
-  for cam_id, cam_data in episode["camera"].items():
-    cam_data["depth"] = np.load(os.path.join(ep_dir, cam_id, "depth.npz"))["depth"].astype(np.float32) / 1000.0
-  return episode
-
-
 def load_extrinsics(episode, extrinsics_root):
   episode_id = episode["meta"]["episode_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(extrinsics_root, episode_id)))
@@ -91,6 +84,12 @@ def load_extrinsics(episode, extrinsics_root):
     }
 
   return poses
+
+
+def load_metrics(episode_id, extrinsics_root):
+  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(extrinsics_root, episode_id)))
+  with open(os.path.join(ep_dir, "metrics.json"), "r") as f:
+    return json.load(f)
 
 
 def build_queries(uv, query_view, query_frame):

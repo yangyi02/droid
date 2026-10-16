@@ -17,8 +17,6 @@ def get_config():
   config.paths.depth = os.path.join(output, "depth")
   config.paths.extrinsics = os.path.join(output, "extrinsics")
   config.paths.tracks = os.path.join(repo, "tapvidmv", "data", "tracks")
-  config.paths.scene = os.path.join(output, "scene")
-  config.paths.metrics = os.path.join(output, "metrics")
   config.paths.review = os.path.join(repo, "tapvidmv", "data", "review")
 
   config.urls = ml_collections.ConfigDict()
@@ -44,38 +42,17 @@ def get_config():
   config.depth.consensus_thresh = 0.5
 
   config.extrinsics = ml_collections.ConfigDict()
-  config.extrinsics.method = "x15"
   config.extrinsics.lr = 0.001
   config.extrinsics.n_steps = 500
   config.extrinsics.n_points = 2000
   config.extrinsics.chamfer_match_radius = 0.05
   config.extrinsics.max_depth = 1.5
   config.extrinsics.chamfer_px_radius = 3.0
-  config.extrinsics.x15 = ml_collections.ConfigDict()
-  config.extrinsics.x15.losses = "disparity,chamfer_px"
-  config.extrinsics.x15.optimizer = "adam_cosine"
-  config.extrinsics.x15.rounds = 2
-  config.extrinsics.x15.robot_weight = 0.6
-  config.extrinsics.x15.scene_max_depth = float("inf")
-  config.extrinsics.x15.disparity_truncation = 100.0
-  config.extrinsics.a0 = ml_collections.ConfigDict()
-  config.extrinsics.a0.outer_steps = 5
-  config.extrinsics.a0.inner_steps = 100
-  config.extrinsics.a0.losses = "depth_l1,chamfer_m"
-  config.extrinsics.a0.optimizer = "adam"
-  config.extrinsics.a0.rounds = 1
-  config.extrinsics.a0.robot_weight = 1.0
-  config.extrinsics.a0.scene_max_depth = 1.5
-
-  config.scene = ml_collections.ConfigDict()
-  config.scene.tolerance = 0.5
-  config.scene.max_seen_through = 0.1
-  config.scene.stride = 1
-  config.scene.pose_error = 0.005
-  config.scene.halo = 6
-  config.scene.window = 2
+  config.extrinsics.robot_weight = 0.6
+  config.extrinsics.disparity_truncation = 100.0
 
   config.tracks = ml_collections.ConfigDict()
+  config.tracks.max_robot_loss = 0.03
   config.tracks.num_query_frames = 2
   config.tracks.points_per_class = 10
   config.tracks.min_gap = 0.005

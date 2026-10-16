@@ -20,11 +20,9 @@ bash mount_gcs.sh          # mount the input bucket
 
 bash run_parallel.sh depth        # Stage 1
 bash run_parallel.sh extrinsics   # Stage 2
-bash run_parallel.sh scene        # Stage 2+
 bash run_parallel.sh tracks       # Stage 3
-bash run_parallel.sh metrics      # Stage 4 (needs stage 2, not stage 3)
 
-python compute_review.py --config.runner.limit=5   # Stage 5, then open the .rrd
+python compute_review.py --config.runner.limit=5   # Stage 4, then open the .rrd
 ```
 
 `run_parallel.sh` runs a stage on every GPU of the machine; `python compute_<stage>.py` runs it
@@ -49,13 +47,10 @@ Cloned without `--recurse-submodules`? `bash setup.sh` runs
 |---|---|---|---|
 | 1. Depth | `compute_depth.py` | raw SVO + `trajectory.h5` | `depth/` |
 | 2. Extrinsics | `compute_extrinsics.py` | `depth/` | `extrinsics/` |
-| 2+. Scene | `compute_scene.py` | `depth/`, `extrinsics/` | `scene/` |
 | 3. Tracks | `compute_tracks.py` | `depth/`, `extrinsics/` | `tracks/` |
-| 4. Metrics | `compute_metrics.py` | `depth/`, `extrinsics/` | `metrics/` |
-| 5. Review | `compute_review.py` | all of the above | `review/*.rrd` |
+| 4. Review | `compute_review.py` | all of the above | `review/*.rrd` |
 
-Stage 4 scores stage 2's poses and never opens a track file, so it can run beside stage 3.
-Stage 5 is a few episodes you sit and watch, not a batch stage, so it is run directly rather
+Stage 4 is a few episodes you sit and watch, not a batch stage, so it is run directly rather
 than through `run_parallel.sh`.
 
 ### Stage 1 — `compute_depth.py`
@@ -82,75 +77,38 @@ robot.npz                      # joint_positions, gripper_positions, T_ee2base, 
 
 The robot is rasterised from each camera's current pose estimate and compared with the observed
 depth. `init_camera_states` reads the dataset's pre-calibrated extrinsics from metadata, then
-`joint_alignment` moves all cameras together for two rounds (re-rendering between them) against
+`joint_alignment` moves all cameras together against
 `Σ chamfer_px + 0.6 × Σ disparity`: a pixel-space Chamfer term between camera pairs and a robot
 disparity residual per camera, truncated at 100 px, with points that leave the image charged the
 full 100 px.
-
-The previous route, A0 (`per_camera_alignment` on depth L1, then a joint depth L1 + metric Chamfer
-stage), is deprecated and kept only for comparison: `--config.extrinsics.method=a0`.
 
 **Output** — `extrinsics/<episode_id>/<cam_serial>/extrinsics.json`, holding `T_cam2mount`
 (4×4, the camera in what it is mounted on: the robot base for a fixed camera, the end effector for
 the wrist) and `T_cam2world` (N×4×4, one per frame); the export inverts `T_cam2world`.
 
-### Stage 2+ — `compute_scene.py`
-
-Better depth in every frame of each of the three views: less noise, fewer holes, and holes filled only
-where the fill can be trusted. Each camera works from its own frames plus the robot's URDF render at
-stage 2's poses; no 3D model is built, because tracks only need depth in these views.
-
-**Static depth.** A static point is one that is never seen through. Every measured non-arm point of
-every frame is projected into the camera's other frames; a frame agrees when it measures the point
-within tolerance and sees through it when it measures something farther. A point seen by at least two
-frames and seen through by no more than `max_seen_through` of them is static. A pixel takes the
-nearest static point on its ray and averages those within tolerance of it; points measured from the
-same pose come first and reprojected ones only fill gaps. For a fixed camera this is the farthest
-surface the pixel keeps seeing, averaged over the episode.
-
-**Depth of each frame**, from four signals — the measurement, the static depth, and the URDF's
-segmentation and depth:
-
-| Pixel | Depth |
-|---|---|
-| measurement not clearly in front of the static depth (within 3 × tolerance) | static depth, averaged over the episode: single-frame jitter of a still surface does not count as something in front |
-| on the arm | URDF depth, shifted per link and frame by the median gap to the stereo inside the link, so a small pose error does not bias it; kept as measured where something sits in front of the arm, or where, within `halo` of the arm's outline, stereo sees past a slightly oversized render |
-| within `halo` outside the arm, at the arm's depth | static depth: stereo spilling past the arm's edge |
-| anything else measured, in front of the static scene | averaged with the frames within `window` that measure the same point (the same pixel for a fixed camera; the same pixel or the pose-warped point for the wrist, which carries what it holds); dropped as noise only when neither those frames nor half its eight neighbours agree, and then replaced by the static depth |
-| a hole | on the arm, URDF depth. Otherwise the pixel follows its nearest measured pixel. If that is solid foreground (in front of the static scene after an opening that removes bands a few pixels wide, such as flicker along edges), the hole sits on something that is not the static scene: it takes the readings of the same pixel in the `window` frames either side (warped by pose for a moving camera) when at least two agree, and otherwise stays a hole rather than being filled with the scene behind it. Anything else gets static depth |
-
-**Aligning the cameras.** Each camera's stereo carries its own small bias, which no amount of
-averaging within that camera removes: on a static surface the three cameras disagree by a few
-millimetres. Each camera gets one disparity offset for the episode, found by making every camera's
-static depth agree with the others where they see the same place, and the measured arm agree with its
-URDF render inside the link. The robot is the only metric ruler in the scene, so it fixes where the
-whole set sits. The loss is Cauchy with `tolerance` as its scale, so occlusions and moved objects do not
-pull. A constant disparity offset changes no gap within one camera, so it is applied to both outputs
-last: depth becomes `f·B / (f·B / depth + offset)`.
-
-Tolerance is `tolerance` in disparity pixels plus `f·B · pose_error / z²` between different poses,
-which is zero for a fixed camera. Stages 2 and 4 keep reading the raw depth; stage 3 reads `depth.npz`.
-
-| Knob | |
-|---|---|
-| `tolerance` | Disparity pixels, stereo noise between two measurements of one surface |
-| `max_seen_through` | Share of the frames seeing a point that may see through it |
-| `stride` | Every nth frame takes part in the static depth |
-| `pose_error` | Metres, relative pose error between two frames of a moving camera |
-| `halo` | Pixels around the arm's rendered outline where the render and stereo may disagree |
-| `window` | Frames either side that settle a moving surface |
-
-**Output** — `scene/<episode_id>/<cam_serial>/depth.npz`, every frame, and `static_depth.npz`, one
-frame for a fixed camera and every frame for the wrist. uint16 mm like `raw_depth.npz`, 0 where
-unknown.
+Then `extrinsics/<episode_id>/metrics.json`, written last, so an episode that has it is done. It
+holds, at the final poses, `chamfer_px_*` and `overlap_px_*` per camera pair (one camera's depth
+points against another's dense disparity map, in pixels), the metric `chamfer_*` and `overlap_*`
+per camera pair (3D, 5 cm match radius), and `robot_loss_*` per camera (depth L1 on the rendered
+arm) — plus site, scene, camera count and frame count. Nothing is reduced to a single "worst
+camera" number; whatever reads them decides which view condemns an episode.
 
 ### Stage 3 — `compute_tracks.py`
 
 Dense multi-view 3D tracks from a static background prior plus URDF forward kinematics — no
-tracking model. Depth is stage 2+'s `depth.npz`, so stage 2+ runs first. It samples *before* it tracks: picking a point needs only where it sits and
+tracking model. It samples *before* it tracks: picking a point needs only where it sits and
 which camera and frame it was born on, so tens of thousands of candidates never enter the
 expensive pass, and only the few hundred that survive are carried through the episode and
 projected into every view.
+
+Before loading anything, `process_episode` reads the episode's `metrics.json` and skips the
+episode if any camera's `robot_loss` is above `config.tracks.max_robot_loss` (0.03 m) or missing,
+16% of Stage 2's episodes. The cut is deliberately strict: it gives up many aligned episodes to
+keep out cameras whose rendered arm sits far off the real one.
+
+`process_episode` and the notebook run it as five calls — `query_frames`, `find_candidates`,
+`pick_candidates`, `carry_tracks`, `label_tracks` — and the table goes one level down, in the
+order the work happens.
 
 | Step | |
 |---|---|
@@ -223,17 +181,7 @@ track_metadata.npz             # n_robot, n_static, query_view, query_frame
 > `data/output/droid/tracks/`, so this run can be compared against the old one before either
 > is thrown away. Put it back to `os.path.join(output, "tracks")` in `config.py` afterwards.
 
-### Stage 4 — `compute_metrics.py`
-
-One `metrics/<episode_id>/metrics.json` per episode, so ranks never share a file and a crash
-costs only its own episode. It holds, at the poses stage 2 converged to, `chamfer_px_*` and
-`overlap_px_*` per camera pair (one camera's depth points against another's dense disparity map,
-in pixels), the metric `chamfer_*` and `overlap_*` per camera pair (3D, 5 cm match radius), and
-`robot_loss_*` per camera (depth L1 on the rendered arm) — plus site, scene, camera count and
-frame count. Nothing is reduced to a single "worst camera" number; whatever
-reads them decides which view condemns an episode.
-
-### Stage 5 — `compute_review.py`
+### Stage 4 — `compute_review.py`
 
 Stage 3's tracks, all of them at once, the way you would judge them by eye. One Rerun recording
 per episode built straight from stages 1–3 — no export, nothing frozen — so it runs on whatever
@@ -244,7 +192,7 @@ python compute_review.py --config.runner.limit=5    # ~1 min and ~370 MB per epi
 rerun tapvidmv/data/review/<episode_id>.rrd
 ```
 
-The 3D view holds every camera's depth cloud (stage 2+'s depth, the same depth stage 3 read), the moving frustums, and every track — blue for
+The 3D view holds every camera's depth cloud, the moving frustums, and every track — blue for
 the arm, green for the background. The camera views colour every track by what that camera
 calls it: blue and green where it is visible, yellow for the arm and red for the background
 where it is occluded — the same four colours as the TAPVid-MV picker and verify notebook. Below it sits one 2D view per camera. Scrub the timeline and
@@ -331,8 +279,7 @@ See [`tapvidmv/README.md`](tapvidmv/README.md).
 | Modules | don't repeat the module in its functions |
 
 The two dicts threaded through every stage are `episode` (one episode's loaded data: `meta`,
-`robot`, `camera`) and `poses` (per-camera extrinsics — what stage 2 estimates and stage 4
-measures).
+`robot`, `camera`) and `poses` (per-camera extrinsics — what stage 2 estimates and scores).
 
 ## Layout
 
@@ -341,10 +288,8 @@ droid/
 ├── pipeline.ipynb             # Whole pipeline, one episode at a time
 ├── compute_depth.py           # Stage 1
 ├── compute_extrinsics.py      # Stage 2
-├── compute_scene.py           # Stage 2+
 ├── compute_tracks.py          # Stage 3
-├── compute_metrics.py         # Stage 4
-├── compute_review.py          # Stage 5
+├── compute_review.py          # Stage 4
 ├── config.py                  # Paths, buckets and every hyperparameter (ConfigDict)
 ├── setup.sh                   # Dependencies + weights (--no-depth skips Stage 1's toolchain)
 ├── mount_gcs.sh               # Mount the input bucket
@@ -358,7 +303,6 @@ droid/
 │   ├── physics.py             #   PyBulletRenderer and RenderPool: depth, mask and segmentation renders
 │   ├── pointcloud.py          #   Robot/scene clouds, chamfer(_px) + overlap(_px), depth and disparity losses
 │   ├── runner.py              #   Episode selection + resume-aware batch loop
-│   ├── scene.py               #   Per-view depth refinement: static depth, URDF, temporal settling
 │   └── visualization.py       #   Point clouds, tracking videos, 4D orbit
 ├── xm/
 │   ├── Dockerfile             #   Container image with ZED SDK, PyBullet EGL, S2M2 and SAM
