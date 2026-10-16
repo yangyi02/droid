@@ -65,4 +65,9 @@ RUN mkdir -p /usr/local/zed/settings \
 
 COPY . .
 
-ENTRYPOINT ["python", "-u"]
+RUN setpriv --reuid=65534 --regid=65534 --clear-groups bash -c "find /app /usr/local /usr/lib/python3.10 \
+      /usr/lib/x86_64-linux-gnu /usr/bin -type f -readable -print0 2>/dev/null | xargs -0 md5sum" > /checksums.md5
+
+ENTRYPOINT ["bash", "-c", \
+  "md5sum --quiet --strict -c /checksums.md5 && exec \"$@\"; echo 'Corrupted image, holding GPU'; sleep 6h; exit 1", \
+  "--", "python", "-u"]

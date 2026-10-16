@@ -5,13 +5,12 @@ from absl import flags
 from xmanager import xm
 from xmanager import xm_abc
 
-STAGES = ("depth", "extrinsics", "scene", "tracks", "metrics", "review")
+STAGES = ("depth", "extrinsics", "tracks", "review")
 
 STAGE = flags.DEFINE_enum("stage", None, STAGES, "Pipeline stage.", required=True)
 WORKERS = flags.DEFINE_integer("workers", 8, "Number of parallel GPU workers.")
+RANKS = flags.DEFINE_list("ranks", None, "Only launch these ranks of --workers; default all.")
 LIMIT = flags.DEFINE_integer("limit", -1, "Only the first N episodes by name; -1 for all.")
-GPU = flags.DEFINE_string("gpu", "a100", "GPU type per worker.")
-LOCATION = flags.DEFINE_string("location", "us-central1", "GCP region.")
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INPUT_DIR = "/app/data/input/robotics/droid_raw"
@@ -21,11 +20,12 @@ OUTPUT_DIR = "/app/data/output/droid"
 def main(argv):
   stage = STAGE.value
   workers = WORKERS.value
+  ranks = [int(rank) for rank in RANKS.value or range(workers)]
   extra = argv[1:]
 
-  with xm_abc.create_experiment(experiment_title=f"droid {stage} {workers}x{GPU.value}") as experiment:
+  with xm_abc.create_experiment(experiment_title=f"droid {stage} {len(ranks)}xb40") as experiment:
     executor = xm_abc.Gcp(
-      requirements=xm.JobRequirements(**{GPU.value: 1}, location=LOCATION.value),
+      requirements=xm.JobRequirements(b40_48th=48, location="dmgcp-us-west4"),
       gcs_volumes=[
         xm_abc.GcsVolume(
           bucket="gresearch", directory_path="robotics/droid_raw", mount_path=INPUT_DIR, mount_options="implicit-dirs"
@@ -44,7 +44,7 @@ def main(argv):
       )
     ])
 
-    for rank in range(workers):
+    for rank in ranks:
       args = [
         f"compute_{stage}.py",
         f"--config.runner.rank={rank}",

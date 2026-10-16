@@ -71,8 +71,9 @@ def extract_svo_video(episode, min_frames, max_frames):
     init_params.set_from_svo_file(svo_file)
     init_params.svo_real_time_mode = False
     init_params.depth_mode = sl.DEPTH_MODE.NONE
-    if zed.open(init_params) != sl.ERROR_CODE.SUCCESS:
-      raise core.runner.SkipEpisode(f"{cam_id}: cannot open {svo_file}")
+    err = zed.open(init_params)
+    if err > sl.ERROR_CODE.SUCCESS:
+      raise core.runner.SkipEpisode(f"{cam_id}: cannot open {svo_file} ({err})")
 
     n_svo_frames = zed.get_svo_number_of_frames() - 2
     if not min_frames <= n_svo_frames <= max_frames:
