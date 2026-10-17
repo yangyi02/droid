@@ -2,6 +2,7 @@ import cv2
 import matplotlib
 import numpy as np
 
+import core.geometry
 import release
 from core.visualization import occlusion_colors
 
@@ -145,8 +146,8 @@ def view_panel(episode, view, frame, track_ids, *, colors=None, trail=0, label=T
   if trail > 1:
     start = max(0, frame - trail + 1)
     trail_xyz = episode.tracks_xyz[start : frame + 1, track_ids]
-    extrinsics = np.repeat(data.extrinsics_w2c[frame][None], len(trail_xyz), axis=0)
-    trail_xy, trail_z = release.project_tracks(trail_xyz, data.intrinsics, extrinsics)
+    extrinsics = np.repeat(data.T_cam2world[frame][None], len(trail_xyz), axis=0)
+    trail_xy, trail_z = core.geometry.project_tracks(trail_xyz, data.K, extrinsics)
     canvas = draw_trails(canvas, trail_xy * scale, colors, valid=trail_z > 1e-3)
 
   xy, z = episode.project(view)
@@ -240,8 +241,8 @@ def plot_tracks_3d(
       points, point_colors = release.unproject_depth(
         depth,
         episode.views[view].image(frame),
-        episode.views[view].intrinsics,
-        episode.views[view].extrinsics_w2c[frame],
+        episode.views[view].K,
+        episode.views[view].T_cam2world[frame],
         stride=cloud_stride,
       )
       if not len(points):
@@ -392,8 +393,6 @@ def covisibility_matrix(visibility):
 
 
 def crossview_reprojection(episode, source, target, frame):
-  import core.geometry
-
   source_data, target_data = episode.views[source], episode.views[target]
   xy_source, z_source = episode.project(source)
   xy_target, z_target = episode.project(target)
@@ -404,15 +403,12 @@ def crossview_reprojection(episode, source, target, frame):
     return tracks[:0], np.zeros((0, 2)), np.zeros((0, 2)), np.zeros(0)
   uv = xy_source[frame][tracks]
   seen_z = core.geometry.sample_depth(depth, uv[:, 0], uv[:, 1], z_source[frame][tracks])
-  fx, fy, cx, cy = [float(v) for v in source_data.intrinsics]
-  camera_points = np.stack([(uv[:, 0] - cx) / fx * seen_z, (uv[:, 1] - cy) / fy * seen_z, seen_z], axis=-1)
-  rotation, translation = source_data.extrinsics_w2c[frame][:3, :3], source_data.extrinsics_w2c[frame][:3, 3]
-  world = (camera_points - translation) @ rotation
-  target_w2c = target_data.extrinsics_w2c[frame][None]
-  reprojected, z_re = release.project_tracks(world[None], target_data.intrinsics, target_w2c)
-  keep = np.isfinite(seen_z) & (seen_z > 0) & (z_re[0] > 0)
+  world = core.geometry.unproject_pixels(uv[:, 0], uv[:, 1], seen_z, source_data.K, source_data.T_cam2world[frame])
+  re_u, re_v, z_re = core.geometry.project_points(world, target_data.K, target_data.T_cam2world[frame])
+  reprojected = np.stack([re_u, re_v], axis=1)
+  keep = np.isfinite(seen_z) & (seen_z > 0) & (z_re > 0)
   behind = seen_z[keep] - z_source[frame][tracks[keep]]
-  return tracks[keep], xy_target[frame][tracks[keep]], reprojected[0][keep], behind
+  return tracks[keep], xy_target[frame][tracks[keep]], reprojected[keep], behind
 
 
 def crossview_gap_px(episode, source, target, frames):

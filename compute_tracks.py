@@ -185,12 +185,12 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
   return np.concatenate(points_3d).astype(np.float32), np.concatenate(query_view), np.concatenate(query_frame)
 
 
-def project_tracks(tracks_3d, episode, poses, pb_renderer, config):
+def project_tracks(robot_3d, static_3d, episode, poses, pb_renderer, config):
   robot = episode["robot"]
-  n_frames, n_points, _ = tracks_3d.shape
+  n_frames, n_robot, _ = robot_3d.shape
+  n_points = n_robot + len(static_3d)
   n_views = len(episode["camera"])
 
-  uv = np.zeros((n_views, n_frames, n_points, 2), dtype=np.float32)
   margin = np.zeros((n_views, n_frames, n_points), dtype=np.float32)
   inside = np.zeros((n_views, n_frames, n_points), dtype=bool)
   slack = np.zeros((n_views, n_frames, n_points), dtype=np.float32)
@@ -198,6 +198,7 @@ def project_tracks(tracks_3d, episode, poses, pb_renderer, config):
 
   for t in range(n_frames):
     pb_renderer.update_robot_pose(robot["joint_positions"][t], gripper_state=robot["gripper_positions"][t])
+    points_t = np.concatenate([robot_3d[t], static_3d])
 
     drawn = [
       pb_renderer.render_depth(poses[cam_id]["T_cam2world"][t], cam_data["K"], *cam_data["raw_depth"][t].shape[::-1])
@@ -211,8 +212,7 @@ def project_tracks(tracks_3d, episode, poses, pb_renderer, config):
       masks[view][t] = urdf_depth > 0
 
       height, width = cam_data["raw_depth"][t].shape
-      u, v, z_pred = core.geometry.project_points(tracks_3d[t], K, T_cam2world)
-      uv[view, t] = np.stack([u, v], axis=1)
+      u, v, z_pred = core.geometry.project_points(points_t, K, T_cam2world)
       inside[view, t] = core.geometry.in_frame(u, v, width, height) & (z_pred > 0)
 
       urdf = urdf_gap(urdf_depth, u, v, z_pred)
@@ -221,7 +221,7 @@ def project_tracks(tracks_3d, episode, poses, pb_renderer, config):
       margin[view, t] = np.fmin(urdf / config.tracks.urdf_tolerance, np.where(np.isinf(sensor), np.nan, sensor))
       slack[view, t] = sensor
 
-  return uv, settle(latch(margin, config.tracks.hysteresis), inside), slack, masks
+  return settle(latch(margin, config.tracks.hysteresis), inside), slack, masks
 
 
 def latch(margin, band):
@@ -266,24 +266,6 @@ def out_of_reach(points_3d, episode, pb_renderer, clearance):
   return closest > clearance
 
 
-def take(picked, home, group, quota):
-  if quota <= 0 or not len(group):
-    return picked
-  return np.concatenate([picked, group[core.geometry.farthest_points(home[group], quota, seeds=home[picked])]])
-
-
-def sample_tracks(keep, home, query_view, query_frame, is_robot, queries, config):
-  on_arm = in_scene = np.empty(0, dtype=int)
-  for frame in queries:
-    for view in range(int(query_view.max()) + 1):
-      born_here = keep & (query_view == view) & (query_frame == frame)
-
-      on_arm = take(on_arm, home, np.flatnonzero(born_here & is_robot), config.tracks.points_per_class)
-      in_scene = take(in_scene, home, np.flatnonzero(born_here & ~is_robot), config.tracks.points_per_class)
-
-  return np.sort(np.concatenate([on_arm, in_scene]))
-
-
 def export_tracks(episode, tracks, export_root):
   episode_id = episode["meta"]["episode_id"]
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode_id)))
@@ -292,89 +274,68 @@ def export_tracks(episode, tracks, export_root):
   for view, cam_id in enumerate(episode["camera"]):
     cam_dir = os.path.join(ep_dir, cam_id)
     os.makedirs(cam_dir, exist_ok=True)
-
-    np.savez_compressed(
-      os.path.join(cam_dir, "tracks_2d.npz"), tracks_2d=tracks["uv"][view], vis_2d=tracks["vis"][view]
-    )
     np.savez_compressed(os.path.join(cam_dir, "robot_mask.npz"), mask=tracks["masks"][view])
 
   np.savez_compressed(
-    os.path.join(ep_dir, "track_metadata.npz"),
-    n_robot=np.array(tracks["n_robot"]),
-    n_static=np.array(tracks["n_static"]),
-    query_view=tracks["query_view"],
-    query_frame=tracks["query_frame"],
+    os.path.join(ep_dir, "tracks.npz"),
+    tracks_3d=tracks["tracks_3d"].astype(np.float32).swapaxes(0, 1),
+    vis=tracks["vis"].swapaxes(1, 2),
+    query_frame=tracks["query_frame"].astype(np.int16),
+    query_view=tracks["query_view"].astype(np.int8),
+    n_robot=np.int32(tracks["n_robot"]),
+    n_static=np.int32(tracks["n_static"]),
   )
-  np.savez_compressed(os.path.join(ep_dir, "tracks_3d.npz"), tracks_3d=tracks["tracks_3d"].astype(np.float32))
 
 
 def find_candidates(episode, poses, pb_renderer, queries, config):
   local, parts, robot_view, robot_frame = find_robot_candidates(episode, poses, pb_renderer, queries, config)
   static_3d, static_view, static_frame = find_static_candidates(episode, poses, pb_renderer, queries, config)
+  keep = out_of_reach(static_3d, episode, pb_renderer, config.tracks.gripper_clearance)
   return {
     "local": local,
     "parts": parts,
-    "static_3d": static_3d,
-    "query_view": np.concatenate([robot_view, static_view]),
-    "query_frame": np.concatenate([robot_frame, static_frame]),
+    "static_3d": static_3d[keep],
+    "query_frame": np.concatenate([robot_frame, static_frame[keep]]),
+    "query_view": np.concatenate([robot_view, static_view[keep]]),
   }
 
 
-def pick_candidates(candidates, episode, pb_renderer, queries, config):
-  local, parts, static_3d = candidates["local"], candidates["parts"], candidates["static_3d"]
-  query_view, query_frame = candidates["query_view"], candidates["query_frame"]
-  is_robot = np.arange(len(query_view)) < local.shape[1]
-  home = np.concatenate([carry_robot(local, parts, episode["robot"], pb_renderer, [0])[0], static_3d])
-
-  keep = np.ones(len(query_view), dtype=bool)
-  keep[~is_robot] &= out_of_reach(static_3d, episode, pb_renderer, config.tracks.gripper_clearance)
-
-  idx = sample_tracks(keep, home, query_view, query_frame, is_robot, queries, config)
-  on_arm, in_scene = idx[is_robot[idx]], idx[~is_robot[idx]] - local.shape[1]
-  return {
-    "local": local[:, on_arm],
-    "parts": parts[on_arm],
-    "static_3d": static_3d[in_scene],
-    "query_view": query_view[idx],
-    "query_frame": query_frame[idx],
-  }
-
-
-def carry_tracks(picked, episode, pb_renderer):
-  robot, static_3d = episode["robot"], picked["static_3d"]
+def carry_tracks(candidates, episode, pb_renderer):
+  robot = episode["robot"]
   n_frames = len(robot["joint_positions"])
+  return {
+    "robot_3d": carry_robot(candidates["local"], candidates["parts"], robot, pb_renderer, range(n_frames)),
+    "static_3d": candidates["static_3d"],
+    "query_frame": candidates["query_frame"],
+    "query_view": candidates["query_view"],
+  }
+
+
+def label_tracks(tracks, episode, poses, pb_renderer, config):
+  robot_3d, static_3d = tracks["robot_3d"], tracks["static_3d"]
+  query_frame, query_view = tracks["query_frame"], tracks["query_view"]
+  n_robot = robot_3d.shape[1]
+  vis, slack, masks = project_tracks(robot_3d, static_3d, episode, poses, pb_renderer, config)
+
+  keep = vis[query_view, query_frame, np.arange(len(query_view))]
+  keep[n_robot:] &= never_seen_through(slack[:, :, n_robot:], config.tracks.max_seen_through)
+
+  keep_robot, keep_static = keep[:n_robot], keep[n_robot:]
+  n_robot, n_static = int(keep_robot.sum()), int(keep_static.sum())
+  print(f"  {n_robot + n_static} points: {n_robot} robot, {n_static} static | per view {np.bincount(query_view[keep])}")
+
   tracks_3d = np.concatenate(
     [
-      carry_robot(picked["local"], picked["parts"], robot, pb_renderer, range(n_frames)),
-      np.broadcast_to(static_3d, (n_frames, len(static_3d), 3)),
+      robot_3d[:, keep_robot],
+      np.broadcast_to(static_3d[keep_static], (len(robot_3d), n_static, 3)),
     ],
     axis=1,
   )
   return {
     "tracks_3d": tracks_3d,
-    "query_view": picked["query_view"],
-    "query_frame": picked["query_frame"],
-    "n_robot": picked["local"].shape[1],
-  }
-
-
-def label_tracks(tracks, episode, poses, pb_renderer, config):
-  query_view, query_frame, n_robot = tracks["query_view"], tracks["query_frame"], tracks["n_robot"]
-  uv, vis, slack, masks = project_tracks(tracks["tracks_3d"], episode, poses, pb_renderer, config)
-
-  keep = vis[query_view, query_frame, np.arange(len(query_view))]
-  keep[n_robot:] &= never_seen_through(slack[:, :, n_robot:], config.tracks.max_seen_through)
-
-  n_robot = int(keep[:n_robot].sum())
-  n_static = int(keep.sum()) - n_robot
-  print(f"  {n_robot + n_static} points: {n_robot} robot, {n_static} static | per view {np.bincount(query_view[keep])}")
-
-  return {
-    "tracks_3d": tracks["tracks_3d"][:, keep],
-    "uv": uv[:, :, keep],
     "vis": vis[:, :, keep],
-    "query_view": query_view[keep],
     "query_frame": query_frame[keep],
+    "query_view": query_view[keep],
     "n_robot": n_robot,
     "n_static": n_static,
     "masks": masks,
@@ -394,8 +355,7 @@ def process_episode(episode_id, pb_renderer, config):
 
   queries = query_frames(episode, poses, pb_renderer, config)
   candidates = find_candidates(episode, poses, pb_renderer, queries, config)
-  picked = pick_candidates(candidates, episode, pb_renderer, queries, config)
-  tracks = carry_tracks(picked, episode, pb_renderer)
+  tracks = carry_tracks(candidates, episode, pb_renderer)
   tracks = label_tracks(tracks, episode, poses, pb_renderer, config)
 
   export_tracks(episode, tracks, config.paths.tracks)
@@ -408,7 +368,7 @@ def main(_):
   available = core.runner.list_episode_dirs(config.paths.extrinsics)
   target = core.runner.select_episodes(available, config)
   export_root = os.path.abspath(os.path.expanduser(config.paths.tracks))
-  done = {e for e in target if os.path.exists(os.path.join(export_root, e, "tracks_3d.npz"))}
+  done = {e for e in target if os.path.exists(os.path.join(export_root, e, "tracks.npz"))}
 
   def run_one(episode_id):
     process_episode(episode_id, pb_renderer, config)

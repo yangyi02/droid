@@ -1,4 +1,3 @@
-import glob
 import json
 import os
 
@@ -92,30 +91,17 @@ def load_metrics(episode_id, extrinsics_root):
     return json.load(f)
 
 
-def build_queries(uv, query_view, query_frame):
-  xy = np.round(uv[query_view, query_frame, np.arange(uv.shape[2])])
-  return np.concatenate([xy, query_frame[:, None], query_view[:, None]], axis=1).astype(np.float32)
-
-
 def load_track_data(episode_id, tracks_root):
   ep_dir = os.path.abspath(os.path.expanduser(os.path.join(tracks_root, episode_id)))
-  meta_data = np.load(os.path.join(ep_dir, "track_metadata.npz"))
-
-  uv, vis = [], []
-  for tracks_path in sorted(glob.glob(os.path.join(ep_dir, "*", "tracks_2d.npz"))):
-    cam_data = np.load(tracks_path)
-    uv.append(cam_data["tracks_2d"])
-    vis.append(cam_data["vis_2d"])
-
-  return {
-    "tracks_3d": np.load(os.path.join(ep_dir, "tracks_3d.npz"))["tracks_3d"],
-    "uv": np.stack(uv),
-    "vis": np.stack(vis),
-    "query_view": meta_data["query_view"],
-    "query_frame": meta_data["query_frame"],
-    "n_robot": int(meta_data["n_robot"]),
-    "n_static": int(meta_data["n_static"]),
-  }
+  with np.load(os.path.join(ep_dir, "tracks.npz")) as raw:
+    return {
+      "tracks_3d": raw["tracks_3d"].swapaxes(0, 1),
+      "vis": raw["vis"].swapaxes(1, 2),
+      "query_view": raw["query_view"],
+      "query_frame": raw["query_frame"],
+      "n_robot": int(raw["n_robot"]),
+      "n_static": int(raw["n_static"]),
+    }
 
 
 def load_robot_masks(episode_id, tracks_root, cam_ids):

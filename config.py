@@ -16,8 +16,8 @@ def get_config():
   config.paths.urdf = os.path.join(repo, "assets", "franka_description", "franka_panda_robotiq_2f85_og.urdf")
   config.paths.depth = os.path.join(output, "depth")
   config.paths.extrinsics = os.path.join(output, "extrinsics")
-  config.paths.tracks = os.path.join(repo, "tapvidmv", "data", "tracks")
-  config.paths.review = os.path.join(repo, "tapvidmv", "data", "review")
+  config.paths.tracks = os.path.join(output, "tracks")
+  config.paths.review = os.path.join(output, "review")
 
   config.urls = ml_collections.ConfigDict()
   config.urls.meta = "https://huggingface.co/KarlP/droid/resolve/main"

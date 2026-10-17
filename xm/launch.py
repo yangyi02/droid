@@ -50,8 +50,6 @@ def main(argv):
         f"--config.runner.rank={rank}",
         f"--config.runner.world_size={workers}",
         f"--config.runner.limit={LIMIT.value}",
-        f"--config.paths.tracks={OUTPUT_DIR}/tracks",
-        f"--config.paths.review={OUTPUT_DIR}/review",
         *extra,
       ]
       experiment.add(xm.Job(executable, executor, args=args))

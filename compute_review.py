@@ -10,6 +10,7 @@ import config
 import core.geometry
 import core.io
 import core.runner
+import core.tracks
 import core.visualization
 
 JPEG_QUALITY = 95
@@ -27,7 +28,8 @@ class Review:
     self.tracks_3d = tracks["tracks_3d"]
     self.vis = tracks["vis"]
     self.n_robot = tracks["n_robot"]
-    self.queries = core.io.build_queries(tracks["uv"], tracks["query_view"], tracks["query_frame"])
+    uv = core.tracks.project_views(self.tracks_3d, episode, poses)
+    self.queries = core.tracks.build_queries(uv, tracks["query_view"], tracks["query_frame"])
 
     K, T_cam2world, image_wh = [], [], []
     for cam_id, cam_data in episode["camera"].items():
@@ -318,6 +320,7 @@ def process_episode(episode_id, config):
   episode = core.io.load_depth_data(episode_id, config.paths.depth, load_video=True)
   poses = core.io.load_extrinsics(episode, config.paths.extrinsics)
   tracks = core.io.load_track_data(episode_id, config.paths.tracks)
+  tracks = core.tracks.sample_tracks(tracks, config.tracks.points_per_class)
 
   review = Review(episode, poses, tracks)
   build_recording(episode, review, episode_id, config.paths.review, config.review)
@@ -326,7 +329,10 @@ def process_episode(episode_id, config):
 def main(_):
   config = config_flag.value
 
-  available = core.runner.list_episode_dirs(config.paths.tracks)
+  tracks_root = os.path.abspath(os.path.expanduser(config.paths.tracks))
+  available = {
+    e for e in core.runner.list_episode_dirs(tracks_root) if os.path.exists(os.path.join(tracks_root, e, "tracks.npz"))
+  }
   target = core.runner.select_episodes(available, config)
   review_root = os.path.abspath(os.path.expanduser(config.paths.review))
   done = {e for e in target if os.path.exists(os.path.join(review_root, f"{e}.rrd"))}

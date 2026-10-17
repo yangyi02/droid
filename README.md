@@ -96,32 +96,31 @@ camera" number; whatever reads them decides which view condemns an episode.
 ### Stage 3 — `compute_tracks.py`
 
 Dense multi-view 3D tracks from a static background prior plus URDF forward kinematics — no
-tracking model. It samples *before* it tracks: picking a point needs only where it sits and
-which camera and frame it was born on, so tens of thousands of candidates never enter the
-expensive pass, and only the few hundred that survive are carried through the episode and
-projected into every view.
+tracking model. Every candidate that passes the geometric and visibility checks is kept in full
+(`tracks_3d` `(N, T, 3)` and `vis` `(V, N, T)`), without pre-projecting 2D
+pixel coordinates to disk. Farthest-point subsampling (`points_per_class`) runs when reading or
+exporting, so training and benchmark export share the exact same Stage 3 output.
 
 Before loading anything, `process_episode` reads the episode's `metrics.json` and skips the
 episode if any camera's `robot_loss` is above `config.tracks.max_robot_loss` (0.03 m) or missing,
 16% of Stage 2's episodes. The cut is deliberately strict: it gives up many aligned episodes to
 keep out cameras whose rendered arm sits far off the real one.
 
-`process_episode` and the notebook run it as five calls — `query_frames`, `find_candidates`,
-`pick_candidates`, `carry_tracks`, `label_tracks` — and the table goes one level down, in the
-order the work happens.
+`process_episode` and the notebook run it as four calls — `query_frames`, `find_candidates`,
+`carry_tracks`, `label_tracks` — and the table goes one level down, in the order the work happens.
 
 | Step | |
 |---|---|
 | `query_frames` | Frame 0, plus the best frame in each equal stretch of the rest: the one where the camera that sees the least of the arm sees the most of it. Frame 0 is there because a forward-only model has nothing to track from without it, and it takes the first stretch's place rather than being added, so no two queries sit a tenth of a second apart. Choosing beats spacing — on one episode an evenly spaced frame left a camera 53 candidates for a quota of 20 while another frame in the same stretch offered 2243. The cameras share the frames: each lands within a few percent of its own best, and it thirds the distinct query times a tracker must run a pass for |
 | `find_static_candidates` | Background pixels within `max_depth` that no camera puts on a depth edge, and that every camera able to see the place agrees about within `match_radius`. A camera abstains where it measured nothing, where the arm is in the way, or where the place is off its image; one that reads a surface *elsewhere* is reporting the point is not where we think |
 | `find_robot_candidates` | Robot-mask pixels, kept in the frame of the link they sit on. No second camera is asked — the position comes from kinematics, not depth. A candidate the depth map calls hidden on its own birth frame is dropped: it could never be a query |
-| `out_of_reach` | Drop background candidates the gripper ever closes within `gripper_clearance` of: those are the ones it carries away. It reads only 3D positions and robot poses, so it runs before the sampling |
-| `sample_tracks` | Per camera per query frame, `points_per_class` on the arm and as many on the background, every pick as far as it goes from everything taken before it |
-| `carry_robot` | The chosen arm points on every frame, by forward kinematics |
+| `out_of_reach` | Drop background candidates the gripper ever closes within `gripper_clearance` of: those are the ones it carries away |
+| `carry_robot` | The arm candidates on every frame, by forward kinematics |
 | `project_tracks` | Every point in every view at every frame: where it lands, and how far behind it the nearest surface sits — the rendered robot in units of `urdf_tolerance`, the depth map in units of its own noise at that range |
 | `latch` | Turn that margin into a label. Two lines `hysteresis` either side of the cut, so a point resting on it stops flickering |
 | `settle` | Drop labels that flip for one frame and flip straight back — nothing on a rigid arm is revealed and hidden again in a thirtieth of a second |
 | `never_seen_through` | Drop background points the depth map keeps looking through on more than `max_seen_through` of their clear-line frames: they sat on something that has since moved |
+| `sample_tracks` | At read or export time (`core.tracks.sample_tracks`), pick `points_per_class` on the arm and as many on the background per camera per query frame, every pick as far as it goes from everything taken before it |
 
 **A depth hole is the sensor failing, not the point hiding.** Stereo finds no match on dark,
 thin or textureless surfaces. An earlier rule dropped any point sitting on a hole in any
@@ -159,7 +158,7 @@ covered once rather than on every query frame.
 | Knob | |
 |---|---|
 | `num_query_frames` | How many frames points are born on, and so how many passes an evaluation costs per video |
-| `points_per_class` | Points per class per camera per query frame. An episode holds `num_query_frames × views × 2 × points_per_class`. Area is deliberately not part of this: it decides how many candidates exist, not how many are wanted |
+| `points_per_class` | Read/export quota per class per camera per query frame (`num_query_frames × views × 2 × points_per_class`). Stage 3 saves all surviving candidates; `core.tracks.sample_tracks` subsamples to this quota when requested |
 | `min_gap` | Metres between two candidates on the surface. Metres, not pixels: the wrist camera sits 15 cm from the gripper and the room cameras 65 cm from the arm, so a pixel grid hands the gripper six times the density of everything else |
 | `urdf_tolerance` | How far behind the rendered robot a point may sit and still count as visible. Swept over ten episodes, the two errors it trades exchange about one for one anywhere between 0.5 cm and 1 cm and turn sharply worse outside that. The gripper's fingers are thinner than the tolerance, so a value covering pose error also covers a whole finger |
 | `sensor_tolerance_floor`, `disparity_tolerance` | The same against measured depth, as `max(floor, range² × disparity_tolerance / (fx × baseline))`. Stereo measures disparity, so its error in metres grows with the square of range and differs per camera; the floor is the metric error of the pose the point is projected with, which does not shrink up close |
@@ -170,16 +169,10 @@ covered once rather than on every query frame.
 **Output** — `config.paths.tracks/<episode_id>/`
 
 ```
-tracks_3d.npz                  # tracks_3d
-track_metadata.npz             # n_robot, n_static, query_view, query_frame
+tracks.npz                     # tracks_3d (N, T, 3), vis (V, N, T), query_frame (N,), query_view (N,), n_robot, n_static
 <cam_serial>/
-  tracks_2d.npz                # tracks_2d + vis_2d
   robot_mask.npz               # the rendered arm, every frame
 ```
-
-> `config.paths.tracks` currently points at `tapvidmv/data/tracks/` rather than
-> `data/output/droid/tracks/`, so this run can be compared against the old one before either
-> is thrown away. Put it back to `os.path.join(output, "tracks")` in `config.py` afterwards.
 
 ### Stage 4 — `compute_review.py`
 
@@ -189,7 +182,7 @@ per episode built straight from stages 1–3 — no export, nothing frozen — s
 
 ```bash
 python compute_review.py --config.runner.limit=5    # ~1 min and ~370 MB per episode
-rerun tapvidmv/data/review/<episode_id>.rrd
+rerun data/output/droid/review/<episode_id>.rrd
 ```
 
 The 3D view holds every camera's depth cloud, the moving frustums, and every track — blue for
@@ -221,7 +214,7 @@ order by every stage, so `--config.runner.limit=5` is the five episodes stage 3 
 | `n_inspect` | How many tracks get the closer reading above |
 | `fps` | Playback speed in the viewer, not a claim about the source |
 
-Recordings go to `tapvidmv/data/review/` on local disk — the bucket writes at a twentieth of
+Recordings go to `data/output/droid/review/` on local disk — the bucket writes at a twentieth of
 the speed and charges for the rename twice.
 
 #### Looking at one from a laptop
@@ -251,7 +244,7 @@ To make one smaller while keeping its shape, drop scene entities:
 
 ```bash
 rerun rrd filter --drop-entity /scene/1 --drop-entity /scene/2 \
-    -o one-camera.rrd tapvidmv/data/review/<episode_id>.rrd
+    -o one-camera.rrd data/output/droid/review/<episode_id>.rrd
 ```
 
 Dropping two of the three leaves one camera's cloud at a third of the size; dropping all three
@@ -303,6 +296,7 @@ droid/
 │   ├── physics.py             #   PyBulletRenderer and RenderPool: depth, mask and segmentation renders
 │   ├── pointcloud.py          #   Robot/scene clouds, chamfer(_px) + overlap(_px), depth and disparity losses
 │   ├── runner.py              #   Episode selection + resume-aware batch loop
+│   ├── tracks.py              #   Track subsampling, multi-view projection, query building
 │   └── visualization.py       #   Point clouds, tracking videos, 4D orbit
 ├── xm/
 │   ├── Dockerfile             #   Container image with ZED SDK, PyBullet EGL, S2M2 and SAM

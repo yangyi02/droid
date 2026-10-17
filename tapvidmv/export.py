@@ -12,6 +12,7 @@ from config import get_config
 import release
 import core.io
 import core.runner
+import core.tracks
 
 config = get_config()
 
@@ -53,7 +54,7 @@ def export_to_tapvid3d(
   np.save(os.path.join(staging, release.TRACKS), tracks_3d.astype(np.float32))
   print(f"  tracks_xyz.npy: ({F}, {P}, 3)")
 
-  queries = core.io.build_queries(uv, query_view, query_frame)
+  queries = core.tracks.build_queries(uv, query_view, query_frame)
   np.save(os.path.join(staging, release.QUERIES), queries)
   print(f"  queries_xytv.npy: ({P}, 4)")
 
@@ -101,12 +102,14 @@ def process_episode(episode_id, args):
   poses = core.io.load_extrinsics(episode, args.extrinsics_root)
 
   tracks = core.io.load_track_data(episode_id, args.tracks_root)
+  tracks = core.tracks.sample_tracks(tracks, args.points_per_class)
+  uv = core.tracks.project_views(tracks["tracks_3d"], episode, poses)
 
   export_to_tapvid3d(
     episode=episode,
     poses=poses,
     tracks_3d=tracks["tracks_3d"],
-    uv=tracks["uv"],
+    uv=uv,
     vis=tracks["vis"],
     masks=core.io.load_robot_masks(episode_id, args.tracks_root, episode["camera"]),
     query_view=tracks["query_view"],
@@ -140,6 +143,7 @@ if __name__ == "__main__":
   parser.add_argument("--depth_root", type=str, default=config.paths.depth)
   parser.add_argument("--extrinsics_root", type=str, default=config.paths.extrinsics)
   parser.add_argument("--tracks_root", type=str, default=config.paths.tracks)
+  parser.add_argument("--points_per_class", type=int, default=config.tracks.points_per_class)
   parser.add_argument("--jpeg_quality", type=int, default=95)
   args = parser.parse_args()
 
@@ -148,7 +152,12 @@ if __name__ == "__main__":
   if args.episode_id:
     process_episode(args.episode_id, args)
   else:
-    with_tracks = core.runner.list_episode_dirs(args.tracks_root)
+    tracks_root = os.path.abspath(os.path.expanduser(args.tracks_root))
+    with_tracks = {
+      e
+      for e in core.runner.list_episode_dirs(tracks_root)
+      if os.path.exists(os.path.join(tracks_root, e, "tracks.npz"))
+    }
     if args.episode_list == "all":
       available = with_tracks
       print(f"Exporting all {len(available)} episodes with tracks")

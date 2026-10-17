@@ -145,6 +145,7 @@ and the arm mask compresses to almost nothing, so fifty episodes come to roughly
 | `--episode_list` | `episodes_eval50.txt` | List to export, or `all` for everything with tracks |
 | `--episode_id` | — | A single episode, overriding the list |
 | `--output_root` | `tapvidmv/data/release` | Where the release is written |
+| `--points_per_class` | `10` | Farthest-point quota per class per camera per query frame drawn from `tracks.npz` |
 | `--jpeg_quality` | 95 | |
 
 Per episode the layout is:

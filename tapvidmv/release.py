@@ -5,6 +5,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import core.geometry
+
 MAX_DEPTH_M = 2.0
 
 TRACKS = "tracks_xyz.npy"
@@ -32,36 +34,14 @@ def decode_jpeg(raw):
   return cv2.cvtColor(cv2.imdecode(buffer, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
 
 
-def project_tracks(tracks_xyz, intrinsics, extrinsics_w2c):
-  points_h = np.concatenate([tracks_xyz, np.ones((*tracks_xyz.shape[:2], 1), dtype=np.float32)], axis=-1)
-  points_camera = np.einsum("tij,tnj->tni", extrinsics_w2c, points_h)
-  z = points_camera[..., 2]
-  with np.errstate(invalid="ignore", divide="ignore"):
-    xy = points_camera[..., :2] / z[..., None]
-  xy = xy * intrinsics[None, None, :2] + intrinsics[None, None, 2:]
-  return xy.astype(np.float32), z.astype(np.float32)
-
-
-def camera_centers(extrinsics_w2c):
-  rotation, translation = extrinsics_w2c[:, :3, :3], extrinsics_w2c[:, :3, 3]
-  return -np.einsum("tji,tj->ti", rotation, translation)
-
-
-def unproject_depth(depth, image, intrinsics, extrinsics_w2c, *, stride=6, max_depth_m=MAX_DEPTH_M):
-  height, width = depth.shape
-  rows, columns = np.mgrid[0:height:stride, 0:width:stride]
+def unproject_depth(depth, image, K, T_cam2world, *, stride=6, max_depth_m=MAX_DEPTH_M):
+  rows, cols = np.mgrid[0 : depth.shape[0] : stride, 0 : depth.shape[1] : stride]
   z = depth[::stride, ::stride]
-  valid = np.isfinite(z) & (z > 0.0)
-  if max_depth_m is not None:
-    valid &= z <= max_depth_m
-  fx, fy, cx, cy = [float(value) for value in intrinsics]
-  points_camera = np.stack([(columns - cx) / fx * z, (rows - cy) / fy * z, z], axis=-1)[valid]
-  rotation, translation = extrinsics_w2c[:3, :3], extrinsics_w2c[:3, 3]
-  points_world = (points_camera - translation) @ rotation
-  scale_h, scale_w = image.shape[0] / height, image.shape[1] / width
-  color_rows = np.clip((rows * scale_h).astype(np.int64), 0, image.shape[0] - 1)
-  color_columns = np.clip((columns * scale_w).astype(np.int64), 0, image.shape[1] - 1)
-  return points_world.astype(np.float32), image[color_rows, color_columns][valid]
+  valid = np.isfinite(z) & (z > 0.0) & (z <= max_depth_m if max_depth_m is not None else True)
+  points = core.geometry.unproject_pixels(
+    cols[valid].astype(np.float32), rows[valid].astype(np.float32), z[valid], K, T_cam2world
+  )
+  return points.astype(np.float32), image[rows[valid], cols[valid]]
 
 
 @dataclass(eq=False)
@@ -75,6 +55,15 @@ class View:
 
   def image(self, frame):
     return decode_jpeg(self.jpegs[int(frame)])
+
+  @functools.cached_property
+  def K(self):
+    fx, fy, cx, cy = self.intrinsics
+    return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32)
+
+  @functools.cached_property
+  def T_cam2world(self):
+    return np.linalg.inv(self.extrinsics_w2c).astype(np.float32)
 
   @functools.cached_property
   def depth_mm(self):
@@ -94,7 +83,7 @@ class View:
 
   @functools.cached_property
   def centers(self):
-    return camera_centers(self.extrinsics_w2c)
+    return self.T_cam2world[:, :3, 3]
 
   @functools.cached_property
   def camera_motion_m(self):
@@ -139,7 +128,7 @@ class Episode:
   @functools.lru_cache(maxsize=8)
   def project(self, view):
     data = self.views[view]
-    return project_tracks(self.tracks_xyz, data.intrinsics, data.extrinsics_w2c)
+    return core.geometry.project_tracks(self.tracks_xyz, data.K, data.T_cam2world)
 
 
 @functools.lru_cache(maxsize=4)

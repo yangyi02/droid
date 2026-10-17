@@ -32,6 +32,17 @@ def project_points(points_world, K, T_cam2world):
   return u, v, z_cam
 
 
+def project_tracks(tracks_3d, K, T_cam2world):
+  T_world2cam = np.linalg.inv(T_cam2world)
+  points_cam = np.einsum("tij,tnj->tni", T_world2cam[:, :3, :3], tracks_3d) + T_world2cam[:, None, :3, 3]
+  z = points_cam[..., 2]
+  uv = np.zeros((*tracks_3d.shape[:2], 2), dtype=np.float32)
+  valid = z > 0
+  uv[valid, 0] = (points_cam[valid, 0] / z[valid]) * K[0, 0] + K[0, 2]
+  uv[valid, 1] = (points_cam[valid, 1] / z[valid]) * K[1, 1] + K[1, 2]
+  return uv, z
+
+
 def farthest_points(points, n_points, seeds=None):
   chosen = []
   if seeds is None or not len(seeds):
