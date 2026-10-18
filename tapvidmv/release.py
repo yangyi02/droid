@@ -34,16 +34,6 @@ def decode_jpeg(raw):
   return cv2.cvtColor(cv2.imdecode(buffer, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
 
 
-def unproject_depth(depth, image, K, T_cam2world, *, stride=6, max_depth_m=MAX_DEPTH_M):
-  rows, cols = np.mgrid[0 : depth.shape[0] : stride, 0 : depth.shape[1] : stride]
-  z = depth[::stride, ::stride]
-  valid = np.isfinite(z) & (z > 0.0) & (z <= max_depth_m if max_depth_m is not None else True)
-  points = core.geometry.unproject_pixels(
-    cols[valid].astype(np.float32), rows[valid].astype(np.float32), z[valid], K, T_cam2world
-  )
-  return points.astype(np.float32), image[rows[valid], cols[valid]]
-
-
 @dataclass(eq=False)
 class View:
   index: int
@@ -116,6 +106,10 @@ class Episode:
   @property
   def num_views(self):
     return len(self.views)
+
+  @property
+  def query_t(self):
+    return self.queries_xytv[:, 2].astype(int)
 
   @property
   def query_v(self):

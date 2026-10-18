@@ -39,12 +39,10 @@ def export_to_tapvid3d(
 ):
   episode_id = episode["meta"]["episode_id"]
   cam_ids = list(episode["camera"])
-  F = tracks_3d.shape[0]
+  n_frames, n_points = tracks_3d.shape[:2]
 
   print(f"\nExporting episode [{episode_id}] to TAPVid-3D format")
-  print(f"  Views: {cam_ids} | Frames: {F} | Points: {tracks_3d.shape[1]}")
-
-  P = tracks_3d.shape[1]
+  print(f"  Views: {cam_ids} | Frames: {n_frames} | Points: {n_points}")
 
   seq_dir = os.path.abspath(os.path.expanduser(os.path.join(output_root, episode_id)))
   staging = seq_dir + ".partial"
@@ -52,11 +50,11 @@ def export_to_tapvid3d(
   os.makedirs(staging)
 
   np.save(os.path.join(staging, release.TRACKS), tracks_3d.astype(np.float32))
-  print(f"  tracks_xyz.npy: ({F}, {P}, 3)")
+  print(f"  tracks_xyz.npy: ({n_frames}, {n_points}, 3)")
 
   queries = core.tracks.build_queries(uv, query_view, query_frame)
   np.save(os.path.join(staging, release.QUERIES), queries)
-  print(f"  queries_xytv.npy: ({P}, 4)")
+  print(f"  queries_xytv.npy: ({n_points}, 4)")
 
   for view, cam_id in enumerate(cam_ids):
     view_id = str(view)
@@ -66,20 +64,17 @@ def export_to_tapvid3d(
     cam_data = episode["camera"][cam_id]
 
     video = cam_data["video_rgb"]
-    jpeg_list = []
-    for t in range(F):
-      jpeg_list.append(_encode_jpeg(video[t], quality=jpeg_quality))
-    jpeg_arr = np.empty(F, dtype=object)
-    jpeg_arr[:] = jpeg_list
+    jpeg_arr = np.empty(n_frames, dtype=object)
+    jpeg_arr[:] = [_encode_jpeg(video[t], quality=jpeg_quality) for t in range(n_frames)]
     np.save(os.path.join(view_dir, release.IMAGES), jpeg_arr)
 
     K = cam_data["K"]
     intrinsics = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]], dtype=np.float32)
     np.save(os.path.join(view_dir, release.INTRINSICS), intrinsics)
 
-    c2w = poses[cam_id]["T_cam2world"]
-    w2c = np.linalg.inv(c2w).astype(np.float32)
-    np.save(os.path.join(view_dir, release.EXTRINSICS), w2c)
+    T_cam2world = poses[cam_id]["T_cam2world"]
+    T_world2cam = np.linalg.inv(T_cam2world).astype(np.float32)
+    np.save(os.path.join(view_dir, release.EXTRINSICS), T_world2cam)
 
     np.save(os.path.join(view_dir, release.VISIBILITY), vis[view].astype(bool))
 
@@ -87,8 +82,11 @@ def export_to_tapvid3d(
     np.savez_compressed(os.path.join(view_dir, release.DEPTH), depth=depth_mm)
     np.savez_compressed(os.path.join(view_dir, release.MASK), mask=masks[cam_id])
 
-    H, W = video[0].shape[:2]
-    print(f"  view {view_id} [{cam_id}]: imgs({F},JPEG) intr(4,) extr({F},4,4) vis({F},{P}) depth+mask({F},{H},{W})")
+    height, width = video[0].shape[:2]
+    print(
+      f"  view {view_id} [{cam_id}]: imgs({n_frames},JPEG) intr(4,)"
+      f" extr({n_frames},4,4) vis({n_frames},{n_points}) depth+mask({n_frames},{height},{width})"
+    )
 
   shutil.rmtree(seq_dir, ignore_errors=True)
   os.rename(staging, seq_dir)

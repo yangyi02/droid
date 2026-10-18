@@ -49,19 +49,14 @@ def cut_value(row, column, op):
   return min(values) if op == ">=" else max(values)
 
 
-def judge(rows, cuts):
-  judged = []
-  for row in rows:
-    values = {column: cut_value(row, column, op) for column, (op, _) in cuts.items()}
-    failing = [column for column, (op, limit) in cuts.items() if not OPS[op](values[column], limit)]
-    judged.append({"row": row, "values": values, "failing": failing})
-  return judged
-
-
 def apply_cuts(rows, cuts):
-  judged = judge(rows, cuts)
-  rejected = Counter(column for verdict in judged for column in verdict["failing"])
-  kept = [verdict["row"] for verdict in judged if not verdict["failing"]]
+  kept, rejected = [], Counter()
+  for row in rows:
+    failing = [col for col, (op, limit) in cuts.items() if not OPS[op](cut_value(row, col, op), limit)]
+    if failing:
+      rejected.update(failing)
+    else:
+      kept.append(row)
 
   print(f"  {len(kept)}/{len(rows)} episodes pass the quality cuts")
   for column, count in rejected.most_common():
@@ -124,7 +119,11 @@ def load_pool(list_path, metrics_root):
     names = [line.strip() for line in f if line.strip()]
 
   metrics_root = os.path.expanduser(metrics_root)
-  return [json.load(open(os.path.join(metrics_root, name, METRICS_FILE))) for name in names]
+  rows = []
+  for name in names:
+    with open(os.path.join(metrics_root, name, METRICS_FILE)) as f:
+      rows.append(json.load(f))
+  return rows
 
 
 def report(selected):

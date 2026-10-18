@@ -13,12 +13,6 @@ def track_colors(track_ids, colormap="turbo"):
   return (np.array([cmap(f)[:3] for f in fractions]) * 255).astype(np.uint8)
 
 
-def hex_colors(colors):
-  colors = np.asarray(colors, dtype=np.uint8).reshape(-1, 3)
-  packed = colors[:, 0].astype(np.uint32) << 16 | colors[:, 1].astype(np.uint32) << 8 | colors[:, 2].astype(np.uint32)
-  return ["#%06x" % value for value in packed]
-
-
 def ascii_only(text):
   return text.encode("ascii", "replace").decode("ascii")
 
@@ -141,7 +135,7 @@ def view_panel(episode, view, frame, track_ids, *, colors=None, trail=0, label=T
   if width is not None and width != canvas.shape[1]:
     scale = width / canvas.shape[1]
     canvas = cv2.resize(canvas, (width, max(1, int(round(canvas.shape[0] * scale)))), interpolation=cv2.INTER_AREA)
-  colors = track_colors(track_ids) if colors is None else colors
+  colors = track_colors(track_ids) if colors is None else np.asarray(colors)
 
   if trail > 1:
     start = max(0, frame - trail + 1)
@@ -151,12 +145,13 @@ def view_panel(episode, view, frame, track_ids, *, colors=None, trail=0, label=T
     canvas = draw_trails(canvas, trail_xy * scale, colors, valid=trail_z > 1e-3)
 
   xy, z = episode.project(view)
-  visible = data.visibility[frame, track_ids] & (z[frame, track_ids] > 0)
+  front = z[frame, track_ids] > 0
+  visible = data.visibility[frame, track_ids] & front
   canvas = draw_points(
     canvas,
-    xy[frame, track_ids] * scale,
-    visible=visible,
-    colors=colors,
+    xy[frame, track_ids][front] * scale,
+    visible=visible[front],
+    colors=colors[front],
     radius=max(3, int(round(canvas.shape[1] / 150))),
   )
   if label:
@@ -183,180 +178,6 @@ def episode_video(episode, track_ids, *, colors=None, num_frames=120, cell_width
     all_views_panel(episode, int(frame), track_ids, colors=colors, cell_width=cell_width, trail=trail, label=label)
     for frame in frames
   ])
-
-
-def crossview_patches(episode, track, frame, *, patch=112, out_size=180):
-  panels = []
-  for view in range(episode.num_views):
-    data = episode.views[view]
-    xy, z = episode.project(view)
-    point = xy[frame, track]
-    image = data.image(frame)
-    height, width = image.shape[:2]
-    half = patch // 2
-    x = int(round(float(np.clip(point[0], half, width - half - 1))))
-    y = int(round(float(np.clip(point[1], half, height - half - 1))))
-    crop = cv2.resize(
-      image[y - half : y + half, x - half : x + half], (out_size, out_size), interpolation=cv2.INTER_NEAREST
-    )
-    scale = out_size / patch
-    center = (
-      int(round((float(point[0]) - (x - half)) * scale)),
-      int(round((float(point[1]) - (y - half)) * scale)),
-    )
-    visible = bool(data.visibility[frame, track]) and float(z[frame, track]) > 0
-    color = (60, 220, 60) if visible else (220, 60, 60)
-    cv2.drawMarker(crop, center, color, cv2.MARKER_CROSS, int(out_size * 0.25), 2, cv2.LINE_AA)
-    cv2.rectangle(crop, (0, 0), (out_size - 1, out_size - 1), color, 3)
-    panels.append(label_panel(crop, f"v{view} {'vis' if visible else 'occl'} z={float(z[frame, track]):.2f}"))
-  return panels
-
-
-def plot_tracks_3d(
-  episode,
-  track_ids,
-  *,
-  frame=None,
-  trail=None,
-  colors=None,
-  cloud_views=(1, 2),
-  cloud_stride=6,
-  max_cloud_points=40_000,
-  show_cloud=True,
-  title=None,
-  height=760,
-):
-  import plotly.graph_objects as go
-
-  frame = episode.num_frames // 2 if frame is None else frame
-  track_ids = np.asarray(track_ids)
-  colors = track_colors(track_ids) if colors is None else np.asarray(colors)
-  figure = go.Figure()
-
-  if show_cloud:
-    for view in cloud_views:
-      depth = episode.views[view].depth(frame)
-      if depth is None:
-        continue
-      points, point_colors = release.unproject_depth(
-        depth,
-        episode.views[view].image(frame),
-        episode.views[view].K,
-        episode.views[view].T_cam2world[frame],
-        stride=cloud_stride,
-      )
-      if not len(points):
-        continue
-      if len(points) > max_cloud_points:
-        keep = np.random.choice(len(points), max_cloud_points, replace=False)
-        points, point_colors = points[keep], point_colors[keep]
-      figure.add_trace(
-        go.Scatter3d(
-          x=points[:, 0],
-          y=points[:, 1],
-          z=points[:, 2],
-          mode="markers",
-          marker=dict(size=1.5, color=hex_colors(point_colors)),
-          name=f"depth cloud, view {view}",
-          hoverinfo="skip",
-        )
-      )
-
-  start = 0 if trail is None else max(0, frame - trail + 1)
-  stop = episode.num_frames if trail is None else frame + 1
-  paths = episode.tracks_xyz[start:stop, track_ids]
-  separator = np.full((1, len(track_ids), 3), np.nan, dtype=np.float32)
-  joined = np.concatenate([paths, separator]).transpose(1, 0, 2).reshape(-1, 3)
-  figure.add_trace(
-    go.Scatter3d(
-      x=joined[:, 0],
-      y=joined[:, 1],
-      z=joined[:, 2],
-      mode="lines",
-      line=dict(color=np.repeat(hex_colors(colors), paths.shape[0] + 1).tolist(), width=4),
-      name="3D tracks" if trail is None else f"3D tracks, last {trail} frames",
-      hoverinfo="skip",
-    )
-  )
-
-  heads = episode.tracks_xyz[frame, track_ids]
-  figure.add_trace(
-    go.Scatter3d(
-      x=heads[:, 0],
-      y=heads[:, 1],
-      z=heads[:, 2],
-      mode="markers",
-      marker=dict(color=hex_colors(colors), size=5),
-      text=[f"track {int(track)}" for track in track_ids],
-      hoverinfo="text",
-      name=f"positions at frame {frame}",
-    )
-  )
-
-  for view, data in enumerate(episode.views):
-    centers = data.centers
-    color = "rgb({},{},{})".format(*view_color(view))
-    figure.add_trace(
-      go.Scatter3d(
-        x=centers[:, 0],
-        y=centers[:, 1],
-        z=centers[:, 2],
-        mode="lines",
-        line=dict(width=4, color=color),
-        name=f"camera {view} path",
-        hoverinfo="skip",
-      )
-    )
-    figure.add_trace(
-      go.Scatter3d(
-        x=[centers[frame, 0]],
-        y=[centers[frame, 1]],
-        z=[centers[frame, 2]],
-        mode="markers+text",
-        marker=dict(size=5, symbol="diamond", color=color),
-        text=[f"v{view}"],
-        textposition="top center",
-        name=f"camera {view}",
-      )
-    )
-
-  figure.update_layout(
-    height=height,
-    margin=dict(l=0, r=0, t=34, b=0),
-    title=title if title is not None else f"{episode.name} - 3D ground truth",
-    scene=dict(aspectmode="data", xaxis_title="x", yaxis_title="y", zaxis_title="z"),
-  )
-  return figure
-
-
-def tracks_3d_axes(ax, episode, track_ids, *, colors=None, elev=22, azim=-60, linewidth=0.9, show_cameras=True):
-  track_ids = np.asarray(track_ids)
-  colors = (track_colors(track_ids) if colors is None else np.asarray(colors)) / 255.0
-  paths = episode.tracks_xyz[:, track_ids]
-  for index in range(paths.shape[1]):
-    ax.plot(*paths[:, index].T, color=colors[index % len(colors)], lw=linewidth)
-  ax.scatter(*paths[-1].T, color=colors[: paths.shape[1]], s=4, depthshade=False)
-  if show_cameras:
-    for view, data in enumerate(episode.views):
-      centers = data.centers
-      color = view_color(view) / 255.0
-      if data.camera_motion_m < 0.01:
-        ax.scatter(*centers[0], color=color, s=26, marker="D", depthshade=False)
-      else:
-        ax.plot(*centers.T, color=color, lw=1.6)
-  flat = paths.reshape(-1, 3)
-  low, high = flat.min(axis=0), flat.max(axis=0)
-  span = np.maximum(high - low, 1e-3)
-  low, high = low - 0.15 * span, high + 0.15 * span
-  ax.set_xlim(low[0], high[0])
-  ax.set_ylim(low[1], high[1])
-  ax.set_zlim(low[2], high[2])
-  ax.set_box_aspect(high - low)
-  ax.view_init(elev=elev, azim=azim)
-  ax.set_xticks([])
-  ax.set_yticks([])
-  ax.set_zticks([])
-  return ax
 
 
 def cap_depth(depth, max_depth_m=release.MAX_DEPTH_M):
@@ -417,53 +238,3 @@ def crossview_gap_px(episode, source, target, frames):
     _, truth, reprojected, _ = crossview_reprojection(episode, source, target, frame)
     gaps.append(np.linalg.norm(reprojected - truth, axis=-1))
   return np.concatenate(gaps) if gaps else np.zeros(0)
-
-
-def moving_tracks(tracks_xyz):
-  return np.abs(tracks_xyz - tracks_xyz[:1]).max(axis=(0, 2)) > 0
-
-
-def gap_video(episode, *, cell_width=560, min_gap_px=20.0, suspect_behind_m=0.05):
-  source_colors = [(255, 255, 255), (255, 140, 0), (0, 220, 255)]
-  segments = {}
-  behind, counted = np.zeros(episode.num_tracks), np.zeros(episode.num_tracks)
-  for frame in range(episode.num_frames):
-    for source in range(episode.num_views):
-      for target in range(episode.num_views):
-        if source == target:
-          continue
-        tracks, truth, reprojected, depth_behind = crossview_reprojection(episode, source, target, frame)
-        if source != 0:
-          np.add.at(behind, tracks, depth_behind)
-          np.add.at(counted, tracks, 1)
-        far = np.linalg.norm(reprojected - truth, axis=-1) > min_gap_px
-        segments.setdefault((frame, target), []).extend(
-          (start, end, source_colors[source]) for start, end in zip(truth[far], reprojected[far])
-        )
-  suspects = np.flatnonzero(behind / np.maximum(counted, 1) > suspect_behind_m)
-
-  is_robot = moving_tracks(episode.tracks_xyz)
-  projected = [episode.project(view) for view in range(episode.num_views)]
-  frames = []
-  for frame in range(episode.num_frames):
-    panels = []
-    for view in range(episode.num_views):
-      data = episode.views[view]
-      canvas = data.image(frame)
-      scale = cell_width / canvas.shape[1]
-      canvas = cv2.resize(canvas, (cell_width, int(round(canvas.shape[0] * scale))), interpolation=cv2.INTER_AREA)
-      xy, z = projected[view]
-      xy, front = xy[frame] * scale, z[frame] > 0
-      colors = occlusion_colors(is_robot[front], data.visibility[frame, front])
-      canvas = draw_points(canvas, xy[front], colors=colors, radius=3)
-      for track in suspects[front[suspects]]:
-        center = tuple(int(round(c)) for c in xy[track])
-        cv2.circle(canvas, center, 9, (255, 0, 255), 2, cv2.LINE_AA)
-        label = (center[0] + 10, center[1] - 8)
-        cv2.putText(canvas, str(track), label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 255), 1, cv2.LINE_AA)
-      for start, end, color in segments.get((frame, view), []):
-        start, end = tuple(int(round(c)) for c in start * scale), tuple(int(round(c)) for c in end * scale)
-        cv2.line(canvas, start, end, color, 1, cv2.LINE_AA)
-      panels.append(header_panel(canvas, f"view {view} ({data.kind})  frame {frame}/{episode.num_frames - 1}"))
-    frames.append(montage(panels, columns=episode.num_views, cell_width=cell_width))
-  return np.stack(frames), suspects

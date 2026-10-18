@@ -25,15 +25,15 @@ bash run_parallel.sh tracks
 ## The four steps
 
 ```
-metrics ──▶ 1. calibrate the cuts ─┐
-                                   ├─ shortlist.ipynb ─▶ episodes_eval150.txt
+metrics ──▶ 1. apply quality cuts ─┐
+                                   ├─ shortlist.py ──▶ episodes_eval150.txt
             2. draw the pool ──────┘
                                        │
                                        ▼
-            3. pick by eye ─── review.ipynb ──────────▶ episodes_eval50.txt
+            3. pick by eye ─── review.ipynb ─────────▶ episodes_eval50.txt
                                        │
                                        ▼
-            4. export ─────── export.py ────────────▶ tapvidmv/data/release/
+            4. export ─────── export.py ───────────▶ tapvidmv/data/release/
                                        │
                                        ▼
                             verify.ipynb
@@ -41,20 +41,13 @@ metrics ──▶ 1. calibrate the cuts ─┐
 
 ---
 
-### Steps 1 & 2 — [`shortlist.ipynb`](shortlist.ipynb)
+### Steps 1 & 2 — [`shortlist.py`](shortlist.py)
 
-Two decisions off one table of numbers, which is why they share a notebook: the
-sampling in step 2 runs on whatever step 1 leaves behind, so moving a threshold
-redraws the pool.
+Two decisions off one table of numbers: the sampling in step 2 runs on whatever
+step 1 leaves behind, so moving a threshold redraws the pool.
 
-**1. Which episodes are broken enough to drop.** The notebook plots every cut's
-distribution with its threshold drawn on top, and counts what each one rejects —
-both in total and *alone*. The second number is the one that matters: it is
-exactly how many episodes relaxing that threshold buys back. A cut that rejects
-nothing, or nothing another cut has already caught, is doing no work.
-
-`CUTS` is calibrated against the full metrics run of 5521 episodes. The three
-numbers do not carry equal weight:
+**1. Which episodes are broken enough to drop.** `CUTS` is calibrated against the
+full metrics run of 13,914 episodes. The three numbers do not carry equal weight:
 
 | Cut | | |
 |---|---|---|
@@ -98,8 +91,9 @@ python tapvidmv/shortlist.py --n 150 --cut chamfer=0.047 --cut robot_loss=0.014 
 ### Step 3 — [`review.ipynb`](review.ipynb)
 
 Work through the pool by eye. Each candidate plays as a three-view clip with the
-**ground-truth tracks drawn on it** — filled where that view calls a point
-visible, hollow where it is occluded — beside the metrics that let it through.
+**ground-truth tracks drawn on it** — blue on the arm and green on the background
+where that view calls a point visible, yellow and red where it is occluded —
+beside the metrics that let it through.
 **Keep** / **Skip** / **Back** build the set, and the last cell writes
 `episodes_eval50.txt`.
 
@@ -170,10 +164,9 @@ pipeline's intermediate state. It finds `tapvidmv/data/release/` on its own.
 
 The questions sharpen as you go down: is the rig what we think it is (one camera
 on the wrist, two fixed) → do the 2D tracks stay glued to their surfaces → do the
-3D tracks lie *on* the depth cloud or float above it → do the views agree about
-what is visible and where the queries live → is the depth sane inside the 2 m
-workspace and does the wrist mask fit → read a point's depth in one view and
-reproject it into another, how far off → all fifty at once, which need opening.
+views agree about what is visible and where the queries live → is the depth sane
+inside the 2 m workspace and does the wrist mask fit → read a point's depth in
+one view and reproject it into another, how far off.
 
 That last reprojection check is the sharpest one.
 
@@ -189,13 +182,12 @@ gs://dm-tapnet/tapvidmv/droid/<episode_id>/...
 
 | File | Role |
 |---|---|
-| `shortlist.py` | Quality cuts (`CUTS`, `judge`), scene-stratified sampling, episode list writing |
-| `shortlist.ipynb` | Steps 1 & 2 — calibrate the cuts, draw the pool |
+| `shortlist.py` | Steps 1 & 2 — quality cuts (`CUTS`), scene-stratified sampling, episode list writing |
 | `review.ipynb` | Step 3 — the human pass, ground truth drawn on every clip |
 | `export.py` | Step 4 — pipeline outputs → release layout; owns `RELEASE_ROOT` |
 | `run_export.sh` | Step 4 in parallel — one worker per shard, logs under `logs/`, then `droid_file_list.txt` at the release root: every file in it, one relative path per line |
-| `verify.ipynb` | Verification — reads the export, seven ways of asking whether it is right |
-| `release.py` | Reads the release layout: `View`/`Episode`, projection, unprojection |
+| `verify.ipynb` | Verification — reads the export, checks rig, 2D tracks, visibility, depth, and cross-view reprojection |
+| `release.py` | Reads the release layout: `View`/`Episode`, projection |
 | `viz.py` | Drawing primitives: points, trails, montage, frame reading |
 | `data/` | The export (gitignored) |
 | `previews/` | Cached picker clips (gitignored) |
