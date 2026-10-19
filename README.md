@@ -249,9 +249,9 @@ leaves the RGB and every track at 6% of it.
 
 ## TAPVid-MV release
 
-`tapvidmv/` turns the pipeline's output into the released evaluation set — which fifty episodes
-are the benchmark, written in the release layout.
-See [`tapvidmv/README.md`](tapvidmv/README.md).
+`tapvidmv.ipynb` turns the pipeline's output into the 50-episode released evaluation set:
+shortlisting candidates from `metrics.json`, picking 50 by eye, and exporting the release
+into `data/output/tapvidmv/release/`.
 
 ## Naming conventions
 
@@ -276,6 +276,7 @@ The two dicts threaded through every stage are `episode` (one episode's loaded d
 ```
 droid/
 ├── pipeline.ipynb             # Whole pipeline, one episode at a time
+├── tapvidmv.ipynb             # Shortlist, pick and export the 50-episode TAPVid-MV benchmark
 ├── compute_depth.py           # Stage 1
 ├── compute_extrinsics.py      # Stage 2
 ├── compute_tracks.py          # Stage 3
@@ -294,7 +295,6 @@ droid/
 ├── xm/
 │   ├── Dockerfile             #   Container image with ZED SDK, PyBullet EGL, S2M2 and SAM
 │   └── launch.py              #   XManager GCP multi-worker launcher
-├── tapvidmv/                  # The released evaluation set -- see its own README
 ├── assets/                    # Franka + Robotiq URDF and meshes
 └── third_party/               # Gitignored: submodule source + downloaded weights
 ```

@@ -3,9 +3,6 @@ __pycache__/
 .DS_Store
 data/
 logs/
-previews/
 venv/
 third_party/
 tmp/
-tapvidmv/episodes_eval150.txt
-tapvidmv/episodes_eval50.txt
