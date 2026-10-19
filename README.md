@@ -288,7 +288,6 @@ droid/
 ├── mount_gcs.sh               # Mount the input bucket
 ├── run_parallel.sh            # One worker per GPU, episodes sharded by rank
 ├── serve_review.sh            # Serve one recording to a browser on your laptop
-├── episodes_success.txt       # Episode ids pipeline.ipynb samples from
 ├── core/
 │   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
 │   ├── geometry.py            #   project, unproject, poses, farthest-point sampling
