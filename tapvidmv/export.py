@@ -9,7 +9,6 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import get_config
-import release
 import core.io
 import core.runner
 import core.tracks
@@ -49,11 +48,11 @@ def export_to_tapvid3d(
   shutil.rmtree(staging, ignore_errors=True)
   os.makedirs(staging)
 
-  np.save(os.path.join(staging, release.TRACKS), tracks_3d.astype(np.float32))
+  np.save(os.path.join(staging, "tracks_xyz.npy"), tracks_3d.astype(np.float32))
   print(f"  tracks_xyz.npy: ({n_frames}, {n_points}, 3)")
 
   queries = core.tracks.build_queries(uv, query_view, query_frame)
-  np.save(os.path.join(staging, release.QUERIES), queries)
+  np.save(os.path.join(staging, "queries_xytv.npy"), queries)
   print(f"  queries_xytv.npy: ({n_points}, 4)")
 
   for view, cam_id in enumerate(cam_ids):
@@ -66,21 +65,21 @@ def export_to_tapvid3d(
     video = cam_data["video_rgb"]
     jpeg_arr = np.empty(n_frames, dtype=object)
     jpeg_arr[:] = [_encode_jpeg(video[t], quality=jpeg_quality) for t in range(n_frames)]
-    np.save(os.path.join(view_dir, release.IMAGES), jpeg_arr)
+    np.save(os.path.join(view_dir, "images_jpeg_bytes.npy"), jpeg_arr)
 
     K = cam_data["K"]
     intrinsics = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]], dtype=np.float32)
-    np.save(os.path.join(view_dir, release.INTRINSICS), intrinsics)
+    np.save(os.path.join(view_dir, "intrinsics.npy"), intrinsics)
 
     T_cam2world = poses[cam_id]["T_cam2world"]
     T_world2cam = np.linalg.inv(T_cam2world).astype(np.float32)
-    np.save(os.path.join(view_dir, release.EXTRINSICS), T_world2cam)
+    np.save(os.path.join(view_dir, "extrinsics_w2c.npy"), T_world2cam)
 
-    np.save(os.path.join(view_dir, release.VISIBILITY), vis[view].astype(bool))
+    np.save(os.path.join(view_dir, "visibility.npy"), vis[view].astype(bool))
 
     depth_mm = np.round(cam_data["raw_depth"] * 1000).astype(np.uint16)
-    np.savez_compressed(os.path.join(view_dir, release.DEPTH), depth=depth_mm)
-    np.savez_compressed(os.path.join(view_dir, release.MASK), mask=masks[cam_id])
+    np.savez_compressed(os.path.join(view_dir, "depth.npz"), depth=depth_mm)
+    np.savez_compressed(os.path.join(view_dir, "foreground_mask.npz"), mask=masks[cam_id])
 
     height, width = video[0].shape[:2]
     print(

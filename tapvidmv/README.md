@@ -3,8 +3,8 @@
 Everything that turns the pipeline's output into the released evaluation set.
 
 The pipeline produces depth, extrinsics, tracks and metrics for every episode it
-can. This directory decides **which fifty of them are the benchmark**, writes
-those fifty in the release layout, and checks that what it wrote is right.
+can. This directory decides **which fifty of them are the benchmark** and writes
+those fifty in the release layout.
 
 Nothing in the repository root knows about this directory. It reads the
 pipeline's outputs through `config.paths` and owns everything downstream —
@@ -17,9 +17,9 @@ gitignored).
 Stages 1–3, over every episode:
 
 ```bash
-bash run_parallel.sh depth
-bash run_parallel.sh extrinsics
-bash run_parallel.sh tracks
+python compute_depth.py
+python compute_extrinsics.py
+python compute_tracks.py
 ```
 
 ## The four steps
@@ -34,9 +34,6 @@ metrics ──▶ 1. apply quality cuts ─┐
                                        │
                                        ▼
             4. export ─────── export.py ───────────▶ tapvidmv/data/release/
-                                       │
-                                       ▼
-                            verify.ipynb
 ```
 
 ---
@@ -109,17 +106,15 @@ so the picker does not wait on video decoding.
 ### Step 4 — [`export.py`](export.py)
 
 ```bash
-bash tapvidmv/run_export.sh                                   # episodes_eval50.txt, 8 workers
-bash tapvidmv/run_export.sh 16                                # 16 workers
-
 python tapvidmv/export.py                                     # one process
-python tapvidmv/export.py --episode_list episodes_eval150.txt
+seq 0 7 | parallel -j 8 "python -u tapvidmv/export.py --rank {} --world_size 8"
+python tapvidmv/export.py --episode_list tapvidmv/episodes_eval150.txt
 python tapvidmv/export.py --episode_id AUTOLab+5d05c5aa+2023-10-14-21h-59m-22s
 ```
 
 No GPU is involved — the work is decoding video, encoding JPEG and writing, about
-19 s per 95-frame episode. `run_export.sh` shards by `--rank` / `--world_size`,
-the same split the pipeline stages use, and logs one file per rank under `logs/`.
+19 s per 95-frame episode. `export.py` shards by `--rank` / `--world_size`,
+the same split the pipeline stages use.
 
 Writes the release layout into **`tapvidmv/data/release/`**. The export re-encodes
 every frame to JPEG and writes the depth maps, and publishing is a separate step
@@ -157,22 +152,16 @@ Per episode the layout is:
     └── foreground_mask.npz     "mask":  (frames, height, width) bool, the arm as the URDF renders it
 ```
 
-### Verify — [`verify.ipynb`](verify.ipynb)
-
-Reads the **exported** files, so it checks the thing that ships rather than the
-pipeline's intermediate state. It finds `tapvidmv/data/release/` on its own.
-
-The questions sharpen as you go down: is the rig what we think it is (one camera
-on the wrist, two fixed) → do the 2D tracks stay glued to their surfaces → do the
-views agree about what is visible and where the queries live → is the depth sane
-inside the 2 m workspace and does the wrist mask fit → read a point's depth in
-one view and reproject it into another, how far off.
-
-That last reprojection check is the sharpest one.
-
 ## Publishing
 
-Uploading is done by hand, outside this repository. The public layout is:
+Write `droid_file_list.txt` at the release root (every exported file, one relative path per line)
+and upload by hand:
+
+```bash
+(cd tapvidmv/data/release && find . -name "*.partial" -prune -o -name "*.np[yz]" -print | sed 's|^\./||' | LC_ALL=C sort > droid_file_list.txt)
+```
+
+The public layout is:
 
 ```
 gs://dm-tapnet/tapvidmv/droid/<episode_id>/...
@@ -185,9 +174,5 @@ gs://dm-tapnet/tapvidmv/droid/<episode_id>/...
 | `shortlist.py` | Steps 1 & 2 — quality cuts (`CUTS`), scene-stratified sampling, episode list writing |
 | `review.ipynb` | Step 3 — the human pass, ground truth drawn on every clip |
 | `export.py` | Step 4 — pipeline outputs → release layout; owns `RELEASE_ROOT` |
-| `run_export.sh` | Step 4 in parallel — one worker per shard, logs under `logs/`, then `droid_file_list.txt` at the release root: every file in it, one relative path per line |
-| `verify.ipynb` | Verification — reads the export, checks rig, 2D tracks, visibility, depth, and cross-view reprojection |
-| `release.py` | Reads the release layout: `View`/`Episode`, projection |
-| `viz.py` | Drawing primitives: points, trails, montage, frame reading |
 | `data/` | The export (gitignored) |
 | `previews/` | Cached picker clips (gitignored) |

@@ -16,17 +16,14 @@ python3 -m venv venv && source venv/bin/activate
 bash setup.sh              # everything, including the Stage 1 depth toolchain
 bash setup.sh --no-depth   # skip s2m2, Segment Anything, the ZED SDK and the weights
 
-bash mount_gcs.sh          # mount the input bucket
+mkdir -p data/input/robotics/droid_raw
+gcsfuse --implicit-dirs --only-dir robotics/droid_raw gresearch data/input/robotics/droid_raw
 
-bash run_parallel.sh depth        # Stage 1
-bash run_parallel.sh extrinsics   # Stage 2
-bash run_parallel.sh tracks       # Stage 3
-
-python compute_review.py --config.runner.limit=5   # Stage 4, then open the .rrd
+python compute_depth.py                             # Stage 1
+python compute_extrinsics.py                        # Stage 2
+python compute_tracks.py                            # Stage 3
+python compute_review.py --config.runner.limit=5    # Stage 4, then open the .rrd
 ```
-
-`run_parallel.sh` runs a stage on every GPU of the machine; `python compute_<stage>.py` runs it
-on one.
 
 Every path, threshold and optimizer setting lives in `config.py`, read through
 `ml_collections.config_flags`, so any field can be overridden on the command line:
@@ -50,8 +47,7 @@ Cloned without `--recurse-submodules`? `bash setup.sh` runs
 | 3. Tracks | `compute_tracks.py` | `depth/`, `extrinsics/` | `tracks/` |
 | 4. Review | `compute_review.py` | all of the above | `review/*.rrd` |
 
-Stage 4 is a few episodes you sit and watch, not a batch stage, so it is run directly rather
-than through `run_parallel.sh`.
+Stage 4 is a few episodes you sit and watch, not a batch stage.
 
 ### Stage 1 — `compute_depth.py`
 
@@ -188,7 +184,7 @@ rerun data/output/droid/review/<episode_id>.rrd
 The 3D view holds every camera's depth cloud, the moving frustums, and every track — blue for
 the arm, green for the background. The camera views colour every track by what that camera
 calls it: blue and green where it is visible, yellow for the arm and red for the background
-where it is occluded — the same four colours as the TAPVid-MV picker and verify notebook. Below it sits one 2D view per camera. Scrub the timeline and
+where it is occluded — the same four colours as the TAPVid-MV picker. Below it sits one 2D view per camera. Scrub the timeline and
 a bad track shows up as a point sliding off its texture, or as a colour that disagrees with
 what the image plainly shows.
 
@@ -224,21 +220,22 @@ nothing is installed on the laptop, which also puts it out of reach of anything 
 executables:
 
 ```bash
-bash serve_review.sh <episode_id>      # on the machine holding the recording
+rerun --serve-web --bind 127.0.0.1 --web-viewer-port 9090 --port 9876 \
+    --server-memory-limit 50% data/output/droid/review/<episode_id>.rrd
 ```
 
-Forward both ports — 9090 serves the viewer, 9876 the data — and open the URL the script
-prints, which carries the data port as a query parameter. VS Code's Remote-SSH forwards from
-its PORTS panel; otherwise `ssh -L 9090:localhost:9090 -L 9876:localhost:9876 <host>`.
+Forward both ports — 9090 serves the viewer, 9876 the data — and open
+`http://localhost:9090?url=rerun%2Bhttp%3A%2F%2Flocalhost%3A9876%2Fproxy`. VS Code's Remote-SSH
+forwards from its PORTS panel; otherwise
+`ssh -L 9090:localhost:9090 -L 9876:localhost:9876 <host>`. `--server-memory-limit 50%` raises
+the proxy's memory ceiling above the 1 GiB default, which otherwise quietly drops the oldest
+messages on larger recordings.
 
 Forward them **by hand**. A port the editor forwarded on its own, or one whose forward outlived
 a server restart, goes on accepting connections after the tunnel behind it has died: the viewer
 page loads and then sits on its welcome screen, because the data port is the dead one.
 `curl -I --noproxy '*' http://localhost:9876` answers `400 Bad Request` when that tunnel is
 alive and hangs when it is not.
-
-`serve_review.sh` also raises the proxy's memory ceiling — the default is 1 GiB, and a larger
-recording is served with its oldest messages quietly dropped.
 
 To make one smaller while keeping its shape, drop scene entities:
 
@@ -253,7 +250,7 @@ leaves the RGB and every track at 6% of it.
 ## TAPVid-MV release
 
 `tapvidmv/` turns the pipeline's output into the released evaluation set — which fifty episodes
-are the benchmark, written in the release layout and checked.
+are the benchmark, written in the release layout.
 See [`tapvidmv/README.md`](tapvidmv/README.md).
 
 ## Naming conventions
@@ -285,9 +282,6 @@ droid/
 ├── compute_review.py          # Stage 4
 ├── config.py                  # Paths, buckets and every hyperparameter (ConfigDict)
 ├── setup.sh                   # Dependencies + weights (--no-depth skips Stage 1's toolchain)
-├── mount_gcs.sh               # Mount the input bucket
-├── run_parallel.sh            # One worker per GPU, episodes sharded by rank
-├── serve_review.sh            # Serve one recording to a browser on your laptop
 ├── core/
 │   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
 │   ├── geometry.py            #   project, unproject, poses, farthest-point sampling
@@ -307,7 +301,7 @@ droid/
 
 ## Data
 
-The pipeline reads raw DROID data from a GCS bucket, which `mount_gcs.sh` mounts via
+The pipeline reads raw DROID data from a GCS bucket mounted via
 [gcsfuse](https://cloud.google.com/storage/docs/gcsfuse-cli), and writes to local disk.
 
 | | Source | Local path |
@@ -320,14 +314,12 @@ Unmount by hand with `fusermount -u <local path>`.
 ## Running
 
 ```bash
-bash run_parallel.sh <stage> [--config.x=y ...]
-
-bash run_parallel.sh depth
-bash run_parallel.sh depth --config.runner.limit=32   # the first 32 episodes by name
+python compute_depth.py --config.runner.limit=32     # one GPU, first 32 episodes by name
+seq 0 7 | parallel -j 8 "CUDA_VISIBLE_DEVICES={} python -u compute_depth.py --config.runner.rank={} --config.runner.world_size=8"
 ```
 
-One worker per GPU detected by `nvidia-smi`, episodes sharded by rank, per-rank logs under
-`logs/`. Every stage skips episodes it has already written, so a rerun resumes.
+Every stage shards across workers via `--config.runner.rank` and `--config.runner.world_size`
+and skips episodes it has already written, so a rerun resumes.
 
 `pipeline.ipynb` runs one episode at a time for debugging. It sits at the repo root so its
 working directory is the checkout, and works either way round: open it from a local checkout
