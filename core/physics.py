@@ -120,19 +120,12 @@ class PyBulletRenderer:
     metric = metric_depth(depth_buf, height, width)
     return np.where(metric < FAR_PLANE * 0.99, metric, 0.0)
 
-  def render_mask(self, T_cam2world, K, width, height):
-    _, seg_buf = self._render_raw(T_cam2world, K, width, height)
-    seg_array = np.reshape(seg_buf, (height, width)).astype(np.int32)
-    return (seg_array & 0xFFFFFF) == self.robot_id
-
   def render_segmentation(self, T_cam2world, K, width, height):
     depth_buf, seg_buf = self._render_raw(T_cam2world, K, width, height)
     metric = metric_depth(depth_buf, height, width)
     metric = np.where(metric < FAR_PLANE * 0.99, metric, np.float32(0.0))
-    seg_array = np.reshape(seg_buf, (height, width)).astype(np.int32)
-    obj_ids = seg_array & 0xFFFFFF
-    link_ids = (seg_array >> 24) - 1
-    return obj_ids, link_ids, metric
+    link_ids = (np.reshape(seg_buf, (height, width)).astype(np.int32) >> 24) - 1
+    return link_ids, metric
 
 
 _worker = None

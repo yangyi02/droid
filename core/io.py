@@ -6,7 +6,7 @@ import numpy as np
 
 
 def load_metadata(config):
-  root_path = os.path.expanduser(config.paths.meta)
+  root_path = config.paths.meta
   os.makedirs(root_path, exist_ok=True)
 
   def fetch(name):
@@ -30,7 +30,7 @@ def load_metadata(config):
 
 
 def load_depth_data(episode_id, depth_root, load_video=False):
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(depth_root, episode_id)))
+  ep_dir = os.path.join(depth_root, episode_id)
 
   robot_data = np.load(os.path.join(ep_dir, "robot.npz"))
   wrist_cam_id = str(robot_data["wrist_cam_id"])
@@ -70,7 +70,7 @@ def load_depth_data(episode_id, depth_root, load_video=False):
 
 def load_extrinsics(episode, extrinsics_root):
   episode_id = episode["meta"]["episode_id"]
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(extrinsics_root, episode_id)))
+  ep_dir = os.path.join(extrinsics_root, episode_id)
 
   poses = {}
   for cam_id in episode["camera"]:
@@ -86,13 +86,13 @@ def load_extrinsics(episode, extrinsics_root):
 
 
 def load_metrics(episode_id, extrinsics_root):
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(extrinsics_root, episode_id)))
+  ep_dir = os.path.join(extrinsics_root, episode_id)
   with open(os.path.join(ep_dir, "metrics.json"), "r") as f:
     return json.load(f)
 
 
 def load_track_data(episode_id, tracks_root):
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(tracks_root, episode_id)))
+  ep_dir = os.path.join(tracks_root, episode_id)
   with np.load(os.path.join(ep_dir, "tracks.npz")) as raw:
     return {
       "tracks_3d": raw["tracks_3d"].swapaxes(0, 1),
@@ -105,5 +105,5 @@ def load_track_data(episode_id, tracks_root):
 
 
 def load_robot_masks(episode_id, tracks_root, cam_ids):
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(tracks_root, episode_id)))
+  ep_dir = os.path.join(tracks_root, episode_id)
   return {cam_id: np.load(os.path.join(ep_dir, cam_id, "robot_mask.npz"))["mask"] for cam_id in cam_ids}

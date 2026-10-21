@@ -102,9 +102,9 @@ def axis_angle_to_matrix(v):
   return torch.where(theta2 < 1e-8, torch.eye(3, device=v.device) + Ka, R_exact)
 
 
-def pose_from_axis_angle(delta, device):
+def pose_from_axis_angle(delta):
   rot = axis_angle_to_matrix(delta[3:])
   t = delta[:3].unsqueeze(1)
   top_rows = torch.cat([rot, t], dim=1)
-  bottom_row = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=device, dtype=torch.float32)
+  bottom_row = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=delta.device, dtype=torch.float32)
   return torch.cat([top_rows, bottom_row], dim=0)

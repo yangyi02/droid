@@ -155,11 +155,11 @@ def align_temporal_streams(episode):
 
 def export_depth(episode, export_root):
   wrist_cam_id = episode["meta"]["wrist_cam_id"]
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode["meta"]["episode_id"])))
+  ep_dir = os.path.join(export_root, episode["meta"]["episode_id"])
   os.makedirs(ep_dir, exist_ok=True)
 
   for cam_id, data in episode["camera"].items():
-    cam_dir = os.path.join(ep_dir, str(cam_id))
+    cam_dir = os.path.join(ep_dir, cam_id)
     os.makedirs(cam_dir, exist_ok=True)
 
     for key, filename in [("video_rgb", "video_left.mp4"), ("video_right", "video_right.mp4")]:
@@ -209,14 +209,14 @@ def process_episode(episode_id, models, dbs, raw_root, config):
     episode,
     sam_predictor,
     config.depth.consensus_thresh,
-    config.depth.gripper_closed_thresh,
+    config.depth.gripper_open_thresh,
     config.depth.mask_area_min,
     config.depth.mask_area_max,
   )
   episode = core.depth.distill_empirical_gripper_depth(
-    episode, config.depth.max_depth_thresh, config.depth.gripper_closed_thresh
+    episode, config.depth.max_depth_thresh, config.depth.gripper_open_thresh
   )
-  episode = core.depth.inject_gripper_depth(episode, config.depth.gripper_closed_thresh)
+  episode = core.depth.inject_gripper_depth(episode, config.depth.gripper_open_thresh)
   export_depth(episode, export_root=config.paths.depth)
 
 
@@ -225,18 +225,16 @@ def main(_):
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
   s2m2_model, sam_predictor, run_stereo_matching = init_all_models()
   serials_db, id_to_path, _, valid_ids = core.io.load_metadata(config)
-  raw_root = os.path.expanduser(config.paths.raw)
 
   target = core.runner.select_episodes(valid_ids, config)
-  export_root = os.path.abspath(os.path.expanduser(config.paths.depth))
-  done = {e for e in target if os.path.exists(os.path.join(export_root, e, "robot.npz"))}
+  done = {e for e in target if os.path.exists(os.path.join(config.paths.depth, e, "robot.npz"))}
 
   def run_one(episode_id):
     process_episode(
       episode_id,
       (s2m2_model, sam_predictor, run_stereo_matching, device),
       (id_to_path, serials_db),
-      raw_root,
+      config.paths.raw,
       config,
     )
 

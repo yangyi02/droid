@@ -65,7 +65,7 @@ def optimize_poses(base, data, wrist_cam_id, pairs, label, device, config):
   delta = {cam_id: torch.zeros(6, requires_grad=True, device=device) for cam_id in base}
 
   def objective():
-    pose = {cam_id: base[cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id], device) for cam_id in base}
+    pose = {cam_id: base[cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id]) for cam_id in base}
     return alignment_terms(pose, data, wrist_cam_id, pairs, label, config)
 
   weight = {"disparity": config.extrinsics.robot_weight}
@@ -88,7 +88,7 @@ def optimize_poses(base, data, wrist_cam_id, pairs, label, device, config):
       print(f"    {' | '.join(parts)} | Shift: {shifts}")
 
   with torch.no_grad():
-    return {cam_id: base[cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id], device) for cam_id in base}
+    return {cam_id: base[cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id]) for cam_id in base}
 
 
 def joint_alignment(episode, prev_poses, render_pool, device, config):
@@ -124,8 +124,7 @@ def joint_alignment(episode, prev_poses, render_pool, device, config):
 
 def export_extrinsics(episode, poses, metrics, export_root):
   episode_id = episode["meta"]["episode_id"]
-  wrist_cam_id = episode["meta"]["wrist_cam_id"]
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode_id)))
+  ep_dir = os.path.join(export_root, episode_id)
   fname = "extrinsics.json"
 
   for cam_id, state in poses.items():
@@ -133,9 +132,8 @@ def export_extrinsics(episode, poses, metrics, export_root):
     os.makedirs(cam_dir, exist_ok=True)
 
     payload = {
-      "T_cam2mount": state["T_cam2mount"].astype(np.float64).tolist(),
-      "T_cam2world": state["T_cam2world"].astype(np.float64).tolist(),
-      "is_wrist": (cam_id == wrist_cam_id),
+      "T_cam2mount": state["T_cam2mount"].tolist(),
+      "T_cam2world": state["T_cam2world"].tolist(),
     }
 
     out_path = os.path.join(cam_dir, fname)
@@ -175,7 +173,9 @@ def evaluate_extrinsics(episode, poses, render_pool, device, config):
     core.pointcloud.disparity_maps(episode, frames, device),
     config.extrinsics.chamfer_px_radius,
   )
-  robot = core.pointcloud.robot_depth_loss(robot_points, depth_batch, K, base, max_depth)
+  robot = {
+    c: core.pointcloud.depth_loss_batched(robot_points[c], base[c], K[c], depth_batch[c], max_depth) for c in cam_ids
+  }
 
   return (
     {f"chamfer_{a}_{b}": chamfer[a, b].item() for a, b in pairs}
@@ -186,24 +186,17 @@ def evaluate_extrinsics(episode, poses, render_pool, device, config):
   )
 
 
-def scene_metadata(episode):
-  site, scene, _ = episode["meta"]["episode_id"].split("+")
-
+def episode_metrics(episode, poses, render_pool, device, config):
+  episode_id = episode["meta"]["episode_id"]
+  site, scene, _ = episode_id.split("+")
   return {
+    "episode_id": episode_id,
     "site": site,
     "scene": scene,
     "n_cameras": len(episode["camera"]),
-    "n_frames": int(len(episode["robot"]["joint_positions"])),
+    "n_frames": len(episode["robot"]["joint_positions"]),
     "wrist_cam_id": episode["meta"]["wrist_cam_id"],
-  }
-
-
-def episode_metrics(episode, poses, render_pool, device, config):
-  return (
-    {"episode_id": episode["meta"]["episode_id"]}
-    | scene_metadata(episode)
-    | evaluate_extrinsics(episode, poses, render_pool, device, config)
-  )
+  } | evaluate_extrinsics(episode, poses, render_pool, device, config)
 
 
 def process_episode(episode_id, render_pool, extrinsics_db, device, config):
@@ -228,8 +221,7 @@ def main(_):
 
   available = core.runner.list_episode_dirs(config.paths.depth)
   target = core.runner.select_episodes(available, config)
-  export_root = os.path.abspath(os.path.expanduser(config.paths.extrinsics))
-  done = {e for e in target if os.path.exists(os.path.join(export_root, e, "metrics.json"))}
+  done = {e for e in target if os.path.exists(os.path.join(config.paths.extrinsics, e, "metrics.json"))}
 
   def run_one(episode_id):
     process_episode(episode_id, render_pool, extrinsics_db, device, config)

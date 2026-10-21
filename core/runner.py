@@ -7,7 +7,6 @@ class SkipEpisode(Exception):
 
 
 def list_episode_dirs(root):
-  root = os.path.abspath(os.path.expanduser(root))
   return set(os.listdir(root)) if os.path.isdir(root) else set()
 
 

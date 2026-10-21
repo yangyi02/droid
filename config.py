@@ -36,7 +36,7 @@ def get_config():
   config.depth.max_frames = 250
   config.depth.conf_thresh = 0.95
   config.depth.max_depth_thresh = 0.15
-  config.depth.gripper_closed_thresh = 0.05
+  config.depth.gripper_open_thresh = 0.05
   config.depth.mask_area_min = 0.02
   config.depth.mask_area_max = 0.45
   config.depth.consensus_thresh = 0.5

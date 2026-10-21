@@ -68,22 +68,22 @@ def urdf_gap(depth, u, v, z_pred):
   return np.where(z == 0, np.inf, z) - z_pred
 
 
-def part_masks(parts):
-  return [(part, (parts == part).all(axis=1)) for part in map(tuple, np.unique(parts, axis=0).tolist())]
+def link_masks(links):
+  return [(link, links == link) for link in np.unique(links).tolist()]
 
 
-def link_local(points_world, parts):
+def link_local(points_world, links, robot_id):
   homogeneous = np.hstack([points_world, np.ones((len(points_world), 1))]).T
   local = np.zeros_like(homogeneous)
-  for part, on_part in part_masks(parts):
-    local[:, on_part] = np.linalg.inv(core.physics.link_transform(*part)) @ homogeneous[:, on_part]
+  for link, on_link in link_masks(links):
+    local[:, on_link] = np.linalg.inv(core.physics.link_transform(robot_id, link)) @ homogeneous[:, on_link]
   return local
 
 
 def find_robot_candidates(episode, poses, pb_renderer, queries, config):
   robot = episode["robot"]
 
-  local, parts, query_view, query_frame = [], [], [], []
+  local, links, query_view, query_frame = [], [], [], []
   for view, (src_cam, cam_data) in enumerate(episode["camera"].items()):
     for frame in queries:
       pb_renderer.update_robot_pose(robot["joint_positions"][frame], gripper_state=robot["gripper_positions"][frame])
@@ -92,39 +92,40 @@ def find_robot_candidates(episode, poses, pb_renderer, queries, config):
       height, width = cam_data["raw_depth"][frame].shape
       T_cam2world = poses[src_cam]["T_cam2world"][frame]
 
-      obj_ids, link_ids, urdf_depth = pb_renderer.render_segmentation(T_cam2world, K, width, height)
-      vs, us = np.where(resize_mask(obj_ids == pb_renderer.robot_id, -config.tracks.mask_margin))
+      link_ids, urdf_depth = pb_renderer.render_segmentation(T_cam2world, K, width, height)
+      vs, us = np.where(resize_mask(urdf_depth > 0, -config.tracks.mask_margin))
 
       u, v, z = us.astype(np.float32), vs.astype(np.float32), urdf_depth[vs, us]
       sensor = sensor_slack(cam_data, frame, u, v, z, config)
-      lit = (np.isinf(sensor) | (sensor >= -1)) & ~near_edge(u, v, width, height, config.tracks.edge_margin)
+      lit = (sensor >= -1) & ~near_edge(u, v, width, height, config.tracks.edge_margin)
 
       surface = core.geometry.unproject_pixels(u, v, z, K, T_cam2world)
       keep = lit & ~on_fixed_rim(surface, episode, poses, frame, src_cam, config.tracks.edge_margin)
       surface = surface[keep]
       cell = spread_cells(surface, config.tracks.min_gap)
-      on_parts = np.stack([obj_ids[vs, us][keep], link_ids[vs, us][keep]], axis=1)[cell]
+      cell_links = link_ids[vs, us][keep][cell]
 
-      local.append(link_local(surface[cell], on_parts))
-      parts.append(on_parts)
+      local.append(link_local(surface[cell], cell_links, pb_renderer.robot_id))
+      links.append(cell_links)
       query_view.append(np.full(len(cell), view, dtype=np.int8))
       query_frame.append(np.full(len(cell), frame, dtype=np.int32))
 
   return (
     np.concatenate(local, axis=1),
-    np.concatenate(parts),
+    np.concatenate(links),
     np.concatenate(query_view),
     np.concatenate(query_frame),
   )
 
 
-def carry_robot(local, parts, robot, pb_renderer, frames):
-  carried = np.zeros((len(frames), local.shape[1], 3), dtype=np.float32)
-  on_links = part_masks(parts)
-  for step, t in enumerate(frames):
+def carry_robot(local, links, robot, pb_renderer):
+  n_frames = len(robot["joint_positions"])
+  carried = np.zeros((n_frames, local.shape[1], 3), dtype=np.float32)
+  on_links = link_masks(links)
+  for t in range(n_frames):
     pb_renderer.update_robot_pose(robot["joint_positions"][t], gripper_state=robot["gripper_positions"][t])
-    for part, on_part in on_links:
-      carried[step, on_part] = (core.physics.link_transform(*part) @ local[:, on_part])[:3].T
+    for link, on_link in on_links:
+      carried[t, on_link] = (core.physics.link_transform(pb_renderer.robot_id, link) @ local[:, on_link])[:3].T
   return carried
 
 
@@ -268,7 +269,7 @@ def out_of_reach(points_3d, episode, pb_renderer, clearance):
 
 def export_tracks(episode, tracks, export_root):
   episode_id = episode["meta"]["episode_id"]
-  ep_dir = os.path.abspath(os.path.expanduser(os.path.join(export_root, episode_id)))
+  ep_dir = os.path.join(export_root, episode_id)
   os.makedirs(ep_dir, exist_ok=True)
 
   for view, cam_id in enumerate(episode["camera"]):
@@ -288,12 +289,12 @@ def export_tracks(episode, tracks, export_root):
 
 
 def find_candidates(episode, poses, pb_renderer, queries, config):
-  local, parts, robot_view, robot_frame = find_robot_candidates(episode, poses, pb_renderer, queries, config)
+  local, links, robot_view, robot_frame = find_robot_candidates(episode, poses, pb_renderer, queries, config)
   static_3d, static_view, static_frame = find_static_candidates(episode, poses, pb_renderer, queries, config)
   keep = out_of_reach(static_3d, episode, pb_renderer, config.tracks.gripper_clearance)
   return {
     "local": local,
-    "parts": parts,
+    "links": links,
     "static_3d": static_3d[keep],
     "query_frame": np.concatenate([robot_frame, static_frame[keep]]),
     "query_view": np.concatenate([robot_view, static_view[keep]]),
@@ -301,10 +302,8 @@ def find_candidates(episode, poses, pb_renderer, queries, config):
 
 
 def carry_tracks(candidates, episode, pb_renderer):
-  robot = episode["robot"]
-  n_frames = len(robot["joint_positions"])
   return {
-    "robot_3d": carry_robot(candidates["local"], candidates["parts"], robot, pb_renderer, range(n_frames)),
+    "robot_3d": carry_robot(candidates["local"], candidates["links"], episode["robot"], pb_renderer),
     "static_3d": candidates["static_3d"],
     "query_frame": candidates["query_frame"],
     "query_view": candidates["query_view"],
@@ -367,8 +366,7 @@ def main(_):
 
   available = core.runner.list_episode_dirs(config.paths.extrinsics)
   target = core.runner.select_episodes(available, config)
-  export_root = os.path.abspath(os.path.expanduser(config.paths.tracks))
-  done = {e for e in target if os.path.exists(os.path.join(export_root, e, "tracks.npz"))}
+  done = {e for e in target if os.path.exists(os.path.join(config.paths.tracks, e, "tracks.npz"))}
 
   def run_one(episode_id):
     process_episode(episode_id, pb_renderer, config)

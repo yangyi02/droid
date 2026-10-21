@@ -40,12 +40,6 @@ def robot_clouds(episode, poses, renders, device, n_points):
   return robot_points, depth_batch, K
 
 
-def camera_frame_points(t, cam_data, n_points, max_depth):
-  depth = cam_data["raw_depth"][t].astype(np.float32)
-  mask = (depth > 0.0) & (depth < max_depth)
-  return sample_camera_points(mask, depth, cam_data["K"], n_points)
-
-
 def scene_clouds(episode, device, n_points, max_depth=np.inf):
   cameras = episode["camera"]
   T_ee2base = episode["robot"]["T_ee2base"]
@@ -53,7 +47,10 @@ def scene_clouds(episode, device, n_points, max_depth=np.inf):
   cache = {cam_id: [] for cam_id in cameras}
   cache_ee, frames = [], []
   for t in range(len(episode["robot"]["joint_positions"])):
-    frame = {cam_id: camera_frame_points(t, cam_data, n_points, max_depth) for cam_id, cam_data in cameras.items()}
+    frame = {}
+    for cam_id, cam_data in cameras.items():
+      depth = cam_data["raw_depth"][t].astype(np.float32)
+      frame[cam_id] = sample_camera_points((depth > 0.0) & (depth < max_depth), depth, cam_data["K"], n_points)
     if all(points is not None for points in frame.values()):
       for cam_id, points in frame.items():
         cache[cam_id].append(torch.tensor(points, dtype=torch.float32, device=device))
@@ -169,10 +166,3 @@ def chamfer_overlap_px(env, ee_poses, pose, wrist_cam_id, pairs, K, baseline, di
     chamfer[a, b], overlap[a, b] = loss, hits / total
 
   return chamfer, overlap
-
-
-def robot_depth_loss(robot_points, depth_batch, K, pose, max_depth):
-  return {
-    cam_id: depth_loss_batched(points, pose[cam_id], K[cam_id], depth_batch[cam_id], max_depth)
-    for cam_id, points in robot_points.items()
-  }

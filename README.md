@@ -52,7 +52,7 @@ Stage 4 is a few episodes you sit and watch, not a batch stage.
 ### Stage 1 — `compute_depth.py`
 
 Decode ZED SVO stereo video and robot kinematics, then infer metric depth: S2M2 stereo
-matching, a SAM gripper mask taken from the closed-gripper frames, a temporal median of the
+matching, a SAM gripper mask taken from the open-gripper frames, a temporal median of the
 depth inside that mask, and that distilled surface injected back over the stereo's guess at
 the gripper.
 
@@ -125,7 +125,7 @@ fourteen frames killed tracks the other two saw perfectly. So a hole is read as 
 either way, and the pipeline works around it in three places instead:
 
 - Stage 1 fills the wrist camera's worst holes — the metallic gripper — with a surface
-  distilled from the frames where it is closed.
+  distilled from the frames where it is open.
 - Candidates are not seeded where depth is unreliable. A background pixel needs a second
   camera to agree within `match_radius` and must not sit on a depth edge; a robot candidate
   the sensor calls occluded on its own birth frame is dropped.
@@ -287,7 +287,7 @@ droid/
 │   ├── depth.py               #   S2M2 stereo, SAM gripper mask, depth distillation
 │   ├── geometry.py            #   project, unproject, poses, farthest-point sampling
 │   ├── io.py                  #   Metadata, depth/extrinsics/track loading
-│   ├── physics.py             #   PyBulletRenderer and RenderPool: depth, mask and segmentation renders
+│   ├── physics.py             #   PyBulletRenderer and RenderPool: depth and segmentation renders
 │   ├── pointcloud.py          #   Robot/scene clouds, chamfer(_px) + overlap(_px), depth and disparity losses
 │   ├── runner.py              #   Episode selection + resume-aware batch loop
 │   ├── tracks.py              #   Track subsampling, multi-view projection, query building

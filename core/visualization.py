@@ -101,7 +101,7 @@ def show_gripper_refinement(episode, t=0):
   rgb = cam_data["video_rgb"][t]
 
   overlay = rgb.copy()
-  overlay[cam_data["sam_real_masks"][t] > 0] = [255, 0, 128]
+  overlay[cam_data["sam_real_masks"][t]] = [255, 0, 128]
 
   panels = [
     (cam_data["original_raw_depth"][t], "Original Sensor Depth"),
@@ -208,7 +208,7 @@ def render_segmentation_video(episode, poses, pb_renderer, tgt_width=1200, max_f
     for cam_id, cam_data in episode["camera"].items():
       img_rgb = cam_data["video_rgb"][t]
       height, width = img_rgb.shape[:2]
-      robot_mask = pb_renderer.render_mask(poses[cam_id]["T_cam2world"][t], cam_data["K"], width, height) > 0
+      robot_mask = pb_renderer.render_depth(poses[cam_id]["T_cam2world"][t], cam_data["K"], width, height) > 0
       overlay = img_rgb.copy()
       overlay[robot_mask] = [50, 150, 255]
       blended = cv2.addWeighted(img_rgb, 0.6, overlay, 0.4, 0)

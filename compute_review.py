@@ -288,7 +288,7 @@ def log_inspect_views(rec, review, inspect):
 
 
 def build_recording(episode, review, episode_id, review_root, cfg):
-  rrd = os.path.abspath(os.path.expanduser(os.path.join(review_root, f"{episode_id}.rrd")))
+  rrd = os.path.join(review_root, f"{episode_id}.rrd")
   os.makedirs(os.path.dirname(rrd), exist_ok=True)
   staging = rrd + ".partial"
   inspect = inspect_tracks(review, cfg.n_inspect)
@@ -329,13 +329,12 @@ def process_episode(episode_id, config):
 def main(_):
   config = config_flag.value
 
-  tracks_root = os.path.abspath(os.path.expanduser(config.paths.tracks))
+  tracks_root = config.paths.tracks
   available = {
     e for e in core.runner.list_episode_dirs(tracks_root) if os.path.exists(os.path.join(tracks_root, e, "tracks.npz"))
   }
   target = core.runner.select_episodes(available, config)
-  review_root = os.path.abspath(os.path.expanduser(config.paths.review))
-  done = {e for e in target if os.path.exists(os.path.join(review_root, f"{e}.rrd"))}
+  done = {e for e in target if os.path.exists(os.path.join(config.paths.review, f"{e}.rrd"))}
 
   def run_one(episode_id):
     process_episode(episode_id, config)
