@@ -269,16 +269,16 @@ def out_of_reach(points_3d, episode, pb_renderer, clearance):
 
 def export_tracks(episode, tracks, export_root):
   episode_id = episode["meta"]["episode_id"]
-  ep_dir = os.path.join(export_root, episode_id)
-  os.makedirs(ep_dir, exist_ok=True)
+  episode_dir = os.path.join(export_root, episode_id)
+  os.makedirs(episode_dir, exist_ok=True)
 
   for view, cam_id in enumerate(episode["camera"]):
-    cam_dir = os.path.join(ep_dir, cam_id)
+    cam_dir = os.path.join(episode_dir, cam_id)
     os.makedirs(cam_dir, exist_ok=True)
     np.savez_compressed(os.path.join(cam_dir, "robot_mask.npz"), mask=tracks["masks"][view])
 
   np.savez_compressed(
-    os.path.join(ep_dir, "tracks.npz"),
+    os.path.join(episode_dir, "tracks.npz"),
     tracks_3d=tracks["tracks_3d"].astype(np.float32).swapaxes(0, 1),
     vis=tracks["vis"].swapaxes(1, 2),
     query_frame=tracks["query_frame"].astype(np.int16),
@@ -293,20 +293,10 @@ def find_candidates(episode, poses, pb_renderer, queries, config):
   static_3d, static_view, static_frame = find_static_candidates(episode, poses, pb_renderer, queries, config)
   keep = out_of_reach(static_3d, episode, pb_renderer, config.tracks.gripper_clearance)
   return {
-    "local": local,
-    "links": links,
+    "robot_3d": carry_robot(local, links, episode["robot"], pb_renderer),
     "static_3d": static_3d[keep],
     "query_frame": np.concatenate([robot_frame, static_frame[keep]]),
     "query_view": np.concatenate([robot_view, static_view[keep]]),
-  }
-
-
-def carry_tracks(candidates, episode, pb_renderer):
-  return {
-    "robot_3d": carry_robot(candidates["local"], candidates["links"], episode["robot"], pb_renderer),
-    "static_3d": candidates["static_3d"],
-    "query_frame": candidates["query_frame"],
-    "query_view": candidates["query_view"],
   }
 
 
@@ -354,8 +344,7 @@ def process_episode(episode_id, pb_renderer, config):
 
   queries = query_frames(episode, poses, pb_renderer, config)
   candidates = find_candidates(episode, poses, pb_renderer, queries, config)
-  tracks = carry_tracks(candidates, episode, pb_renderer)
-  tracks = label_tracks(tracks, episode, poses, pb_renderer, config)
+  tracks = label_tracks(candidates, episode, poses, pb_renderer, config)
 
   export_tracks(episode, tracks, config.paths.tracks)
 

@@ -30,34 +30,34 @@ def load_metadata(config):
 
 
 def load_depth_data(episode_id, depth_root, load_video=False):
-  ep_dir = os.path.join(depth_root, episode_id)
+  episode_dir = os.path.join(depth_root, episode_id)
 
-  robot_data = np.load(os.path.join(ep_dir, "robot.npz"))
+  robot_data = np.load(os.path.join(episode_dir, "robot.npz"))
   wrist_cam_id = str(robot_data["wrist_cam_id"])
   robot_keys = ("joint_positions", "gripper_positions", "T_ee2base", "T_cam2ee")
 
   camera = {}
-  for cam_id in sorted(d for d in os.listdir(ep_dir) if os.path.isdir(os.path.join(ep_dir, d))):
-    cam_path = os.path.join(ep_dir, cam_id)
-    calib = np.load(os.path.join(cam_path, "calibration.npz"))
+  for cam_id in sorted(d for d in os.listdir(episode_dir) if os.path.isdir(os.path.join(episode_dir, d))):
+    cam_dir = os.path.join(episode_dir, cam_id)
+    calibration = np.load(os.path.join(cam_dir, "calibration.npz"))
 
     cam_data = {
-      "K": calib["K"].astype(np.float32),
-      "baseline": float(calib["baseline"]),
-      "raw_depth": np.load(os.path.join(cam_path, "raw_depth.npz"))["depth"].astype(np.float32) / 1000.0,
+      "K": calibration["K"].astype(np.float32),
+      "baseline": float(calibration["baseline"]),
+      "raw_depth": np.load(os.path.join(cam_dir, "raw_depth.npz"))["depth"].astype(np.float32) / 1000.0,
     }
 
     if load_video:
-      cam_data["video_rgb"] = media.read_video(os.path.join(cam_path, "video_left.mp4"))
-      cam_data["video_right"] = media.read_video(os.path.join(cam_path, "video_right.mp4"))
+      cam_data["video_rgb"] = media.read_video(os.path.join(cam_dir, "video_left.mp4"))
+      cam_data["video_right"] = media.read_video(os.path.join(cam_dir, "video_right.mp4"))
 
     if cam_id == wrist_cam_id:
-      cam_data["sam_real_masks"] = np.load(os.path.join(cam_path, "gripper_mask.npz"))["mask"]
+      cam_data["sam_real_masks"] = np.load(os.path.join(cam_dir, "gripper_mask.npz"))["mask"]
       for filename, key in [
         ("original_raw_depth.npz", "original_raw_depth"),
         ("gripper_depth.npz", "empirical_gripper_depth"),
       ]:
-        cam_data[key] = np.load(os.path.join(cam_path, filename))["depth"].astype(np.float32) / 1000.0
+        cam_data[key] = np.load(os.path.join(cam_dir, filename))["depth"].astype(np.float32) / 1000.0
 
     camera[cam_id] = cam_data
 
@@ -70,11 +70,11 @@ def load_depth_data(episode_id, depth_root, load_video=False):
 
 def load_extrinsics(episode, extrinsics_root):
   episode_id = episode["meta"]["episode_id"]
-  ep_dir = os.path.join(extrinsics_root, episode_id)
+  episode_dir = os.path.join(extrinsics_root, episode_id)
 
   poses = {}
   for cam_id in episode["camera"]:
-    with open(os.path.join(ep_dir, cam_id, "extrinsics.json"), "r") as f:
+    with open(os.path.join(episode_dir, cam_id, "extrinsics.json"), "r") as f:
       payload = json.load(f)
 
     poses[cam_id] = {
@@ -86,14 +86,14 @@ def load_extrinsics(episode, extrinsics_root):
 
 
 def load_metrics(episode_id, extrinsics_root):
-  ep_dir = os.path.join(extrinsics_root, episode_id)
-  with open(os.path.join(ep_dir, "metrics.json"), "r") as f:
+  episode_dir = os.path.join(extrinsics_root, episode_id)
+  with open(os.path.join(episode_dir, "metrics.json"), "r") as f:
     return json.load(f)
 
 
 def load_track_data(episode_id, tracks_root):
-  ep_dir = os.path.join(tracks_root, episode_id)
-  with np.load(os.path.join(ep_dir, "tracks.npz")) as raw:
+  episode_dir = os.path.join(tracks_root, episode_id)
+  with np.load(os.path.join(episode_dir, "tracks.npz")) as raw:
     return {
       "tracks_3d": raw["tracks_3d"].swapaxes(0, 1),
       "vis": raw["vis"].swapaxes(1, 2),

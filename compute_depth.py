@@ -9,7 +9,6 @@ import mediapy as media
 import numpy as np
 from absl import app
 from ml_collections import config_flags
-from scipy.spatial.transform import Rotation as R
 import torch
 from tqdm import tqdm
 
@@ -109,23 +108,17 @@ def extract_svo_video(episode, min_frames, max_frames):
 
 
 def parse_robot_kinematics(episode):
-  ep_path = episode["meta"]["episode_path"]
+  episode_path = episode["meta"]["episode_path"]
 
-  with h5py.File(f"{ep_path}/trajectory.h5", "r") as f:
+  with h5py.File(f"{episode_path}/trajectory.h5", "r") as f:
     ee_poses = f["observation/robot_state/cartesian_position"][:]
     joint_poses = f["observation/robot_state/joint_positions"][:]
     gripper_poses = f["observation/robot_state/gripper_position"][:]
 
     timestamps = f["observation/timestamp/robot_state/read_start"][:]
 
-  with open(glob.glob(f"{ep_path}/metadata_*.json")[0]) as jf:
+  with open(glob.glob(f"{episode_path}/metadata_*.json")[0]) as jf:
     wrist_ext = json.load(jf)["wrist_cam_extrinsics"]
-
-  total_frames = len(ee_poses)
-
-  T_ee2base = np.tile(np.eye(4), (total_frames, 1, 1))
-  T_ee2base[:, :3, :3] = R.from_euler("xyz", ee_poses[:, 3:]).as_matrix()
-  T_ee2base[:, :3, 3] = ee_poses[:, :3]
 
   episode["robot"] = {
     "joint_positions": joint_poses,
@@ -133,7 +126,7 @@ def parse_robot_kinematics(episode):
     "T_cam2ee": (
       np.linalg.inv(core.geometry.pose_from_euler(ee_poses[0])) @ core.geometry.pose_from_euler(wrist_ext)
     ),
-    "T_ee2base": T_ee2base,
+    "T_ee2base": core.geometry.pose_from_euler(ee_poses),
     "timestamps": timestamps,
   }
   return episode
@@ -155,11 +148,11 @@ def align_temporal_streams(episode):
 
 def export_depth(episode, export_root):
   wrist_cam_id = episode["meta"]["wrist_cam_id"]
-  ep_dir = os.path.join(export_root, episode["meta"]["episode_id"])
-  os.makedirs(ep_dir, exist_ok=True)
+  episode_dir = os.path.join(export_root, episode["meta"]["episode_id"])
+  os.makedirs(episode_dir, exist_ok=True)
 
   for cam_id, data in episode["camera"].items():
-    cam_dir = os.path.join(ep_dir, cam_id)
+    cam_dir = os.path.join(episode_dir, cam_id)
     os.makedirs(cam_dir, exist_ok=True)
 
     for key, filename in [("video_rgb", "video_left.mp4"), ("video_right", "video_right.mp4")]:
@@ -183,7 +176,7 @@ def export_depth(episode, export_root):
 
   robot = episode["robot"]
   np.savez_compressed(
-    os.path.join(ep_dir, "robot.npz"),
+    os.path.join(episode_dir, "robot.npz"),
     wrist_cam_id=np.array(wrist_cam_id),
     joint_positions=robot["joint_positions"].astype(np.float32),
     gripper_positions=robot["gripper_positions"].astype(np.float32),

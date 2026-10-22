@@ -11,15 +11,15 @@ def get_s2m2_disparity(img_left, img_right, s2m2_model, run_stereo_matching, dev
   left_torch = torch.from_numpy(img_left).permute(2, 0, 1).unsqueeze(0).to(device)
   right_torch = torch.from_numpy(img_right).permute(2, 0, 1).unsqueeze(0).to(device)
 
-  pred_disp, _, pred_conf, _, _ = run_stereo_matching(s2m2_model, left_torch, right_torch, device)
+  pred_disparity, _, pred_confidence, _, _ = run_stereo_matching(s2m2_model, left_torch, right_torch, device)
 
-  disp = pred_disp.cpu().numpy().squeeze()
-  conf = pred_conf.cpu().numpy().squeeze()
+  disparity = pred_disparity.cpu().numpy().squeeze()
+  confidence = pred_confidence.cpu().numpy().squeeze()
 
-  valid_mask = (disp > 0) & (conf >= conf_thresh)
-  disp[~valid_mask] = 0.0
+  valid_mask = (disparity > 0) & (confidence >= conf_thresh)
+  disparity[~valid_mask] = 0.0
 
-  return disp
+  return disparity
 
 
 def compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, conf_thresh):
@@ -28,15 +28,15 @@ def compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, conf_
     cam_data = episode["camera"][cam_id]
     left_seq, right_seq = cam_data["video_rgb"], cam_data["video_right"]
 
-    disp_frames = [
+    disparity_frames = [
       get_s2m2_disparity(left_img, right_img, s2m2_model, run_stereo_matching, device=device, conf_thresh=conf_thresh)
       for left_img, right_img in tqdm(zip(left_seq, right_seq), total=len(left_seq), desc=f"Depth [{cam_id}]")
     ]
-    raw_disp = np.stack(disp_frames)
+    raw_disparity = np.stack(disparity_frames)
 
     fx = cam_data["K"][0, 0]
     baseline = cam_data["baseline"]
-    cam_data["raw_depth"] = core.geometry.decode_disparity(raw_disp, fx, baseline)
+    cam_data["raw_depth"] = core.geometry.decode_disparity(raw_disparity, fx, baseline)
 
   return episode
 

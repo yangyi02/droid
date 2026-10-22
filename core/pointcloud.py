@@ -85,11 +85,11 @@ def batched_chamfer_distance(p1, p2, match_radius):
 def sample_at_projection(points, T_cam2world, K, images):
   _, _, height, width = images.shape
 
-  P_c = (points - T_cam2world[:3, 3]) @ T_cam2world[:3, :3]
-  z_pred = P_c[..., 2]
+  points_cam = (points - T_cam2world[:3, 3]) @ T_cam2world[:3, :3]
+  z_pred = points_cam[..., 2]
 
-  u = K[0, 0] * P_c[..., 0] / z_pred + K[0, 2]
-  v = K[1, 1] * P_c[..., 1] / z_pred + K[1, 2]
+  u = K[0, 0] * points_cam[..., 0] / z_pred + K[0, 2]
+  v = K[1, 1] * points_cam[..., 1] / z_pred + K[1, 2]
 
   grid = torch.stack([(u / (width - 1)) * 2 - 1, (v / (height - 1)) * 2 - 1], dim=-1).unsqueeze(1)
   sampled = F.grid_sample(images, grid, mode="bilinear", padding_mode="border", align_corners=True).squeeze(1).squeeze(1)
@@ -104,9 +104,9 @@ def depth_loss_batched(points, T_cam2world, K, depth_batch, max_depth):
   return torch.abs(z_obs[valid] - z_pred[valid]).mean()
 
 
-def disparity_loss_batched(points, T_cam2world, K, depth_batch, baseline, truncation):
+def disparity_loss_batched(points, T_cam2world, K, depth_batch, valid_batch, baseline, truncation):
   z_obs, z_pred, in_frame = sample_at_projection(points, T_cam2world, K, depth_batch)
-  measured, _, _ = sample_at_projection(points, T_cam2world, K, (depth_batch > 0.0).float())
+  measured, _, _ = sample_at_projection(points, T_cam2world, K, valid_batch)
   residual = K[0, 0] * baseline * torch.abs(1.0 / z_obs.clamp(min=1e-6) - 1.0 / z_pred.clamp(min=1e-6))
   residual = torch.where(in_frame, residual.clamp(max=truncation), torch.full_like(residual, truncation))
   counted = ~in_frame | (measured > 0.999)
@@ -132,17 +132,17 @@ def chamfer_overlap(env, ee_poses, pose, wrist_cam_id, pairs, match_radius):
 
 def sparse_to_dense(points_world, T_cam2world, K, baseline, disparity, radius):
   _, height, width = disparity.shape
-  P_c = (points_world - T_cam2world[..., :3, 3].unsqueeze(-2)) @ T_cam2world[..., :3, :3]
-  z = P_c[..., 2].clamp(min=1e-6)
-  u = K[0, 0] * P_c[..., 0] / z + K[0, 2]
-  v = K[1, 1] * P_c[..., 1] / z + K[1, 2]
+  points_cam = (points_world - T_cam2world[..., :3, 3].unsqueeze(-2)) @ T_cam2world[..., :3, :3]
+  z = points_cam[..., 2].clamp(min=1e-6)
+  u = K[0, 0] * points_cam[..., 0] / z + K[0, 2]
+  v = K[1, 1] * points_cam[..., 1] / z + K[1, 2]
   d = K[0, 0] * baseline / z
 
   steps = torch.arange(-int(np.ceil(radius)), int(np.ceil(radius)) + 1, device=points_world.device)
   du, dv = torch.meshgrid(steps, steps, indexing="xy")
   pu = u.detach().round().unsqueeze(-1) + du.flatten()
   pv = v.detach().round().unsqueeze(-1) + dv.flatten()
-  inside = (pu >= 0) & (pu < width) & (pv >= 0) & (pv < height) & (P_c[..., 2] > 0).unsqueeze(-1)
+  inside = (pu >= 0) & (pu < width) & (pv >= 0) & (pv < height) & (points_cam[..., 2] > 0).unsqueeze(-1)
   index = (pv.clamp(0, height - 1) * width + pu.clamp(0, width - 1)).long()
   observed = torch.gather(disparity.flatten(1), 1, index.flatten(1)).view(index.shape)
 

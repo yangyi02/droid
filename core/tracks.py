@@ -26,22 +26,22 @@ def sample_tracks(tracks, points_per_class):
       in_scene = take_farthest(in_scene, home, np.flatnonzero(born_here & ~is_robot), points_per_class)
 
   idx = np.sort(np.concatenate([on_arm, in_scene]))
-  n_r = int((idx < n_robot).sum())
+  n_robot = int((idx < n_robot).sum())
   return {
     **tracks,
     "tracks_3d": tracks["tracks_3d"][:, idx],
     "vis": tracks["vis"][:, :, idx],
     "query_view": query_view[idx],
     "query_frame": query_frame[idx],
-    "n_robot": n_r,
-    "n_static": len(idx) - n_r,
+    "n_robot": n_robot,
+    "n_static": len(idx) - n_robot,
   }
 
 
 def project_views(tracks_3d, episode, poses):
   return np.stack(
     [
-      core.geometry.project_tracks(tracks_3d, cam["K"], poses[cam_id]["T_cam2world"])[0]
+      np.stack(core.geometry.project_points(tracks_3d, cam["K"], poses[cam_id]["T_cam2world"])[:2], axis=-1)
       for cam_id, cam in episode["camera"].items()
     ]
   )

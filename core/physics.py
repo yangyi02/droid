@@ -77,16 +77,15 @@ class PyBulletRenderer:
         sign = -sign
       self.gripper_signs.append(sign)
 
-  def update_robot_pose(self, joint_angles, gripper_state=None):
+  def update_robot_pose(self, joint_angles, gripper_state):
     for i, angle in zip(self.arm_joints, joint_angles):
       pybullet.resetJointState(self.robot_id, i, angle)
 
-    if gripper_state is not None and self.gripper_joints:
-      raw_val = gripper_state[0] if isinstance(gripper_state, (list, np.ndarray)) else gripper_state
-      raw_val = np.clip(raw_val, 0.0, 1.0)
-      angle = (raw_val * GRIPPER_ANGLE_SCALE) - GRIPPER_WIDTH_OFFSET
-      for i, sign in zip(self.gripper_joints, self.gripper_signs):
-        pybullet.resetJointState(self.robot_id, i, angle * sign)
+    raw_val = gripper_state[0] if isinstance(gripper_state, (list, np.ndarray)) else gripper_state
+    raw_val = np.clip(raw_val, 0.0, 1.0)
+    angle = (raw_val * GRIPPER_ANGLE_SCALE) - GRIPPER_WIDTH_OFFSET
+    for i, sign in zip(self.gripper_joints, self.gripper_signs):
+      pybullet.resetJointState(self.robot_id, i, angle * sign)
 
   def _get_projection_matrix(self, K, width, height):
     near, far = NEAR_PLANE, FAR_PLANE

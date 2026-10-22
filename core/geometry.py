@@ -3,10 +3,10 @@ import torch
 from scipy.spatial.transform import Rotation as R
 
 
-def decode_disparity(disp, fx, baseline):
-  z = np.zeros_like(disp)
-  valid_mask = disp > 0
-  z[valid_mask] = (fx * baseline) / disp[valid_mask]
+def decode_disparity(disparity, fx, baseline):
+  z = np.zeros_like(disparity)
+  valid_mask = disparity > 0
+  z[valid_mask] = (fx * baseline) / disparity[valid_mask]
   z[~np.isfinite(z)] = 0.0
   return z
 
@@ -21,26 +21,13 @@ def unproject_pixels(u, v, z, K, T_cam2world):
 
 def project_points(points_world, K, T_cam2world):
   T_world2cam = np.linalg.inv(T_cam2world)
-  points_homo = np.hstack([points_world, np.ones((len(points_world), 1))]).T
-  points_cam = T_world2cam @ points_homo
-  z_cam = points_cam[2, :]
-  u = np.zeros_like(z_cam)
-  v = np.zeros_like(z_cam)
-  valid = z_cam > 0
-  u[valid] = (points_cam[0, valid] / z_cam[valid]) * K[0, 0] + K[0, 2]
-  v[valid] = (points_cam[1, valid] / z_cam[valid]) * K[1, 1] + K[1, 2]
-  return u, v, z_cam
-
-
-def project_tracks(tracks_3d, K, T_cam2world):
-  T_world2cam = np.linalg.inv(T_cam2world)
-  points_cam = np.einsum("tij,tnj->tni", T_world2cam[:, :3, :3], tracks_3d) + T_world2cam[:, None, :3, 3]
+  points_cam = points_world @ np.swapaxes(T_world2cam[..., :3, :3], -1, -2) + T_world2cam[..., None, :3, 3]
   z = points_cam[..., 2]
-  uv = np.zeros((*tracks_3d.shape[:2], 2), dtype=np.float32)
-  valid = z > 0
-  uv[valid, 0] = (points_cam[valid, 0] / z[valid]) * K[0, 0] + K[0, 2]
-  uv[valid, 1] = (points_cam[valid, 1] / z[valid]) * K[1, 1] + K[1, 2]
-  return uv, z
+  front = z > 0
+  u, v = np.zeros_like(z), np.zeros_like(z)
+  u[front] = points_cam[..., 0][front] / z[front] * K[0, 0] + K[0, 2]
+  v[front] = points_cam[..., 1][front] / z[front] * K[1, 1] + K[1, 2]
+  return u, v, z
 
 
 def farthest_points(points, n_points, seeds=None):
@@ -80,31 +67,18 @@ def unproject_depth_torch(depth, img_rgb, K, T_cam2world, device):
 
 
 def pose_from_euler(vec_6d):
-  transform = np.eye(4)
-  transform[:3, :3] = R.from_euler("xyz", vec_6d[3:]).as_matrix()
-  transform[:3, 3] = vec_6d[:3]
+  vec_6d = np.asarray(vec_6d)
+  transform = np.tile(np.eye(4), (*vec_6d.shape[:-1], 1, 1))
+  transform[..., :3, :3] = R.from_euler("xyz", vec_6d[..., 3:]).as_matrix()
+  transform[..., :3, 3] = vec_6d[..., :3]
   return transform
 
 
-def axis_angle_to_matrix(v):
-  theta2 = torch.sum(v**2)
-  theta = torch.sqrt(theta2 + 1e-16)
-  k = v / theta
-
-  K = torch.zeros((3, 3), device=v.device)
-  K[0, 1], K[0, 2], K[1, 0], K[1, 2], K[2, 0], K[2, 1] = -k[2], k[1], k[2], -k[0], -k[1], k[0]
-
-  R_exact = torch.eye(3, device=v.device) + torch.sin(theta) * K + (1 - torch.cos(theta)) * torch.mm(K, K)
-
-  Ka = torch.zeros_like(K)
-  Ka[0, 1], Ka[0, 2], Ka[1, 0], Ka[1, 2], Ka[2, 0], Ka[2, 1] = -v[2], v[1], v[2], -v[0], -v[1], v[0]
-
-  return torch.where(theta2 < 1e-8, torch.eye(3, device=v.device) + Ka, R_exact)
-
-
 def pose_from_axis_angle(delta):
-  rot = axis_angle_to_matrix(delta[3:])
-  t = delta[:3].unsqueeze(1)
-  top_rows = torch.cat([rot, t], dim=1)
-  bottom_row = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=delta.device, dtype=torch.float32)
-  return torch.cat([top_rows, bottom_row], dim=0)
+  x, y, z = delta[3:]
+  zero = torch.zeros_like(x)
+  skew = torch.stack([zero, -z, y, z, zero, -x, -y, x, zero]).view(3, 3)
+  pose = torch.eye(4, device=delta.device)
+  pose[:3, :3] = torch.linalg.matrix_exp(skew)
+  pose[:3, 3] = delta[:3]
+  return pose

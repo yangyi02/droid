@@ -28,8 +28,12 @@ class Review:
     self.tracks_3d = tracks["tracks_3d"]
     self.vis = tracks["vis"]
     self.n_robot = tracks["n_robot"]
+    self.query_frame = tracks["query_frame"]
+    self.query_view = tracks["query_view"]
+    self.is_robot = np.arange(self.tracks_3d.shape[1]) < self.n_robot
+    self.track_colors = core.visualization.occlusion_colors(self.is_robot, True)
     uv = core.tracks.project_views(self.tracks_3d, episode, poses)
-    self.queries = core.tracks.build_queries(uv, tracks["query_view"], tracks["query_frame"])
+    self.queries = core.tracks.build_queries(uv, self.query_view, self.query_frame)
 
     K, T_cam2world, image_wh = [], [], []
     for cam_id, cam_data in episode["camera"].items():
@@ -54,14 +58,6 @@ class Review:
   def n_views(self):
     return len(self.K)
 
-  @property
-  def is_robot(self):
-    return np.arange(self.n_points) < self.n_robot
-
-  @property
-  def track_colors(self):
-    return core.visualization.occlusion_colors(self.is_robot, True)
-
 
 def inspect_tracks(review, n_inspect):
   return sorted(np.random.choice(review.n_points, min(n_inspect, review.n_points), replace=False).tolist())
@@ -85,8 +81,7 @@ def frame_status(review, view, t, track):
   return bool((core.geometry.in_frame(u, v, *review.image_wh[view]) & (z > 0))[0]), float(z[0])
 
 
-def ray_color(review, view, t, track):
-  inside, _ = frame_status(review, view, t, track)
+def ray_color(review, view, t, track, inside):
   if not inside:
     return OUTSIDE
   return core.visualization.occlusion_colors(track < review.n_robot, review.vis[view, t, track])
@@ -146,7 +141,7 @@ def blueprint(review, inspect, episode_id, fps):
   )
 
 
-def log_cameras(rec, review, episode, cfg):
+def log_cameras(rec, review, episode, config):
   rec.log("/", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
 
   cameras = list(episode["camera"].values())
@@ -194,8 +189,8 @@ def log_cameras(rec, review, episode, cfg):
         ),
       )
 
-      points_world, colors = depth_cloud(cam_data["raw_depth"][t], img_rgb, K, T_cam2world, cfg.depth_stride)
-      rec.log(f"/scene/{view}", rr.Points3D(points_world, colors=colors, radii=cfg.scene_radius))
+      points_world, colors = depth_cloud(cam_data["raw_depth"][t], img_rgb, K, T_cam2world, config.depth_stride)
+      rec.log(f"/scene/{view}", rr.Points3D(points_world, colors=colors, radii=config.scene_radius))
       n_scene_points += len(points_world)
 
     rec.flush(timeout_sec=120)
@@ -217,8 +212,6 @@ def log_tracks(rec, review):
 
 def log_inspect(rec, review, inspect):
   centers = review.T_cam2world[:, :, :3, 3]
-  query_frame = review.queries[:, 2].astype(int)
-  query_view = review.queries[:, 3].astype(int)
 
   for track in inspect:
     tracks_3d = review.tracks_3d[:, track]
@@ -226,8 +219,9 @@ def log_inspect(rec, review, inspect):
 
     for t, point_world in enumerate(tracks_3d):
       rec.set_time("frame", sequence=t)
+      status = [frame_status(review, view, t, track) for view in range(review.n_views)]
       calls = [
-        f"cam{view} {verdict(bool(review.vis[view, t, track]), *frame_status(review, view, t, track), t == query_frame[track] and view == query_view[track])}"
+        f"cam{view} {verdict(bool(review.vis[view, t, track]), *status[view], t == review.query_frame[track] and view == review.query_view[track])}"
         for view in range(review.n_views)
       ]
       rec.log(
@@ -244,7 +238,7 @@ def log_inspect(rec, review, inspect):
         f"/inspect/{track}/rays",
         rr.LineStrips3D(
           [[point_world, centers[view, t]] for view in range(review.n_views)],
-          colors=[ray_color(review, view, t, track) for view in range(review.n_views)],
+          colors=[ray_color(review, view, t, track, status[view][0]) for view in range(review.n_views)],
           radii=RAY_RADIUS_M,
         ),
       )
@@ -252,8 +246,8 @@ def log_inspect(rec, review, inspect):
 
 def log_inspect_views(rec, review, inspect):
   inspect = np.asarray(inspect)
-  query_frame = review.queries[inspect, 2].astype(int)
-  query_view = review.queries[inspect, 3].astype(int)
+  query_frame = review.query_frame[inspect]
+  query_view = review.query_view[inspect]
   labels = [str(track) for track in inspect]
 
   for view in range(review.n_views):
@@ -287,20 +281,20 @@ def log_inspect_views(rec, review, inspect):
       )
 
 
-def build_recording(episode, review, episode_id, review_root, cfg):
+def build_recording(episode, review, episode_id, review_root, config):
   rrd = os.path.join(review_root, f"{episode_id}.rrd")
   os.makedirs(os.path.dirname(rrd), exist_ok=True)
   staging = rrd + ".partial"
-  inspect = inspect_tracks(review, cfg.n_inspect)
+  inspect = inspect_tracks(review, config.n_inspect)
 
   rec = rr.RecordingStream(episode_id.replace("+", "-"), recording_id=episode_id)
   try:
-    rec.save(staging, default_blueprint=blueprint(review, inspect, episode_id, cfg.fps))
+    rec.save(staging, default_blueprint=blueprint(review, inspect, episode_id, config.fps))
     log_tracks(rec, review)
     log_inspect(rec, review, inspect)
     log_inspect_views(rec, review, inspect)
     rec.flush(timeout_sec=120)
-    n_scene_points, n_off_image = log_cameras(rec, review, episode, cfg)
+    n_scene_points, n_off_image = log_cameras(rec, review, episode, config)
   finally:
     rec.disconnect()
   os.replace(staging, rrd)

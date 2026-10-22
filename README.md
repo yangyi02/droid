@@ -102,8 +102,8 @@ episode if any camera's `robot_loss` is above `config.tracks.max_robot_loss` (0.
 16% of Stage 2's episodes. The cut is deliberately strict: it gives up many aligned episodes to
 keep out cameras whose rendered arm sits far off the real one.
 
-`process_episode` and the notebook run it as four calls — `query_frames`, `find_candidates`,
-`carry_tracks`, `label_tracks` — and the table goes one level down, in the order the work happens.
+`process_episode` and the notebook run it as three calls — `query_frames`, `find_candidates`,
+`label_tracks` — and the table goes one level down, in the order the work happens.
 
 | Step | |
 |---|---|

@@ -27,68 +27,59 @@ def init_camera_states(episode, extrinsics_db):
   print("  Initializing camera 3D states...")
   wrist_cam_id = episode["meta"]["wrist_cam_id"]
   robot_data = episode["robot"]
-  n_frames = len(robot_data["T_ee2base"])
-
   episode_extrinsics = extrinsics_db[episode["meta"]["episode_id"]]
 
   poses = {}
   for cam_id in episode["camera"]:
-    if cam_id == wrist_cam_id:
-      T_cam2mount = robot_data["T_cam2ee"]
-      cam_trajectory = robot_data["T_ee2base"] @ T_cam2mount
-    else:
-      T_cam2mount = core.geometry.pose_from_euler(episode_extrinsics[cam_id])
-      cam_trajectory = np.tile(T_cam2mount, (n_frames, 1, 1))
+    is_wrist = cam_id == wrist_cam_id
+    T_cam2mount = robot_data["T_cam2ee"] if is_wrist else core.geometry.pose_from_euler(episode_extrinsics[cam_id])
+    if not is_wrist:
       print(f"    Loaded pre-calibrated extrinsics for camera [{cam_id}] from metadata.")
-
-    poses[cam_id] = {"T_cam2mount": T_cam2mount, "T_cam2world": cam_trajectory}
+    poses[cam_id] = {
+      "T_cam2mount": T_cam2mount,
+      "T_cam2world": world_extrinsics(T_cam2mount, robot_data["T_ee2base"], is_wrist),
+    }
 
   return poses
 
 
-def alignment_terms(pose, data, wrist_cam_id, pairs, label, config):
+def alignment_loss(pose, data, wrist_cam_id, pairs, config):
   chamfer, _ = core.pointcloud.chamfer_overlap_px(
     data["env"], data["ee_poses"], pose, wrist_cam_id, pairs, data["K"], data["baseline"], data["disparity"],
     config.extrinsics.chamfer_px_radius,
   )
-  terms = {("chamfer_px", label[a] + label[b]): value for (a, b), value in chamfer.items()}
-  for cam_id, points in data["robot_points"].items():
-    terms["disparity", label[cam_id]] = core.pointcloud.disparity_loss_batched(
-      points, pose[cam_id], data["K"][cam_id], data["depth_batch"][cam_id], data["baseline"][cam_id],
-      config.extrinsics.disparity_truncation,
+  disparity = [
+    core.pointcloud.disparity_loss_batched(
+      points, pose[cam_id], data["K"][cam_id], data["depth_batch"][cam_id], data["valid_batch"][cam_id],
+      data["baseline"][cam_id], config.extrinsics.disparity_truncation,
     )
-  return terms
+    for cam_id, points in data["robot_points"].items()
+  ]
+  return sum(chamfer.values()), sum(disparity)
 
 
 def optimize_poses(base, data, wrist_cam_id, pairs, label, device, config):
   n_steps = config.extrinsics.n_steps
   delta = {cam_id: torch.zeros(6, requires_grad=True, device=device) for cam_id in base}
 
-  def objective():
-    pose = {cam_id: base[cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id]) for cam_id in base}
-    return alignment_terms(pose, data, wrist_cam_id, pairs, label, config)
-
-  weight = {"disparity": config.extrinsics.robot_weight}
+  def posed():
+    return {cam_id: base[cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id]) for cam_id in base}
 
   optimizer = optim.Adam(list(delta.values()), lr=config.extrinsics.lr)
   schedule = optim.lr_scheduler.CosineAnnealingLR(optimizer, n_steps)
   for step in range(n_steps):
     optimizer.zero_grad()
-    terms = objective()
-    sum(weight.get(key[0], 1.0) * value for key, value in terms.items()).backward()
+    chamfer, disparity = alignment_loss(posed(), data, wrist_cam_id, pairs, config)
+    (chamfer + config.extrinsics.robot_weight * disparity).backward()
     optimizer.step()
     schedule.step()
 
     if step % 100 == 0 or step == n_steps - 1:
-      totals = {}
-      for (name, _), value in terms.items():
-        totals[name] = totals.get(name, 0.0) + value.item()
-      parts = [f"Step {step:03d}"] + [f"{name}: {value:.4f}" for name, value in totals.items()]
       shifts = ", ".join(f"{label[cam_id]}: {torch.norm(delta[cam_id][:3]).item() * 1000:.2f}mm" for cam_id in base)
-      print(f"    {' | '.join(parts)} | Shift: {shifts}")
+      print(f"    Step {step:03d} | chamfer_px: {chamfer.item():.4f} | disparity: {disparity.item():.4f} | Shift: {shifts}")
 
   with torch.no_grad():
-    return {cam_id: base[cam_id] @ core.geometry.pose_from_axis_angle(delta[cam_id]) for cam_id in base}
+    return posed()
 
 
 def joint_alignment(episode, prev_poses, render_pool, device, config):
@@ -110,6 +101,7 @@ def joint_alignment(episode, prev_poses, render_pool, device, config):
   data["robot_points"], data["depth_batch"], data["K"] = core.pointcloud.robot_clouds(
     episode, prev_poses, renders, device, n_points
   )
+  data["valid_batch"] = {c: (d > 0.0).float() for c, d in data["depth_batch"].items()}
 
   base = {c: torch.tensor(prev_poses[c]["T_cam2mount"], dtype=torch.float32, device=device) for c in cam_ids}
   final = optimize_poses(base, data, wrist_cam_id, pairs, label, device, config)
@@ -124,11 +116,11 @@ def joint_alignment(episode, prev_poses, render_pool, device, config):
 
 def export_extrinsics(episode, poses, metrics, export_root):
   episode_id = episode["meta"]["episode_id"]
-  ep_dir = os.path.join(export_root, episode_id)
+  episode_dir = os.path.join(export_root, episode_id)
   fname = "extrinsics.json"
 
   for cam_id, state in poses.items():
-    cam_dir = os.path.join(ep_dir, cam_id)
+    cam_dir = os.path.join(episode_dir, cam_id)
     os.makedirs(cam_dir, exist_ok=True)
 
     payload = {
@@ -141,10 +133,10 @@ def export_extrinsics(episode, poses, metrics, export_root):
       json.dump(payload, f, indent=2)
 
   payload = {k: None if isinstance(v, float) and not np.isfinite(v) else v for k, v in metrics.items()}
-  with open(os.path.join(ep_dir, "metrics.json"), "w") as f:
+  with open(os.path.join(episode_dir, "metrics.json"), "w") as f:
     json.dump(payload, f, indent=2)
 
-  print(f"  Extrinsics and metrics saved to {ep_dir}")
+  print(f"  Extrinsics and metrics saved to {episode_dir}")
 
 
 @torch.no_grad()
