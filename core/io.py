@@ -102,8 +102,3 @@ def load_track_data(episode_id, tracks_root):
       "n_robot": int(raw["n_robot"]),
       "n_static": int(raw["n_static"]),
     }
-
-
-def load_robot_masks(episode_id, tracks_root, cam_ids):
-  ep_dir = os.path.join(tracks_root, episode_id)
-  return {cam_id: np.load(os.path.join(ep_dir, cam_id, "robot_mask.npz"))["mask"] for cam_id in cam_ids}
