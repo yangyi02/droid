@@ -350,7 +350,7 @@ def main(_):
   config = config_flag.value
   pb_renderer = core.physics.PyBulletRenderer(config.paths.urdf, gpu=config.render.gpu)
 
-  available = core.runner.list_episode_dirs(config.paths.extrinsics)
+  available = core.runner.finished(config.paths.extrinsics, "metrics.json")
   target = core.runner.select_episodes(available, config)
   done = {e for e in target if os.path.exists(os.path.join(config.paths.tracks, e, "tracks.npz"))}
 

@@ -213,7 +213,7 @@ def main(_):
     core.physics.PyBulletRenderer(config.paths.urdf, gpu=config.render.gpu), config.render.workers
   )
 
-  available = core.runner.list_episode_dirs(config.paths.depth)
+  available = core.runner.finished(config.paths.depth, "robot.npz")
   target = core.runner.select_episodes(available, config)
   done = {e for e in target if os.path.exists(os.path.join(config.paths.extrinsics, e, "metrics.json"))}
 

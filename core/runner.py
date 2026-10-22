@@ -6,8 +6,10 @@ class SkipEpisode(Exception):
   pass
 
 
-def list_episode_dirs(root):
-  return set(os.listdir(root)) if os.path.isdir(root) else set()
+def finished(root, marker):
+  if not os.path.isdir(root):
+    return set()
+  return {e for e in os.listdir(root) if os.path.exists(os.path.join(root, e, marker))}
 
 
 def select_episodes(episode_ids, config):

@@ -320,10 +320,7 @@ def process_episode(episode_id, config):
 def main(_):
   config = config_flag.value
 
-  tracks_root = config.paths.tracks
-  available = {
-    e for e in core.runner.list_episode_dirs(tracks_root) if os.path.exists(os.path.join(tracks_root, e, "tracks.npz"))
-  }
+  available = core.runner.finished(config.paths.tracks, "tracks.npz")
   target = core.runner.select_episodes(available, config)
   done = {e for e in target if os.path.exists(os.path.join(config.paths.review, f"{e}.rrd"))}
 
