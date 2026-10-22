@@ -56,16 +56,15 @@ def spread_cells(points, min_gap):
   return order[first]
 
 
-def sensor_slack(cam_data, frame, u, v, z_pred, config):
-  z = core.geometry.sample_depth(cam_data["raw_depth"][frame], u, v, z_pred)
-  gap = np.where(z == 0, np.inf, z) - z_pred
-  stereo = z_pred**2 * config.tracks.disparity_tolerance / (cam_data["K"][0, 0] * cam_data["baseline"])
-  return gap / np.maximum(config.tracks.sensor_tolerance_floor, stereo)
-
-
 def urdf_gap(depth, u, v, z_pred):
   z = core.geometry.sample_depth(depth, u, v, z_pred)
   return np.where(z == 0, np.inf, z) - z_pred
+
+
+def sensor_slack(cam_data, frame, u, v, z_pred, config):
+  gap = urdf_gap(cam_data["raw_depth"][frame], u, v, z_pred)
+  stereo = z_pred**2 * config.tracks.disparity_tolerance / (cam_data["K"][0, 0] * cam_data["baseline"])
+  return gap / np.maximum(config.tracks.sensor_tolerance_floor, stereo)
 
 
 def link_masks(links):
@@ -73,7 +72,7 @@ def link_masks(links):
 
 
 def link_local(points_world, links, robot_id):
-  homogeneous = np.hstack([points_world, np.ones((len(points_world), 1))]).T
+  homogeneous = np.hstack([points_world, np.ones_like(points_world[:, :1])]).T
   local = np.zeros_like(homogeneous)
   for link, on_link in link_masks(links):
     local[:, on_link] = np.linalg.inv(core.physics.link_transform(robot_id, link)) @ homogeneous[:, on_link]
@@ -95,11 +94,11 @@ def find_robot_candidates(episode, poses, pb_renderer, queries, config):
       link_ids, urdf_depth = pb_renderer.render_segmentation(T_cam2world, K, width, height)
       vs, us = np.where(resize_mask(urdf_depth > 0, -config.tracks.mask_margin))
 
-      u, v, z = us.astype(np.float32), vs.astype(np.float32), urdf_depth[vs, us]
-      sensor = sensor_slack(cam_data, frame, u, v, z, config)
-      lit = (sensor >= -1) & ~near_edge(u, v, width, height, config.tracks.edge_margin)
+      z = urdf_depth[vs, us]
+      sensor = sensor_slack(cam_data, frame, us, vs, z, config)
+      lit = (sensor >= -1) & ~near_edge(us, vs, width, height, config.tracks.edge_margin)
 
-      surface = core.geometry.unproject_pixels(u, v, z, K, T_cam2world)
+      surface = core.geometry.unproject_pixels(us, vs, z, K, T_cam2world)
       keep = lit & ~on_fixed_rim(surface, episode, poses, frame, src_cam, config.tracks.edge_margin)
       surface = surface[keep]
       cell = spread_cells(surface, config.tracks.min_gap)
@@ -132,7 +131,7 @@ def carry_robot(local, links, robot, pb_renderer):
 def depth_steps(depth, window=5):
   kernel = np.ones((window, window), np.uint8)
   far = cv2.dilate(depth, kernel)
-  near = -cv2.dilate(np.where(depth > 0, -depth, -np.inf).astype(np.float32), kernel)
+  near = -cv2.dilate(np.where(depth > 0, -depth, -np.inf), kernel)
   return np.where(far > 0, far - near, np.inf)
 
 
@@ -158,9 +157,7 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
       on_env = ~resize_mask(drawn[src_cam] > 0, config.tracks.mask_margin) & (depth > 0) & (depth <= max_depth)
       vs, us = np.where(on_env & (steps[src_cam] <= max_step))
 
-      points = core.geometry.unproject_pixels(
-        us.astype(np.float32), vs.astype(np.float32), depth[vs, us], K, T_cam2world
-      )
+      points = core.geometry.unproject_pixels(us, vs, depth[vs, us], K, T_cam2world)
 
       confirmed = np.zeros(len(points), dtype=bool)
       doubted = near_edge(us, vs, *depth.shape[::-1], config.tracks.edge_margin)
@@ -183,7 +180,7 @@ def find_static_candidates(episode, poses, pb_renderer, queries, config):
       query_view.append(np.full(len(cell), view, dtype=np.int8))
       query_frame.append(np.full(len(cell), frame, dtype=np.int32))
 
-  return np.concatenate(points_3d).astype(np.float32), np.concatenate(query_view), np.concatenate(query_frame)
+  return np.concatenate(points_3d), np.concatenate(query_view), np.concatenate(query_frame)
 
 
 def project_tracks(robot_3d, static_3d, episode, poses, pb_renderer, config):
@@ -279,7 +276,7 @@ def export_tracks(episode, tracks, export_root):
 
   np.savez_compressed(
     os.path.join(episode_dir, "tracks.npz"),
-    tracks_3d=tracks["tracks_3d"].astype(np.float32).swapaxes(0, 1),
+    tracks_3d=tracks["tracks_3d"].swapaxes(0, 1),
     vis=tracks["vis"].swapaxes(1, 2),
     query_frame=tracks["query_frame"].astype(np.int16),
     query_view=tracks["query_view"].astype(np.int8),

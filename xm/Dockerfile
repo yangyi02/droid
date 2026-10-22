@@ -35,8 +35,6 @@ RUN pip install --force-reinstall --no-deps --no-binary pybullet --no-build-isol
 
 ENV HOME=/tmp \
     MPLCONFIGDIR=/tmp/matplotlib \
-    TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor \
-    TRITON_CACHE_DIR=/tmp/triton \
     XDG_CACHE_HOME=/tmp/.cache \
     LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/nvidia/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH}
 

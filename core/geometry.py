@@ -12,6 +12,7 @@ def decode_disparity(disparity, fx, baseline):
 
 
 def unproject_camera_frame(u, v, z, K):
+  u, v = u.astype(z.dtype), v.astype(z.dtype)
   return np.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z, np.ones_like(z)], axis=0)
 
 
@@ -56,7 +57,7 @@ def sample_depth(depth, u, v, z):
 
 
 def unproject_depth_torch(depth, img_rgb, K, T_cam2world, device):
-  depth = torch.as_tensor(depth, device=device)
+  depth = torch.as_tensor(depth, dtype=torch.float32, device=device)
   v, u = torch.nonzero(depth > 0, as_tuple=True)
   z = depth[v, u]
   K = torch.as_tensor(K, dtype=torch.float32, device=device)
@@ -68,7 +69,7 @@ def unproject_depth_torch(depth, img_rgb, K, T_cam2world, device):
 
 def pose_from_euler(vec_6d):
   vec_6d = np.asarray(vec_6d)
-  transform = np.tile(np.eye(4), (*vec_6d.shape[:-1], 1, 1))
+  transform = np.tile(np.eye(4, dtype=np.float32), (*vec_6d.shape[:-1], 1, 1))
   transform[..., :3, :3] = R.from_euler("xyz", vec_6d[..., 3:]).as_matrix()
   transform[..., :3, 3] = vec_6d[..., :3]
   return transform

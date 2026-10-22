@@ -19,19 +19,18 @@ import core.io
 import core.runner
 
 
-def init_all_models():
-  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def init_all_models(device):
   vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party")
   sys.path.append(os.path.join(vendor_dir, "s2m2", "src"))
 
-  from s2m2.core.utils.model_utils import load_model, run_stereo_matching
+  from s2m2.core.utils.model_utils import load_model
   from segment_anything import SamPredictor, sam_model_registry
 
-  s2m2_model = torch.compile(load_model(os.path.join(vendor_dir, "s2m2", "weights"), "XL", True, 3, device).eval())
+  s2m2_model = load_model(os.path.join(vendor_dir, "s2m2", "weights"), "XL", device=device).eval()
   sam_ckpt = os.path.join(vendor_dir, "segment_anything", "weights", "sam_vit_h_4b8939.pth")
   sam = sam_model_registry["vit_h"](checkpoint=sam_ckpt).to(device)
 
-  return s2m2_model, SamPredictor(sam), run_stereo_matching
+  return s2m2_model, SamPredictor(sam)
 
 
 def camera_matrix(cam):
@@ -121,8 +120,8 @@ def parse_robot_kinematics(episode):
     wrist_ext = json.load(jf)["wrist_cam_extrinsics"]
 
   episode["robot"] = {
-    "joint_positions": joint_poses,
-    "gripper_positions": gripper_poses,
+    "joint_positions": joint_poses.astype(np.float32),
+    "gripper_positions": gripper_poses.astype(np.float32),
     "T_cam2ee": (
       np.linalg.inv(core.geometry.pose_from_euler(ee_poses[0])) @ core.geometry.pose_from_euler(wrist_ext)
     ),
@@ -160,11 +159,7 @@ def export_depth(episode, export_root):
 
     np.savez_compressed(os.path.join(cam_dir, "raw_depth.npz"), depth=(data["raw_depth"] * 1000).astype(np.uint16))
 
-    np.savez(
-      os.path.join(cam_dir, "calibration.npz"),
-      K=data["K"],
-      baseline=np.array(data["baseline"], dtype=np.float32),
-    )
+    np.savez(os.path.join(cam_dir, "calibration.npz"), K=data["K"], baseline=np.float32(data["baseline"]))
 
     if cam_id == wrist_cam_id:
       np.savez_compressed(os.path.join(cam_dir, "gripper_mask.npz"), mask=data["sam_real_masks"])
@@ -178,58 +173,34 @@ def export_depth(episode, export_root):
   np.savez_compressed(
     os.path.join(episode_dir, "robot.npz"),
     wrist_cam_id=np.array(wrist_cam_id),
-    joint_positions=robot["joint_positions"].astype(np.float32),
-    gripper_positions=robot["gripper_positions"].astype(np.float32),
-    T_ee2base=robot["T_ee2base"].astype(np.float32),
-    T_cam2ee=robot["T_cam2ee"].astype(np.float32),
+    joint_positions=robot["joint_positions"],
+    gripper_positions=robot["gripper_positions"],
+    T_ee2base=robot["T_ee2base"],
+    T_cam2ee=robot["T_cam2ee"],
   )
 
 
-def process_episode(episode_id, models, dbs, raw_root, config):
-  s2m2_model, sam_predictor, run_stereo_matching, device = models
-  id_to_path, serials_db = dbs
-
-  episode = init_episode(episode_id, raw_root, id_to_path, serials_db)
+def process_episode(episode_id, s2m2_model, sam_predictor, device, id_to_path, serials_db, config):
+  episode = init_episode(episode_id, config.paths.raw, id_to_path, serials_db)
   episode = extract_svo_video(episode, config.depth.min_frames, config.depth.max_frames)
   episode = parse_robot_kinematics(episode)
   episode = align_temporal_streams(episode)
-  episode = core.depth.compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, config.depth.conf_thresh)
-
-  wrist_data = episode["camera"][episode["meta"]["wrist_cam_id"]]
-  wrist_data["original_raw_depth"] = wrist_data["raw_depth"].copy()
-
-  episode = core.depth.build_universal_gripper_mask(
-    episode,
-    sam_predictor,
-    config.depth.consensus_thresh,
-    config.depth.gripper_open_thresh,
-    config.depth.mask_area_min,
-    config.depth.mask_area_max,
-  )
-  episode = core.depth.distill_empirical_gripper_depth(
-    episode, config.depth.max_depth_thresh, config.depth.gripper_open_thresh
-  )
-  episode = core.depth.inject_gripper_depth(episode, config.depth.gripper_open_thresh)
+  episode = core.depth.compute_stereo_depth(episode, s2m2_model, device, config.depth.conf_thresh)
+  episode = core.depth.refine_gripper_depth(episode, sam_predictor, config.depth)
   export_depth(episode, export_root=config.paths.depth)
 
 
 def main(_):
   config = config_flag.value
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-  s2m2_model, sam_predictor, run_stereo_matching = init_all_models()
+  s2m2_model, sam_predictor = init_all_models(device)
   serials_db, id_to_path, _, valid_ids = core.io.load_metadata(config)
 
   target = core.runner.select_episodes(valid_ids, config)
   done = {e for e in target if os.path.exists(os.path.join(config.paths.depth, e, "robot.npz"))}
 
   def run_one(episode_id):
-    process_episode(
-      episode_id,
-      (s2m2_model, sam_predictor, run_stereo_matching, device),
-      (id_to_path, serials_db),
-      config.paths.raw,
-      config,
-    )
+    process_episode(episode_id, s2m2_model, sam_predictor, device, id_to_path, serials_db, config)
 
   core.runner.run_episodes(target, run_one, done=done, stage="Stage 1")
 

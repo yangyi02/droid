@@ -84,7 +84,7 @@ def show_fused_point_cloud(episode, poses, t=0, max_depth=None, height=600, widt
 
 def show_distilled_gripper_3d(median_depth, K, img_rgb):
   v, u = np.where(median_depth > 0)
-  points = core.geometry.unproject_pixels(u, v, median_depth[v, u], K, np.eye(4))
+  points = core.geometry.unproject_camera_frame(u, v, median_depth[v, u], K)[:3].T
   show_point_cloud(
     points,
     img_rgb[v, u],
@@ -132,7 +132,7 @@ def colorize_disparity(disparity, vmax=100.0):
 def render_multicam_disparity_video(episode, max_frames=None, tgt_size=(128, 228)):
   rows = []
   for cam_data in episode["camera"].values():
-    depth = cam_data["raw_depth"][:max_frames].astype(np.float32)
+    depth = cam_data["raw_depth"][:max_frames]
     disparity = np.divide(cam_data["K"][0, 0] * cam_data["baseline"], depth, out=np.zeros_like(depth), where=depth > 0)
     rows.append(
       np.concatenate(

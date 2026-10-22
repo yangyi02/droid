@@ -7,14 +7,17 @@ import core.geometry
 
 
 @torch.inference_mode()
-def get_s2m2_disparity(img_left, img_right, s2m2_model, run_stereo_matching, device, conf_thresh):
-  left_torch = torch.from_numpy(img_left).permute(2, 0, 1).unsqueeze(0).to(device)
-  right_torch = torch.from_numpy(img_right).permute(2, 0, 1).unsqueeze(0).to(device)
+def get_s2m2_disparity(img_left, img_right, s2m2_model, device, conf_thresh):
+  from s2m2.core.utils.image_utils import image_crop, image_pad
 
-  pred_disparity, _, pred_confidence, _, _ = run_stereo_matching(s2m2_model, left_torch, right_torch, device)
+  height, width = img_left.shape[:2]
+  left_torch = image_pad(torch.from_numpy(img_left).permute(2, 0, 1).unsqueeze(0).to(device), 32)
+  right_torch = image_pad(torch.from_numpy(img_right).permute(2, 0, 1).unsqueeze(0).to(device), 32)
 
-  disparity = pred_disparity.cpu().numpy().squeeze()
-  confidence = pred_confidence.cpu().numpy().squeeze()
+  pred_disparity, _, pred_confidence = s2m2_model(left_torch, right_torch)
+
+  disparity = image_crop(pred_disparity, (height, width)).cpu().numpy().squeeze()
+  confidence = image_crop(pred_confidence, (height, width)).cpu().numpy().squeeze()
 
   valid_mask = (disparity > 0) & (confidence >= conf_thresh)
   disparity[~valid_mask] = 0.0
@@ -22,22 +25,14 @@ def get_s2m2_disparity(img_left, img_right, s2m2_model, run_stereo_matching, dev
   return disparity
 
 
-def compute_stereo_depth(episode, s2m2_model, run_stereo_matching, device, conf_thresh):
-
-  for cam_id in episode["camera"]:
-    cam_data = episode["camera"][cam_id]
+def compute_stereo_depth(episode, s2m2_model, device, conf_thresh):
+  for cam_id, cam_data in episode["camera"].items():
     left_seq, right_seq = cam_data["video_rgb"], cam_data["video_right"]
-
-    disparity_frames = [
-      get_s2m2_disparity(left_img, right_img, s2m2_model, run_stereo_matching, device=device, conf_thresh=conf_thresh)
-      for left_img, right_img in tqdm(zip(left_seq, right_seq), total=len(left_seq), desc=f"Depth [{cam_id}]")
-    ]
-    raw_disparity = np.stack(disparity_frames)
-
-    fx = cam_data["K"][0, 0]
-    baseline = cam_data["baseline"]
-    cam_data["raw_depth"] = core.geometry.decode_disparity(raw_disparity, fx, baseline)
-
+    raw_disparity = np.stack([
+      get_s2m2_disparity(img_left, img_right, s2m2_model, device, conf_thresh)
+      for img_left, img_right in tqdm(zip(left_seq, right_seq), total=len(left_seq), desc=f"Depth [{cam_id}]")
+    ])
+    cam_data["raw_depth"] = core.geometry.decode_disparity(raw_disparity, cam_data["K"][0, 0], cam_data["baseline"])
   return episode
 
 
@@ -76,7 +71,7 @@ def extract_single_frame_mask(img_rgb, predictor, mask_area_min, mask_area_max):
 
 
 def compute_consensus_mask(masks_list, consensus_thresh):
-  vote_map = np.mean(masks_list, axis=0)
+  vote_map = np.mean(masks_list, axis=0, dtype=np.float32)
   consensus_mask = vote_map >= consensus_thresh
 
   n_labels, labels_map, stats, _ = cv2.connectedComponentsWithStats(consensus_mask.astype(np.uint8))
@@ -87,56 +82,28 @@ def compute_consensus_mask(masks_list, consensus_thresh):
   return consensus_mask
 
 
-def build_universal_gripper_mask(
-  episode, sam_predictor, consensus_thresh, gripper_open_thresh, mask_area_min, mask_area_max
-):
+def refine_gripper_depth(episode, sam_predictor, config):
   cam_data = episode["camera"][episode["meta"]["wrist_cam_id"]]
-  gripper_states = episode["robot"]["gripper_positions"]
-  open_frames = np.where(gripper_states < gripper_open_thresh)[0]
+  raw_depth = cam_data["raw_depth"]
+  cam_data["original_raw_depth"] = raw_depth.copy()
+  cam_data["sam_real_masks"] = np.zeros(raw_depth.shape, dtype=bool)
+  gripper_depth = np.zeros_like(raw_depth[0])
 
-  masks_list = []
-  for idx in tqdm(open_frames, desc="SAM mask"):
-    img = cam_data["video_rgb"][idx].copy()
-    mask = extract_single_frame_mask(img, sam_predictor, mask_area_min, mask_area_max)
-    masks_list.append(mask)
+  open_frames = np.flatnonzero(episode["robot"]["gripper_positions"].reshape(-1) < config.gripper_open_thresh)
+  if len(open_frames):
+    masks = [
+      extract_single_frame_mask(cam_data["video_rgb"][t], sam_predictor, config.mask_area_min, config.mask_area_max)
+      for t in tqdm(open_frames, desc="SAM mask")
+    ]
+    mask = compute_consensus_mask(masks, config.consensus_thresh)
+    cam_data["sam_real_masks"][open_frames] = mask
 
-  final_mask = compute_consensus_mask(masks_list, consensus_thresh)
+    open_depth = raw_depth[open_frames]
+    samples = np.where(mask & (open_depth > 0) & (open_depth < config.max_depth_thresh), open_depth, np.nan)
+    observed = ~np.isnan(samples).all(axis=0)
+    if observed.any():
+      gripper_depth[observed] = np.nanmedian(samples[:, observed], axis=0)
+    raw_depth[open_frames] = np.where(gripper_depth > 0, gripper_depth, open_depth)
 
-  cam_data["sam_real_masks"] = np.zeros((len(gripper_states), *final_mask.shape), dtype=bool)
-  cam_data["sam_real_masks"][open_frames] = final_mask
-
-  return episode
-
-
-def distill_empirical_gripper_depth(episode, max_depth_thresh, gripper_open_thresh):
-  cam_data = episode["camera"][episode["meta"]["wrist_cam_id"]]
-  gripper_states = episode["robot"]["gripper_positions"]
-  open_frames = np.where(gripper_states < gripper_open_thresh)[0]
-  height, width = cam_data["video_rgb"][0].shape[:2]
-  depth_bank = np.full((len(open_frames), height, width), np.nan, dtype=np.float32)
-
-  for i, idx in enumerate(tqdm(open_frames, desc="Depth collect")):
-    raw_depth = cam_data["raw_depth"][idx].astype(np.float32)
-    mask = cam_data["sam_real_masks"][idx]
-    valid_pixels = mask & (raw_depth > 0) & (raw_depth < max_depth_thresh)
-    depth_bank[i, valid_pixels] = raw_depth[valid_pixels]
-
-  observed = ~np.isnan(depth_bank).all(axis=0)
-  median_depth = np.zeros((height, width), dtype=np.float32)
-  median_depth[observed] = np.nanmedian(depth_bank[:, observed], axis=0)
-  cam_data["empirical_gripper_depth"] = median_depth
-
-  return episode
-
-
-def inject_gripper_depth(episode, gripper_open_thresh):
-  cam_data = episode["camera"][episode["meta"]["wrist_cam_id"]]
-  gripper_states = episode["robot"]["gripper_positions"]
-  empirical_depth = cam_data["empirical_gripper_depth"]
-
-  open_frames = np.where(gripper_states < gripper_open_thresh)[0]
-  valid_mask = empirical_depth > 0
-
-  cam_data["raw_depth"][open_frames] = np.where(valid_mask, empirical_depth, cam_data["raw_depth"][open_frames])
-
+  cam_data["empirical_gripper_depth"] = gripper_depth
   return episode

@@ -42,8 +42,8 @@ class Review:
       T_cam2world.append(poses[cam_id]["T_cam2world"])
       image_wh.append([width, height])
 
-    self.K = np.asarray(K, dtype=np.float32)
-    self.T_cam2world = np.asarray(T_cam2world, dtype=np.float32)
+    self.K = np.asarray(K)
+    self.T_cam2world = np.asarray(T_cam2world)
     self.image_wh = np.asarray(image_wh, dtype=np.int32)
 
   @property
@@ -96,10 +96,7 @@ def depth_cloud(depth, img_rgb, K, T_cam2world, stride):
   strided = depth[::stride, ::stride]
   v, u = np.nonzero(strided > 0)
   v, u = v * stride, u * stride
-  points_world = core.geometry.unproject_pixels(
-    u.astype(np.float32), v.astype(np.float32), depth[v, u], K, T_cam2world
-  )
-  return points_world.astype(np.float32), img_rgb[v, u]
+  return core.geometry.unproject_pixels(u, v, depth[v, u], K, T_cam2world), img_rgb[v, u]
 
 
 def blueprint(review, inspect, episode_id, fps):

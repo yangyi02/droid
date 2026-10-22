@@ -144,16 +144,18 @@ def evaluate_extrinsics(episode, poses, render_pool, device, config):
   wrist_cam_id = episode["meta"]["wrist_cam_id"]
   cam_ids = sorted(episode["camera"])
   pairs = list(itertools.combinations(cam_ids, 2))
-  base = {c: torch.tensor(poses[c]["T_cam2mount"], dtype=torch.float32, device=device) for c in cam_ids}
+  base = {c: torch.as_tensor(poses[c]["T_cam2mount"], dtype=torch.float32, device=device) for c in cam_ids}
 
   n_points, max_depth = config.extrinsics.n_points, config.extrinsics.max_depth
   renders = render_pool.render_cameras(episode, poses)
   robot_points, depth_batch, K = core.pointcloud.robot_clouds(episode, poses, renders, device, n_points)
-  env, ee_poses, frames = core.pointcloud.scene_clouds(episode, device, n_points, max_depth)
 
+  near_env, near_ee, _ = core.pointcloud.scene_clouds(episode, device, n_points, max_depth)
   chamfer, overlap = core.pointcloud.chamfer_overlap(
-    env, ee_poses, base, wrist_cam_id, pairs, config.extrinsics.chamfer_match_radius
+    near_env, near_ee, base, wrist_cam_id, pairs, config.extrinsics.chamfer_match_radius
   )
+
+  env, ee_poses, frames = core.pointcloud.scene_clouds(episode, device, n_points)
   chamfer_px, overlap_px = core.pointcloud.chamfer_overlap_px(
     env,
     ee_poses,

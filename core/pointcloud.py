@@ -31,11 +31,11 @@ def extract_robot_clouds(K, rendered, T_cam2mount, device, depth_batch, n_points
 def robot_clouds(episode, poses, renders, device, n_points):
   robot_points, depth_batch, K = {}, {}, {}
   for cam_id, cam_data in episode["camera"].items():
-    observed = torch.tensor(np.asarray(cam_data["raw_depth"], dtype=np.float32), device=device).unsqueeze(1)
+    observed = torch.as_tensor(cam_data["raw_depth"], dtype=torch.float32, device=device).unsqueeze(1)
     robot_points[cam_id], depth_batch[cam_id] = extract_robot_clouds(
       cam_data["K"], renders[cam_id], poses[cam_id]["T_cam2mount"], device, observed, n_points
     )
-    K[cam_id] = torch.tensor(cam_data["K"], dtype=torch.float32, device=device)
+    K[cam_id] = torch.as_tensor(cam_data["K"], dtype=torch.float32, device=device)
 
   return robot_points, depth_batch, K
 
@@ -49,12 +49,12 @@ def scene_clouds(episode, device, n_points, max_depth=np.inf):
   for t in range(len(episode["robot"]["joint_positions"])):
     frame = {}
     for cam_id, cam_data in cameras.items():
-      depth = cam_data["raw_depth"][t].astype(np.float32)
+      depth = cam_data["raw_depth"][t]
       frame[cam_id] = sample_camera_points((depth > 0.0) & (depth < max_depth), depth, cam_data["K"], n_points)
     if all(points is not None for points in frame.values()):
       for cam_id, points in frame.items():
-        cache[cam_id].append(torch.tensor(points, dtype=torch.float32, device=device))
-      cache_ee.append(torch.tensor(T_ee2base[t], dtype=torch.float32, device=device))
+        cache[cam_id].append(torch.as_tensor(points, dtype=torch.float32, device=device))
+      cache_ee.append(torch.as_tensor(T_ee2base[t], dtype=torch.float32, device=device))
       frames.append(t)
 
   return {cam_id: torch.stack(clouds) for cam_id, clouds in cache.items()}, torch.stack(cache_ee), np.array(frames)
@@ -63,7 +63,7 @@ def scene_clouds(episode, device, n_points, max_depth=np.inf):
 def disparity_maps(episode, frames, device):
   maps = {}
   for cam_id, cam_data in episode["camera"].items():
-    depth = torch.tensor(np.asarray(cam_data["raw_depth"][frames], dtype=np.float32), device=device)
+    depth = torch.as_tensor(cam_data["raw_depth"][frames], dtype=torch.float32, device=device)
     maps[cam_id] = torch.where(depth > 0, cam_data["K"][0, 0] * cam_data["baseline"] / depth.clamp(min=1e-6), 0.0)
   return maps
 

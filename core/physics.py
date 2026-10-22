@@ -14,7 +14,8 @@ GRIPPER_WIDTH_OFFSET = 0.08
 
 def metric_depth(depth_buf, height, width):
   buf = np.reshape(depth_buf, (height, width)).astype(np.float32)
-  return np.float32(FAR_PLANE * NEAR_PLANE) / (np.float32(FAR_PLANE) - buf * np.float32(FAR_PLANE - NEAR_PLANE))
+  metric = FAR_PLANE * NEAR_PLANE / (FAR_PLANE - buf * (FAR_PLANE - NEAR_PLANE))
+  return np.where(metric < FAR_PLANE * 0.99, metric, 0.0)
 
 
 def link_transform(obj_id, link_id):
@@ -23,7 +24,7 @@ def link_transform(obj_id, link_id):
   else:
     pos, orn = pybullet.getLinkState(obj_id, link_id)[:2]
 
-  T_link2world = np.eye(4)
+  T_link2world = np.eye(4, dtype=np.float32)
   T_link2world[:3, :3] = Rotation.from_quat(orn).as_matrix()
   T_link2world[:3, 3] = pos
   return T_link2world
@@ -116,15 +117,12 @@ class PyBulletRenderer:
 
   def render_depth(self, T_cam2world, K, width, height):
     depth_buf, _ = self._render_raw(T_cam2world, K, width, height)
-    metric = metric_depth(depth_buf, height, width)
-    return np.where(metric < FAR_PLANE * 0.99, metric, 0.0)
+    return metric_depth(depth_buf, height, width)
 
   def render_segmentation(self, T_cam2world, K, width, height):
     depth_buf, seg_buf = self._render_raw(T_cam2world, K, width, height)
-    metric = metric_depth(depth_buf, height, width)
-    metric = np.where(metric < FAR_PLANE * 0.99, metric, np.float32(0.0))
     link_ids = (np.reshape(seg_buf, (height, width)).astype(np.int32) >> 24) - 1
-    return link_ids, metric
+    return link_ids, metric_depth(depth_buf, height, width)
 
 
 _worker = None
